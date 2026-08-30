@@ -1,0 +1,16 @@
+FROM node:24.20.0-alpine
+
+WORKDIR /app
+
+COPY package*.json ./
+
+RUN npm ci
+
+COPY . .
+
+# Roda como o usuário não-root "node" (uid/gid 1000 na imagem alpine oficial)
+# para que arquivos gerados dentro do bind mount (./backend), como as
+# migrations do Drizzle, não fiquem com dono "root" no host.
+USER node
+
+CMD ["npm", "run", "dev"]

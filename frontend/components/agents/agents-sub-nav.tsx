@@ -1,0 +1,48 @@
+"use client";
+
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+
+import { cn } from "@/lib/utils";
+import { useAuth } from "@/lib/auth/use-auth";
+
+const ITEMS = [
+  { href: "/agents", label: "Agentes", permission: "agents.read" },
+  { href: "/agents/chat", label: "Chat", permission: "agents.use" },
+  { href: "/agents/approvals", label: "Aprovações", permission: "agents.approve" },
+  { href: "/agents/executions", label: "Execuções", permission: "agent.executions.read" },
+  { href: "/agents/interpreter", label: "LLM Interpreter", permission: "agent.executions.read" },
+] as const;
+
+// Navegação interna do módulo Agentes (seções 38-41) — mesmo princípio de
+// UX-only da Sidebar: um item escondido aqui continua acessível por URL
+// direta, quem barra de verdade é o backend.
+export function AgentsSubNav() {
+  const pathname = usePathname();
+  const { can } = useAuth();
+
+  const visibleItems = ITEMS.filter((item) => can(item.permission));
+
+  return (
+    <nav className="flex flex-wrap gap-1 border-b pb-2">
+      {visibleItems.map((item) => {
+        const active = pathname === item.href;
+
+        return (
+          <Link
+            key={item.href}
+            href={item.href}
+            className={cn(
+              "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
+              active
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+            )}
+          >
+            {item.label}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}

@@ -1,0 +1,11 @@
+.env
+
+node_modules/
+.next/
+dist/
+
+*.log
+
+backups/
+*.dump
+*.sha256
