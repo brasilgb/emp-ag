@@ -43,7 +43,7 @@ describe('OpenAIProvider', () => {
     await assert.rejects(() => provider.complete(REQUEST), /OPENAI_API_KEY não configurada/);
   });
 
-  test('monta o payload da Responses API: model, instructions, input e Structured Output', async () => {
+  test('monta o payload da Responses API: model, instructions, input e JSON mode', async () => {
     process.env.OPENAI_API_KEY = 'sk-teste';
     let capturedUrl = '';
     let capturedInit: RequestInit | undefined;
@@ -64,12 +64,22 @@ describe('OpenAIProvider', () => {
       assert.equal(body.model, 'gpt-5.6-luna');
       assert.equal(body.instructions, REQUEST.systemPrompt);
       assert.deepEqual(body.input, [
+        { role: 'developer', content: 'Responda sempre em formato JSON.' },
         { role: 'user', content: 'oi' },
         { role: 'assistant', content: 'olá, como posso ajudar?' },
         { role: 'user', content: REQUEST.userMessage },
       ]);
-      assert.equal(body.text.format.type, 'json_schema');
-      assert.ok(body.text.format.schema, 'schema do Structured Output ausente.');
+      // json_object exige a palavra "json" em algum item de `input` (não
+      // basta em `instructions`) — confirmado em smoke test real.
+      assert.match(JSON.stringify(body.input), /json/i);
+      // json_object, não json_schema: 'arguments' tem shape arbitrária por
+      // tool (seção 8) e a Responses API exige additionalProperties:false
+      // em todo objeto aninhado do json_schema, inclusive dentro de
+      // 'arguments' — confirmado em smoke test real
+      // (in context=('properties','arguments'), 'additionalProperties' is
+      // required to be supplied and to be false). json_object garante
+      // JSON válido sem essa limitação de shape.
+      assert.equal(body.text.format.type, 'json_object');
     } finally {
       restore();
       delete process.env.AGENT_LLM_MODEL;

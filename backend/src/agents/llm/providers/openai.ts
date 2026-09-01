@@ -4,29 +4,6 @@ import type { LLMProvider, LLMRequest, LLMResponse } from '../types.js';
 
 const OPENAI_API_BASE = 'https://api.openai.com/v1';
 
-// Mesmo objeto pedido ao modelo nas duas metades do contrato (seção 6/7
-// do LLM Interpreter) via Structured Output (JSON Schema) — mas a
-// validação de verdade continua sendo o Zod schema em llm/schema.ts
-// (nunca confiar em JSON só porque veio do modelo, nem porque um schema
-// foi pedido). Não usa `strict: true`/`additionalProperties: false`: as
-// tools do catálogo têm shapes de argumento arbitrárias e variadas
-// (seção 8), incompatíveis com o "grammar-constrained" strict mode da
-// OpenAI, que exige todo objeto com additionalProperties:false e toda
-// chave presente em `required` — `arguments` precisa aceitar qualquer
-// forma.
-const RESPONSE_JSON_SCHEMA = {
-  type: 'object',
-  properties: {
-    agent: { type: ['string', 'null'] },
-    tool: { type: ['string', 'null'] },
-    arguments: { type: 'object' },
-    confidence: { type: 'number', minimum: 0, maximum: 1 },
-    clarificationRequired: { type: 'boolean' },
-    clarificationQuestion: { type: 'string' },
-  },
-  required: ['agent', 'tool', 'arguments', 'confidence'],
-};
-
 interface OpenAIResponsePayload {
   output?: Array<{
     type?: string;
@@ -39,10 +16,23 @@ interface OpenAIResponsePayload {
  * Provider OpenAI via fetch puro contra a Responses API
  * (POST /v1/responses) — sem SDK (mesmo racional do GeminiProvider,
  * seção 4: "não espalhar SDK do provider pelo sistema"; aqui não há SDK
- * nenhum, só uma chamada HTTP encapsulada neste arquivo). Usa Structured
- * Output (`text.format: json_schema`) pra reduzir a chance de saída fora
- * do formato esperado — mas a validação de verdade continua sendo o Zod
- * schema em llm/schema.ts, nunca esta chamada isolada (seção 6).
+ * nenhum, só uma chamada HTTP encapsulada neste arquivo).
+ *
+ * Usa `text.format: { type: 'json_object' }` (JSON mode "solto", mesmo
+ * nível de garantia do `responseMimeType: application/json` do Gemini) em
+ * vez de `json_schema` — testado ao vivo (smoke test em shadow mode) e
+ * confirmado: a Responses API exige `additionalProperties: false` em
+ * TODO objeto aninhado do schema, inclusive dentro de `arguments`
+ * (`In context=('properties', 'arguments'), 'additionalProperties' is
+ * required to be supplied and to be false`) — mas `arguments` é
+ * justamente o campo com shape arbitrária por tool (seção 8), então não
+ * há um json_schema válido que o represente sem travar as chaves
+ * possíveis. `json_object` garante JSON sintaticamente válido (por isso
+ * o prompt em prompt.ts já pede explicitamente "responda com um objeto
+ * JSON válido" — a OpenAI exige a palavra "json" nas instructions/input
+ * pra esse modo) sem essa limitação de shape. A validação de verdade
+ * continua sendo sempre o Zod schema em llm/schema.ts, nunca esta
+ * chamada isolada (seção 6) — o mesmo vale para Gemini.
  *
  * Sem timeout próprio de propósito, igual ao GeminiProvider: quem corre
  * a chamada contra AGENT_LLM_TIMEOUT_MS é sempre o orquestrador
@@ -60,7 +50,14 @@ export class OpenAIProvider implements LLMProvider {
     // Roles de LLMContextMessage já são 'user' | 'assistant' — a
     // Responses API aceita esses valores diretamente, sem remapeamento
     // (diferente do Gemini, que usa 'model' em vez de 'assistant').
+    //
+    // O item 'developer' com "json" é obrigatório para usar
+    // text.format:'json_object' — confirmado em smoke test real: a API
+    // rejeita com "Response input messages must contain the word 'json'
+    // in some form" se só `instructions` (que já teria a palavra, seção
+    // 25) mencionar JSON; o requisito é especificamente sobre `input`.
     const input = [
+      { role: 'developer' as const, content: 'Responda sempre em formato JSON.' },
       ...request.contextMessages.map((message) => ({
         role: message.role,
         content: message.content,
@@ -79,13 +76,14 @@ export class OpenAIProvider implements LLMProvider {
         model: env.AGENT_LLM_MODEL,
         instructions: request.systemPrompt,
         input,
-        temperature: 0,
+        // Sem `temperature`: confirmado em smoke test real que modelos de
+        // raciocínio (a família usada aqui) rejeitam esse parâmetro
+        // ("Unsupported parameter: 'temperature' is not supported with
+        // this model") — diferente do GeminiProvider, que fixa
+        // temperature=0 sem problema. Determinismo aqui vem só do prompt
+        // (seção 25), não de um parâmetro de sampling.
         text: {
-          format: {
-            type: 'json_schema',
-            name: 'llm_interpretation',
-            schema: RESPONSE_JSON_SCHEMA,
-          },
+          format: { type: 'json_object' },
         },
       }),
     });

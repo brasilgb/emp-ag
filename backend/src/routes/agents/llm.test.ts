@@ -101,6 +101,14 @@ describe('Agentes v1.1 — LLM Interpreter (chat)', () => {
     assert.ok(ceoUser);
     ceoUserId = ceoUser.id;
 
+    // Zera o rate limit de /agents/chat (agents/security/rate-limit.ts —
+    // 30 req/60s por usuário) para o usuário CEO antes de começar: este
+    // arquivo + agents.test.ts fazem ~25 chamadas reais a /agents/chat
+    // com o CEO, e o Redis é compartilhado com qualquer outro uso real do
+    // mesmo usuário seed (dev) — sem isso, a suíte fica dependente de
+    // estado externo ao processo de teste.
+    await redis.del(`agents:ratelimit:chat:${ceoUserId}`);
+
     // Usuário com agents.use (para passar no gate da rota) mas sem
     // financial.stats.read (para o teste #12 — LLM pede tool sem
     // permission).
@@ -164,16 +172,26 @@ describe('Agentes v1.1 — LLM Interpreter (chat)', () => {
 
   // #1
   test('LLM desabilitado (default) mantém comportamento idêntico à v1', async () => {
-    // AGENT_LLM_ENABLED não é setado — usa o default (false).
-    const response = await chat(ceoToken, { message: 'Quais projetos estão atrasados?' });
+    // Força explicitamente 'false' em vez de confiar no default do
+    // ambiente real (getter de env.ts): em máquinas com AGENT_LLM_ENABLED
+    // configurado de verdade no .env (dev com shadow mode ligado de
+    // propósito), o "default" do processo já não é false — este teste
+    // precisa continuar determinístico independente disso.
+    process.env.AGENT_LLM_ENABLED = 'false';
 
-    assert.equal(response.statusCode, 200);
-    const body = response.json();
-    assert.equal(body.agent.slug, 'projects');
-    assert.equal(body.tool, 'projects.get_overdue_projects');
+    try {
+      const response = await chat(ceoToken, { message: 'Quais projetos estão atrasados?' });
 
-    const interpretations = await getInterpretations(body.conversationId);
-    assert.equal(interpretations.length, 0, 'Nenhuma interpretação deveria ser registrada com o LLM desligado.');
+      assert.equal(response.statusCode, 200);
+      const body = response.json();
+      assert.equal(body.agent.slug, 'projects');
+      assert.equal(body.tool, 'projects.get_overdue_projects');
+
+      const interpretations = await getInterpretations(body.conversationId);
+      assert.equal(interpretations.length, 0, 'Nenhuma interpretação deveria ser registrada com o LLM desligado.');
+    } finally {
+      delete process.env.AGENT_LLM_ENABLED;
+    }
   });
 
   // #2 e #14 (mismatch é registrado)

@@ -137,6 +137,17 @@ describe('Agentes v1', () => {
 
     ceoToken = await login(ceoEmail, ceoPassword);
 
+    // Zera o rate limit de /agents/chat (agents/security/rate-limit.ts —
+    // 30 req/60s por usuário) para o usuário CEO antes de começar: este
+    // arquivo + llm.test.ts fazem ~25 chamadas reais a /agents/chat com o
+    // CEO, e o Redis é compartilhado com qualquer outro uso real do mesmo
+    // usuário seed (dev) — sem isso, a suíte fica dependente de estado
+    // externo ao processo de teste.
+    const [ceoUser] = await db.select().from(users).where(eq(users.email, ceoEmail.toLowerCase())).limit(1);
+    if (ceoUser) {
+      await redis.del(`agents:ratelimit:chat:${ceoUser.id}`);
+    }
+
     const noAgentsUse = await createRestrictedUser('no-agents-use', []);
     noAgentsUseRoleId = noAgentsUse.roleId;
     noAgentsUseUserId = noAgentsUse.userId;
