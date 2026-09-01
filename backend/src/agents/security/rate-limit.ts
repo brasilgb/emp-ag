@@ -9,12 +9,16 @@ import { redis } from '../../services/redis.js';
 // o Redis estiver fora do ar: nunca bloqueia o usuário por indisponibilidade
 // de infraestrutura auxiliar.
 const WINDOW_SECONDS = 60;
-const MAX_REQUESTS: Record<'chat' | 'execute', number> = {
+const MAX_REQUESTS: Record<'chat' | 'execute' | 'plan', number> = {
   chat: 30,
   execute: 30,
+  // Agentes v1.2: uma chamada de planning cobre uma chamada de LLM +
+  // potencialmente várias execuções de tool — limite mais baixo que
+  // 'execute' (uma tool por vez) é proporcional ao custo por requisição.
+  plan: 15,
 };
 
-export function agentRateLimit(action: 'chat' | 'execute') {
+export function agentRateLimit(action: 'chat' | 'execute' | 'plan') {
   return async function rateLimitHandler(request: FastifyRequest, reply: FastifyReply) {
     const userId = request.user?.sub;
 

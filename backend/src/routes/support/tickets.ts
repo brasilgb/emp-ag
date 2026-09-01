@@ -13,6 +13,7 @@ import {
 import { authenticate } from '../../middleware/authenticate.js';
 import { requirePermission } from '../../middleware/require-permission.js';
 import { audit } from '../../services/audit.js';
+import { publishAgentEvent } from '../../agents/events/publisher.js';
 import {
   createTicketSchema,
   listTicketsQuerySchema,
@@ -241,6 +242,18 @@ export async function ticketRoutes(app: FastifyInstance) {
           newData: inserted,
         });
 
+        // Agentes v1.4 (correio.md seção 9) — mesma transação da criação.
+        await publishAgentEvent(
+          {
+            type: 'support.ticket.created',
+            aggregateType: 'support.ticket',
+            aggregateId: inserted.id,
+            source: 'support.tickets',
+            payload: { ticketId: inserted.id, clientId: inserted.clientId, priority: inserted.priority, status: inserted.status, source: inserted.source },
+          },
+          tx,
+        );
+
         return inserted;
       });
 
@@ -446,6 +459,34 @@ export async function ticketRoutes(app: FastifyInstance) {
           oldData: existing,
           newData: updated,
         });
+
+        // Agentes v1.4 (correio.md seção 9) — mesma transação da
+        // alteração. `support.ticket.updated` cobre qualquer PATCH;
+        // `support.ticket.closed` é disparado à parte quando o status
+        // muda especificamente para 'closed' (evento mais específico).
+        await publishAgentEvent(
+          {
+            type: 'support.ticket.updated',
+            aggregateType: 'support.ticket',
+            aggregateId: updated.id,
+            source: 'support.tickets',
+            payload: { ticketId: updated.id, priority: updated.priority, status: updated.status },
+          },
+          tx,
+        );
+
+        if (statusChanging && newStatus === 'closed') {
+          await publishAgentEvent(
+            {
+              type: 'support.ticket.closed',
+              aggregateType: 'support.ticket',
+              aggregateId: updated.id,
+              source: 'support.tickets',
+              payload: { ticketId: updated.id, priority: updated.priority },
+            },
+            tx,
+          );
+        }
 
         return { updated, event };
       });

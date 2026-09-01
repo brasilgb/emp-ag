@@ -6,6 +6,7 @@ import { financialEntries, financialPayments } from '../../db/schema/index.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { requirePermission } from '../../middleware/require-permission.js';
 import { audit } from '../../services/audit.js';
+import { publishAgentEvent } from '../../agents/events/publisher.js';
 import {
   createPaymentSchema,
   entryIdParamSchema,
@@ -138,6 +139,22 @@ export async function paymentRoutes(app: FastifyInstance) {
           .returning();
 
         const { entry: updatedEntry, becamePaid } = await settleEntryPayment(tx, params.data.id);
+
+        // Agentes v1.4 (correio.md seção 9) — mesma transação do
+        // pagamento; só dispara quando o lançamento é receita (a receber)
+        // e acabou de ficar totalmente quitado.
+        if (becamePaid && updatedEntry.type === 'income') {
+          await publishAgentEvent(
+            {
+              type: 'finance.receivable.paid',
+              aggregateType: 'financial.entry',
+              aggregateId: updatedEntry.id,
+              source: 'financial.payments',
+              payload: { entryId: updatedEntry.id, clientId: updatedEntry.clientId, amount: updatedEntry.amount },
+            },
+            tx,
+          );
+        }
 
         return { outcome: 'ok' as const, payment, entry: updatedEntry, becamePaid };
       });

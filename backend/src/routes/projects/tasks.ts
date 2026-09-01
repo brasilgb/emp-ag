@@ -22,6 +22,7 @@ import {
 import { authenticate } from '../../middleware/authenticate.js';
 import { requirePermission } from '../../middleware/require-permission.js';
 import { audit } from '../../services/audit.js';
+import { publishAgentEvent } from '../../agents/events/publisher.js';
 import {
   createCommentSchema,
   createTaskSchema,
@@ -141,6 +142,24 @@ export async function createInternalTask(
       event: 'task.created',
       newData: insertedTask,
     });
+
+    // Agentes v1.4 (correio.md seção 9) — mesma transação da criação.
+    await publishAgentEvent(
+      {
+        type: 'project.task.created',
+        aggregateType: 'project.task',
+        aggregateId: insertedTask.id,
+        source: 'projects.tasks',
+        payload: {
+          taskId: insertedTask.id,
+          projectId: insertedTask.projectId,
+          title: insertedTask.title,
+          status: insertedTask.status,
+          priority: insertedTask.priority,
+        },
+      },
+      tx,
+    );
 
     await recalcProjectProgress(tx, project.id);
 
@@ -523,6 +542,34 @@ export async function taskRoutes(app: FastifyInstance) {
         }
 
         await tx.insert(taskHistory).values(historyRows);
+
+        // Agentes v1.4 (correio.md seção 9) — mesma transação da
+        // alteração. `project.task.updated` cobre qualquer PATCH;
+        // `project.task.completed` é disparado à parte quando o status
+        // muda especificamente para 'done' (evento mais específico, seção 3).
+        await publishAgentEvent(
+          {
+            type: 'project.task.updated',
+            aggregateType: 'project.task',
+            aggregateId: updated.id,
+            source: 'projects.tasks',
+            payload: { taskId: updated.id, projectId: updated.projectId, status: updated.status, priority: updated.priority },
+          },
+          tx,
+        );
+
+        if (statusChanging && updated.status === 'done') {
+          await publishAgentEvent(
+            {
+              type: 'project.task.completed',
+              aggregateType: 'project.task',
+              aggregateId: updated.id,
+              source: 'projects.tasks',
+              payload: { taskId: updated.id, projectId: updated.projectId, priority: updated.priority },
+            },
+            tx,
+          );
+        }
 
         if (statusChanging) {
           await recalcProjectProgress(tx, updated.projectId);

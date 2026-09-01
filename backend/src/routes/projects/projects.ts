@@ -12,6 +12,7 @@ import {
 import { authenticate } from '../../middleware/authenticate.js';
 import { requirePermission } from '../../middleware/require-permission.js';
 import { audit } from '../../services/audit.js';
+import { publishAgentEvent } from '../../agents/events/publisher.js';
 import {
   createProjectSchema,
   listProjectsQuerySchema,
@@ -269,6 +270,14 @@ export async function projectRoutes(app: FastifyInstance) {
         newData: project,
         ipAddress: request.ip,
         userAgent: request.headers['user-agent'],
+      });
+
+      await publishAgentEvent({
+        type: 'project.created',
+        aggregateType: 'project',
+        aggregateId: project.id,
+        source: 'projects',
+        payload: { projectId: project.id, clientId: project.clientId, name: project.name, status: project.status, priority: project.priority },
       });
 
       return reply.code(201).send({ data: project });

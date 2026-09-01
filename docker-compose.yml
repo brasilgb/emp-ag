@@ -81,7 +81,7 @@ services:
       AGENT_LLM_CONTEXT_MESSAGES: ${AGENT_LLM_CONTEXT_MESSAGES:-10}
 
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8300:8000"
 
     depends_on:
       postgres:
@@ -116,8 +116,15 @@ services:
     container_name: agencia-frontend
     restart: unless-stopped
 
+    environment:
+      # Ver frontend/lib/auth/session.ts: "false" enquanto o acesso for
+      # HTTP puro (sem Nginx/TLS na frente — docs/INFRASTRUCTURE.md §33/34).
+      # Setar de volta para "true" (ou remover, esse é o padrão) assim que
+      # houver HTTPS — cookie sem Secure não deve trafegar em produção real.
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+
     ports:
-      - "127.0.0.1:3000:3000"
+      - "0.0.0.0:3300:3000"
 
     depends_on:
       backend:
@@ -144,6 +151,15 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile.dev
+
+    # Dockerfile.dev tem CMD ["npm", "run", "dev"] (sobe o servidor com
+    # hot-reload) porque essa imagem é reaproveitada pelo serviço `backend`
+    # em desenvolvimento. Aqui, sem um `command` explícito, "docker compose
+    # run --rm migrate" (sem argumento) subiria o servidor à toa em vez de
+    # rodar qualquer migration. `db:migrate` é o comando padrão mais seguro
+    # — sempre sobrescrevível para as demais tarefas do container `tools`
+    # (db:seed, typecheck, build, test — ver README.md seções 5/6).
+    command: ["npm", "run", "db:migrate"]
 
     container_name: agencia-migrate
 
@@ -210,7 +226,7 @@ services:
       N8N_RUNNERS_TASK_TIMEOUT: "300"
 
     ports:
-      - "127.0.0.1:5678:5678"
+      - "127.0.0.1:5679:5678"
 
     volumes:
       - n8n_data:/home/node/.n8n

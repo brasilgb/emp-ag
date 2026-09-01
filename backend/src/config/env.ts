@@ -18,6 +18,26 @@ const boolFlag = (name: string, fallback: boolean): boolean => {
   return value === 'true';
 };
 
+// Agentes v1.5 — Autonomous Safety & Governance (correio.md seção 27).
+// Mesmo estilo dos getters acima (nunca Zod aqui — env.ts não usa Zod em
+// nenhum lugar real do projeto, apesar da sugestão do correio.md; o
+// bounds-check é feito à mão, falhando alto (fail-fast) como required()).
+const positiveIntEnv = (name: string, fallback: number, min = 1): number => {
+  const raw = process.env[name];
+
+  if (raw === undefined) {
+    return fallback;
+  }
+
+  const parsed = Number(raw);
+
+  if (!Number.isInteger(parsed) || parsed < min) {
+    throw new Error(`Variável ${name} inválida: deve ser um inteiro >= ${min} (recebido: "${raw}").`);
+  }
+
+  return parsed;
+};
+
 export const env = {
   NODE_ENV: process.env.NODE_ENV ?? 'development',
 
@@ -78,5 +98,58 @@ export const env = {
   },
   get AGENT_LLM_CONTEXT_MESSAGES(): number {
     return Number(process.env.AGENT_LLM_CONTEXT_MESSAGES ?? 10);
+  },
+
+  // Agentes v1.3 — Jobs/scheduler (correio.md seção 20). Desligado por
+  // default: nenhum Job roda sozinho a menos que alguém ligue
+  // explicitamente — mesmo racional de AGENT_LLM_ENABLED. server.ts é o
+  // único lugar que lê este flag para iniciar o setInterval; buildApp()
+  // (usado pelos testes) nunca inicia o scheduler.
+  get AGENT_JOBS_SCHEDULER_ENABLED(): boolean {
+    return boolFlag('AGENT_JOBS_SCHEDULER_ENABLED', false);
+  },
+  get AGENT_JOBS_SCHEDULER_INTERVAL_MS(): number {
+    return Number(process.env.AGENT_JOBS_SCHEDULER_INTERVAL_MS ?? 60000);
+  },
+
+  // Agentes v1.4 — Event Engine (correio.md seções 14/16). Mesmo racional
+  // de desligado-por-default do scheduler de Jobs — server.ts é o único
+  // lugar que lê AGENT_EVENTS_PROCESSOR_ENABLED, nunca buildApp()/testes.
+  get AGENT_EVENTS_PROCESSOR_ENABLED(): boolean {
+    return boolFlag('AGENT_EVENTS_PROCESSOR_ENABLED', false);
+  },
+  get AGENT_EVENTS_POLL_INTERVAL_MS(): number {
+    return Number(process.env.AGENT_EVENTS_POLL_INTERVAL_MS ?? 5000);
+  },
+  get AGENT_EVENTS_MAX_ATTEMPTS(): number {
+    return Number(process.env.AGENT_EVENTS_MAX_ATTEMPTS ?? 5);
+  },
+  get AGENT_EVENTS_RETRY_BASE_SECONDS(): number {
+    return Number(process.env.AGENT_EVENTS_RETRY_BASE_SECONDS ?? 30);
+  },
+  get AGENT_EVENTS_PROCESSING_TIMEOUT_SECONDS(): number {
+    return Number(process.env.AGENT_EVENTS_PROCESSING_TIMEOUT_SECONDS ?? 300);
+  },
+
+  // Agentes v1.5 — Autonomous Safety & Governance (correio.md seções
+  // 5/7/8/9/27). Todos com default seguro; só o operador ligando limites
+  // menores (ex.: smoke test) muda o comportamento — nunca automático.
+  get AGENT_MAX_AUTONOMY_DEPTH(): number {
+    return positiveIntEnv('AGENT_MAX_AUTONOMY_DEPTH', 8);
+  },
+  get AGENT_MAX_RUNS_PER_AUTONOMY_CHAIN(): number {
+    return positiveIntEnv('AGENT_MAX_RUNS_PER_AUTONOMY_CHAIN', 25);
+  },
+  get AGENT_JOB_AUTONOMY_RATE_LIMIT(): number {
+    return positiveIntEnv('AGENT_JOB_AUTONOMY_RATE_LIMIT', 20);
+  },
+  get AGENT_JOB_AUTONOMY_RATE_WINDOW_SECONDS(): number {
+    return positiveIntEnv('AGENT_JOB_AUTONOMY_RATE_WINDOW_SECONDS', 300);
+  },
+  get AGENT_AUTONOMY_CIRCUIT_FAILURE_THRESHOLD(): number {
+    return positiveIntEnv('AGENT_AUTONOMY_CIRCUIT_FAILURE_THRESHOLD', 5);
+  },
+  get AGENT_AUTONOMY_CIRCUIT_COOLDOWN_SECONDS(): number {
+    return positiveIntEnv('AGENT_AUTONOMY_CIRCUIT_COOLDOWN_SECONDS', 300);
   },
 };

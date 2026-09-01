@@ -62,6 +62,27 @@ export const agentTools = pgTable(
       .notNull()
       .default(false),
 
+    // Agentes v1.2 (correio.md, seção 4) — classificação de risco usada
+    // pelo Action Policy Evaluator (agents/policy/action-policy-evaluator.ts)
+    // para decidir execute/approval_required/blocked/shadow por ação de um
+    // Action Plan. Independente de `autonomy_level`/`is_sensitive`, que
+    // continuam sendo a única fonte de verdade para o pipeline de execução
+    // única da v1.1 (agents/execution/pipeline.ts) — nada aqui muda o
+    // comportamento de POST /agents/execute.
+    risk: varchar('risk', {
+      length: 10,
+    })
+      .notNull()
+      .default('medium'),
+
+    mutatesData: boolean('mutates_data')
+      .notNull()
+      .default(true),
+
+    requiresApproval: boolean('requires_approval')
+      .notNull()
+      .default(false),
+
     createdAt: timestamp('created_at', {
       withTimezone: true,
     })
@@ -78,5 +99,6 @@ export const agentTools = pgTable(
     index('agent_tools_department_idx').on(table.department),
     index('agent_tools_autonomy_level_idx').on(table.autonomyLevel),
     index('agent_tools_is_active_idx').on(table.isActive),
+    index('agent_tools_risk_idx').on(table.risk),
   ],
 );

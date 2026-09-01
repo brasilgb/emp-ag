@@ -6,6 +6,7 @@ import { clients, contacts, crmActivities, users } from '../../db/schema/index.j
 import { authenticate } from '../../middleware/authenticate.js';
 import { requirePermission } from '../../middleware/require-permission.js';
 import { audit } from '../../services/audit.js';
+import { publishAgentEvent } from '../../agents/events/publisher.js';
 import {
   clientIdParamSchema,
   createActivitySchema,
@@ -95,6 +96,17 @@ export async function clientRoutes(app: FastifyInstance) {
         newData: client,
         ipAddress: request.ip,
         userAgent: request.headers['user-agent'],
+      });
+
+      // Agentes v1.4 (correio.md seção 8) — publica depois do commit do
+      // insert (esta rota não é transacional); este módulo não conhece
+      // Job Runner/Planner/LLM/Executor, só o publisher.
+      await publishAgentEvent({
+        type: 'crm.client.created',
+        aggregateType: 'crm.client',
+        aggregateId: client.id,
+        source: 'crm.clients',
+        payload: { clientId: client.id, type: client.type, name: client.name, status: client.status },
       });
 
       return reply.code(201).send({ data: client });
@@ -391,6 +403,14 @@ export async function clientRoutes(app: FastifyInstance) {
         newData: activity,
         ipAddress: request.ip,
         userAgent: request.headers['user-agent'],
+      });
+
+      await publishAgentEvent({
+        type: 'crm.activity.created',
+        aggregateType: 'crm.activity',
+        aggregateId: activity.id,
+        source: 'crm.clients',
+        payload: { activityId: activity.id, leadId: null, clientId: activity.clientId, type: activity.type },
       });
 
       return reply.code(201).send({ data: activity });

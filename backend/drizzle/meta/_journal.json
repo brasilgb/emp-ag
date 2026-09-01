@@ -57,6 +57,41 @@
       "when": 1788117372628,
       "tag": "0007_glamorous_umar",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788262424846,
+      "tag": "0008_cheerful_greymalkin",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1788262520096,
+      "tag": "0009_sloppy_tigra",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788264589539,
+      "tag": "0010_cynical_molecule_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1788273738293,
+      "tag": "0011_reflective_starhawk",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1788282119768,
+      "tag": "0012_reflective_starjammers",
+      "breakpoints": true
     }
   ]
 }

@@ -100,3 +100,21 @@ export const chatSchema = z.object({
   conversationId: idSchema.optional(),
   message: z.string().trim().min(1, 'message é obrigatória.').max(2000),
 });
+
+// Agentes v1.2 — Action Planning (correio.md seção 8/9). Input de
+// POST /agents/action-plans: só o objetivo em texto livre, a estrutura do
+// plano é responsabilidade do Action Planner + validator, nunca do
+// cliente.
+export const createActionPlanSchema = z.object({
+  objective: z.string().trim().min(1, 'objective é obrigatório.').max(2000),
+});
+
+export const listActionPlansQuerySchema = paginationQuerySchema.extend({
+  status: z
+    .enum(['draft', 'evaluating', 'waiting_approval', 'executing', 'completed', 'partial', 'failed', 'cancelled'])
+    .optional(),
+});
+
+export const actionPlanIdParamSchema = z.object({
+  id: idSchema,
+});

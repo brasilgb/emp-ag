@@ -1,17 +1,32 @@
 import type { Paginated } from "@/types/shared";
 import type {
+  ActionPlan,
+  ActionPlanDetail,
+  ActionPlanStatus,
   Agent,
   AgentApproval,
   AgentConversation,
   AgentConversationDetail,
+  AgentEvent,
+  AgentEventDetail,
+  AgentEventRule,
   AgentExecution,
+  AgentJob,
+  AgentJobRun,
   AgentTool,
   AgentToolForAgent,
   ApprovalStatus,
   ChatResponse,
+  EventCatalogEntry,
+  EventFilters,
+  EventStatus,
   ExecutionStatus,
   HumanVerdict,
   InterpreterStats,
+  JobRunStatus,
+  JobStatus,
+  JobTriggerType,
+  ScheduleConfig,
 } from "@/types/agents";
 
 import { apiFetch, toQueryString } from "./http";
@@ -110,6 +125,86 @@ export function sendChatMessage(input: { conversationId?: number; message: strin
   return apiFetch("/api/agents/chat", { method: "POST", body: JSON.stringify(input) });
 }
 
+// Agentes v1.2 — Action Planning + Approval Workflow (correio.md).
+export interface ListActionPlansParams {
+  page?: number;
+  limit?: number;
+  status?: ActionPlanStatus;
+}
+
+export function listActionPlans(params: ListActionPlansParams = {}): Promise<Paginated<ActionPlan>> {
+  return apiFetch(`/api/agents/action-plans${toQueryString({ ...params })}`);
+}
+
+export function getActionPlan(id: number): Promise<{ data: ActionPlanDetail }> {
+  return apiFetch(`/api/agents/action-plans/${id}`);
+}
+
+export function createActionPlan(objective: string): Promise<{ data: ActionPlanDetail }> {
+  return apiFetch("/api/agents/action-plans", { method: "POST", body: JSON.stringify({ objective }) });
+}
+
+// Agentes v1.3 — Jobs, Runs, Delegation & Controlled Autonomy (correio.md).
+export interface ListJobsParams {
+  page?: number;
+  limit?: number;
+  status?: JobStatus;
+}
+
+export interface CreateJobInput {
+  name: string;
+  description?: string;
+  objective: string;
+  agentSlug: string;
+  triggerType: JobTriggerType;
+  scheduleConfig?: ScheduleConfig;
+  shadowMode?: boolean;
+  allowConcurrentRuns?: boolean;
+  maxRunsPerDay?: number;
+  maxActionsPerRun?: number;
+  maxOpenApprovals?: number;
+  timeoutSeconds?: number;
+}
+
+export function listJobs(params: ListJobsParams = {}): Promise<Paginated<AgentJob>> {
+  return apiFetch(`/api/agents/jobs${toQueryString({ ...params })}`);
+}
+
+export function getJob(id: number): Promise<{ data: AgentJob }> {
+  return apiFetch(`/api/agents/jobs/${id}`);
+}
+
+export function createJob(input: CreateJobInput): Promise<{ data: AgentJob }> {
+  return apiFetch("/api/agents/jobs", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function runJob(id: number): Promise<{ data: AgentJobRun }> {
+  return apiFetch(`/api/agents/jobs/${id}/run`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function pauseJob(id: number): Promise<{ data: AgentJob }> {
+  return apiFetch(`/api/agents/jobs/${id}/pause`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function resumeJob(id: number): Promise<{ data: AgentJob }> {
+  return apiFetch(`/api/agents/jobs/${id}/resume`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function cancelJob(id: number): Promise<{ data: AgentJob }> {
+  return apiFetch(`/api/agents/jobs/${id}/cancel`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function listJobRuns(
+  jobId: number,
+  params: { page?: number; limit?: number; status?: JobRunStatus } = {},
+): Promise<Paginated<AgentJobRun>> {
+  return apiFetch(`/api/agents/jobs/${jobId}/runs${toQueryString({ ...params })}`);
+}
+
+export function getJobRun(id: number): Promise<{ data: AgentJobRun }> {
+  return apiFetch(`/api/agents/job-runs/${id}`);
+}
+
 // v1.1 — LLM Interpreter + Shadow Mode (seção 27/28).
 export function getInterpreterStats(): Promise<InterpreterStats> {
   return apiFetch("/api/agents/interpreter/stats");
@@ -122,4 +217,72 @@ export function reviewInterpretation(id: number, verdict: HumanVerdict): Promise
     method: "POST",
     body: JSON.stringify({ verdict }),
   });
+}
+
+// Agentes v1.4 — Event Engine & Autonomous Operations (correio.md).
+export interface ListEventsParams {
+  page?: number;
+  limit?: number;
+  status?: EventStatus;
+  eventType?: string;
+}
+
+export function listEvents(params: ListEventsParams = {}): Promise<Paginated<AgentEvent>> {
+  return apiFetch(`/api/agents/events${toQueryString({ ...params })}`);
+}
+
+export function getEvent(id: number): Promise<{ data: AgentEventDetail }> {
+  return apiFetch(`/api/agents/events/${id}`);
+}
+
+export function retryEvent(id: number): Promise<{ data: AgentEvent }> {
+  return apiFetch(`/api/agents/events/${id}/retry`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function getEventCatalog(): Promise<{ data: EventCatalogEntry[] }> {
+  return apiFetch("/api/agents/events/catalog");
+}
+
+export interface ListEventRulesParams {
+  page?: number;
+  limit?: number;
+  eventType?: string;
+  jobId?: number;
+  enabled?: boolean;
+}
+
+export interface CreateEventRuleInput {
+  name: string;
+  description?: string;
+  eventType: string;
+  jobId: number;
+  filters: EventFilters;
+  enabled?: boolean;
+}
+
+export interface UpdateEventRuleInput {
+  name?: string;
+  description?: string;
+  filters?: EventFilters;
+  enabled?: boolean;
+}
+
+export function listEventRules(params: ListEventRulesParams = {}): Promise<Paginated<AgentEventRule>> {
+  return apiFetch(`/api/agents/event-rules${toQueryString({ ...params })}`);
+}
+
+export function getEventRule(id: number): Promise<{ data: AgentEventRule }> {
+  return apiFetch(`/api/agents/event-rules/${id}`);
+}
+
+export function createEventRule(input: CreateEventRuleInput): Promise<{ data: AgentEventRule }> {
+  return apiFetch("/api/agents/event-rules", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function updateEventRule(id: number, input: UpdateEventRuleInput): Promise<{ data: AgentEventRule }> {
+  return apiFetch(`/api/agents/event-rules/${id}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function deleteEventRule(id: number): Promise<unknown> {
+  return apiFetch(`/api/agents/event-rules/${id}`, { method: "DELETE" });
 }

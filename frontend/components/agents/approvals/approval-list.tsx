@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -106,6 +107,7 @@ export function ApprovalList() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Ação</TableHead>
+                  <TableHead>Origem</TableHead>
                   <TableHead>Agente</TableHead>
                   <TableHead>Solicitante</TableHead>
                   <TableHead>Payload</TableHead>
@@ -122,7 +124,16 @@ export function ApprovalList() {
                   return (
                     <TableRow key={approval.id}>
                       <TableCell className="font-mono text-xs">{approval.toolHandler}</TableCell>
-                      <TableCell>{approval.agentName ?? "--"}</TableCell>
+                      <TableCell className="text-xs">
+                        {approval.kind === "plan_item" && approval.planId ? (
+                          <Link href={`/agents/plans/${approval.planId}`} className="text-primary underline underline-offset-2">
+                            Plano #{approval.planId}
+                          </Link>
+                        ) : (
+                          <span className="text-muted-foreground">Execução única</span>
+                        )}
+                      </TableCell>
+                      <TableCell>{approval.agentName ?? approval.agentSlug ?? "--"}</TableCell>
                       <TableCell>{approval.requestedForUserName ?? "--"}</TableCell>
                       <TableCell className="max-w-48 truncate text-xs text-muted-foreground">
                         {payloadSummary(approval.requestPayload)}

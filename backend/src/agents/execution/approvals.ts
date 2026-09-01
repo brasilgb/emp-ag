@@ -124,6 +124,16 @@ async function casTransition(
       return { ok: false, code: 'conflict', message: 'Esta solicitação de aprovação expirou.' };
     }
 
+    // Agentes v1.2: esta função só trata aprovação de execução única
+    // (v1.1) — uma aprovação de item de plano (execution_id null,
+    // plan_item_id preenchido) é decidida por
+    // agents/executor/plan-approvals.ts. O dispatch de qual função chamar
+    // é feito por routes/agents/approvals.ts antes de chegar aqui; esta
+    // guarda é só defesa em profundidade.
+    if (approval.executionId === null) {
+      return { ok: false, code: 'not_found', message: 'Esta aprovação não é de uma execução única.' };
+    }
+
     const [execution] = await tx
       .select()
       .from(agentExecutions)

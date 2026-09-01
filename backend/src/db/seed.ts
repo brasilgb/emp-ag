@@ -263,6 +263,76 @@ const defaultPermissions = [
     slug: 'agent.executions.manage',
     description: 'Permissão ampla sobre execuções de agentes, reservada para ações futuras.',
   },
+  {
+    name: 'Solicitar plano de ações do Diretor Virtual',
+    slug: 'agents.plan',
+    description: 'Permite pedir ao Diretor Virtual para transformar um objetivo em um Action Plan (POST /agents/action-plans).',
+  },
+  {
+    name: 'Visualizar planos de ações de agentes',
+    slug: 'agents.plan.read',
+    description: 'Permite consultar Action Plans e seus itens (GET /agents/action-plans).',
+  },
+  {
+    name: 'Criar Jobs de agentes',
+    slug: 'agents.jobs.create',
+    description: 'Permite criar Jobs (objetivos operacionais recorrentes) para o Diretor Virtual (POST /agents/jobs).',
+  },
+  {
+    name: 'Visualizar Jobs de agentes',
+    slug: 'agents.jobs.read',
+    description: 'Permite consultar Jobs cadastrados (GET /agents/jobs, GET /agents/jobs/:id).',
+  },
+  {
+    name: 'Editar Jobs de agentes',
+    slug: 'agents.jobs.update',
+    description: 'Permite editar configuração de um Job (PATCH /agents/jobs/:id) — nunca o status, que só muda via pause/resume/cancel.',
+  },
+  {
+    name: 'Executar Job de agentes manualmente',
+    slug: 'agents.jobs.run',
+    description: 'Permite disparar manualmente um novo Run de um Job (POST /agents/jobs/:id/run).',
+  },
+  {
+    name: 'Gerenciar Jobs de agentes',
+    slug: 'agents.jobs.manage',
+    description: 'Permite pausar, retomar e cancelar Jobs (POST /agents/jobs/:id/pause|resume|cancel).',
+  },
+  {
+    name: 'Visualizar Runs de Jobs de agentes',
+    slug: 'agents.runs.read',
+    description: 'Permite consultar o histórico de Runs de um Job (GET /agents/jobs/:id/runs, GET /agents/job-runs/:id).',
+  },
+  {
+    name: 'Visualizar eventos internos de agentes',
+    slug: 'agents.events.read',
+    description: 'Permite consultar eventos internos e suas deliveries (GET /agents/events, GET /agents/events/:id).',
+  },
+  {
+    name: 'Gerenciar eventos internos de agentes',
+    slug: 'agents.events.manage',
+    description: 'Permite reprocessar um evento (POST /agents/events/:id/retry) — nunca contorna policy/approval, só reagenda o processor.',
+  },
+  {
+    name: 'Criar Event Rules de agentes',
+    slug: 'agents.event_rules.create',
+    description: 'Permite criar regras que associam um tipo de evento a um Job (POST /agents/event-rules).',
+  },
+  {
+    name: 'Visualizar Event Rules de agentes',
+    slug: 'agents.event_rules.read',
+    description: 'Permite consultar Event Rules cadastradas (GET /agents/event-rules).',
+  },
+  {
+    name: 'Editar Event Rules de agentes',
+    slug: 'agents.event_rules.update',
+    description: 'Permite editar/ativar/desativar Event Rules (PATCH /agents/event-rules/:id).',
+  },
+  {
+    name: 'Remover Event Rules de agentes',
+    slug: 'agents.event_rules.delete',
+    description: 'Permite remover Event Rules (DELETE /agents/event-rules/:id).',
+  },
 
   {
     name: 'Visualizar usuários',
@@ -505,6 +575,9 @@ const defaultAgentTools = [
     department: 'director',
     autonomyLevel: 'read',
     handler: 'director.get_business_overview',
+    risk: 'read',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Resumo do funil de vendas',
@@ -513,6 +586,9 @@ const defaultAgentTools = [
     department: 'sales',
     autonomyLevel: 'read',
     handler: 'sales.get_pipeline_summary',
+    risk: 'read',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Listar leads em aberto',
@@ -521,6 +597,9 @@ const defaultAgentTools = [
     department: 'sales',
     autonomyLevel: 'read',
     handler: 'sales.list_open_leads',
+    risk: 'read',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Projetos atrasados',
@@ -529,6 +608,9 @@ const defaultAgentTools = [
     department: 'projects',
     autonomyLevel: 'read',
     handler: 'projects.get_overdue_projects',
+    risk: 'read',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Tarefas atrasadas',
@@ -537,6 +619,9 @@ const defaultAgentTools = [
     department: 'projects',
     autonomyLevel: 'read',
     handler: 'projects.get_overdue_tasks',
+    risk: 'read',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Tarefas bloqueadas',
@@ -545,6 +630,9 @@ const defaultAgentTools = [
     department: 'projects',
     autonomyLevel: 'read',
     handler: 'projects.get_blocked_tasks',
+    risk: 'read',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Resumo financeiro',
@@ -553,6 +641,9 @@ const defaultAgentTools = [
     department: 'finance',
     autonomyLevel: 'read',
     handler: 'finance.get_summary',
+    risk: 'read',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Recebimentos em atraso',
@@ -561,6 +652,9 @@ const defaultAgentTools = [
     department: 'finance',
     autonomyLevel: 'read',
     handler: 'finance.get_overdue_receivables',
+    risk: 'read',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Pagamentos em atraso',
@@ -569,6 +663,9 @@ const defaultAgentTools = [
     department: 'finance',
     autonomyLevel: 'read',
     handler: 'finance.get_overdue_payables',
+    risk: 'read',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Chamados críticos',
@@ -577,6 +674,9 @@ const defaultAgentTools = [
     department: 'support',
     autonomyLevel: 'read',
     handler: 'support.get_critical_tickets',
+    risk: 'read',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Chamados com SLA estourado',
@@ -585,6 +685,9 @@ const defaultAgentTools = [
     department: 'support',
     autonomyLevel: 'read',
     handler: 'support.get_overdue_tickets',
+    risk: 'read',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Contas em risco',
@@ -593,6 +696,9 @@ const defaultAgentTools = [
     department: 'customer_success',
     autonomyLevel: 'read',
     handler: 'cs.get_at_risk_accounts',
+    risk: 'read',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Follow-ups pendentes',
@@ -601,6 +707,9 @@ const defaultAgentTools = [
     department: 'customer_success',
     autonomyLevel: 'read',
     handler: 'cs.get_due_followups',
+    risk: 'read',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Oportunidades de expansão',
@@ -609,6 +718,9 @@ const defaultAgentTools = [
     department: 'customer_success',
     autonomyLevel: 'read',
     handler: 'cs.get_expansion_opportunities',
+    risk: 'read',
+    mutatesData: false,
+    requiresApproval: false,
   },
 
   {
@@ -618,6 +730,9 @@ const defaultAgentTools = [
     department: 'sales',
     autonomyLevel: 'prepare',
     handler: 'sales.prepare_lead_followup',
+    risk: 'low',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Preparar lembrete de pagamento',
@@ -626,6 +741,9 @@ const defaultAgentTools = [
     department: 'finance',
     autonomyLevel: 'prepare',
     handler: 'finance.prepare_payment_reminder',
+    risk: 'low',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Preparar resposta de chamado',
@@ -634,6 +752,9 @@ const defaultAgentTools = [
     department: 'support',
     autonomyLevel: 'prepare',
     handler: 'support.prepare_ticket_response',
+    risk: 'low',
+    mutatesData: false,
+    requiresApproval: false,
   },
   {
     name: 'Preparar follow-up de cliente',
@@ -642,6 +763,9 @@ const defaultAgentTools = [
     department: 'customer_success',
     autonomyLevel: 'prepare',
     handler: 'cs.prepare_customer_followup',
+    risk: 'low',
+    mutatesData: false,
+    requiresApproval: false,
   },
 
   {
@@ -651,6 +775,9 @@ const defaultAgentTools = [
     department: 'projects',
     autonomyLevel: 'execute',
     handler: 'projects.create_internal_task',
+    risk: 'medium',
+    mutatesData: true,
+    requiresApproval: false,
   },
   {
     name: 'Adicionar nota interna',
@@ -659,6 +786,9 @@ const defaultAgentTools = [
     department: 'support',
     autonomyLevel: 'execute',
     handler: 'support.add_internal_note',
+    risk: 'low',
+    mutatesData: true,
+    requiresApproval: false,
   },
   {
     name: 'Registrar atividade de follow-up',
@@ -667,6 +797,9 @@ const defaultAgentTools = [
     department: 'customer_success',
     autonomyLevel: 'execute',
     handler: 'cs.create_internal_followup_activity',
+    risk: 'low',
+    mutatesData: true,
+    requiresApproval: false,
   },
 ];
 
@@ -979,6 +1112,28 @@ async function seed() {
       await db.insert(agentTools).values(toolData);
 
       console.log(`Ferramenta de agente criada: ${toolData.handler}`);
+      continue;
+    }
+
+    // Agentes v1.2: sincroniza só a classificação de risco (seção 4) em
+    // ferramentas já existentes num banco seedado antes desta versão —
+    // não reescreve nome/descrição/autonomy_level, que continuam sob
+    // gestão manual depois do seed inicial.
+    if (
+      existingTool.risk !== toolData.risk ||
+      existingTool.mutatesData !== toolData.mutatesData ||
+      existingTool.requiresApproval !== toolData.requiresApproval
+    ) {
+      await db
+        .update(agentTools)
+        .set({
+          risk: toolData.risk,
+          mutatesData: toolData.mutatesData,
+          requiresApproval: toolData.requiresApproval,
+        })
+        .where(eq(agentTools.id, existingTool.id));
+
+      console.log(`Classificação de risco atualizada: ${toolData.handler}`);
     }
   }
 

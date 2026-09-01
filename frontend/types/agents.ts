@@ -94,7 +94,13 @@ export interface AgentExecution {
 
 export interface AgentApproval {
   id: number;
-  executionId: number;
+  // Agentes v1.2: uma aprovação agora pode ser de uma execução única
+  // (v1.1, executionId preenchido) ou de um item de Action Plan
+  // (planItemId preenchido) — nunca os dois. `kind` diz qual é.
+  kind: "execution" | "plan_item";
+  executionId: number | null;
+  planItemId: number | null;
+  planId: number | null;
   toolHandler: string;
   toolName: string;
   agentName: string | null;
@@ -204,6 +210,214 @@ export interface InterpretationEntry {
   reviewedByUserId: number | null;
   reviewedByUserName: string | null;
   reviewedAt: string | null;
+}
+
+// Agentes v1.2 — Action Planning + Approval Workflow (correio.md).
+export const ACTION_PLAN_STATUSES = [
+  "draft",
+  "evaluating",
+  "waiting_approval",
+  "executing",
+  "completed",
+  "partial",
+  "failed",
+  "cancelled",
+] as const;
+export type ActionPlanStatus = (typeof ACTION_PLAN_STATUSES)[number];
+
+export const ACTION_PLAN_ITEM_STATUSES = [
+  "pending",
+  "waiting_approval",
+  "approved",
+  "executing",
+  "completed",
+  "failed",
+  "blocked",
+  "rejected",
+  "skipped",
+] as const;
+export type ActionPlanItemStatus = (typeof ACTION_PLAN_ITEM_STATUSES)[number];
+
+export const ACTION_RISKS = ["read", "low", "medium", "high"] as const;
+export type ActionRisk = (typeof ACTION_RISKS)[number];
+
+export const ACTION_DECISIONS = ["execute", "approval_required", "blocked", "shadow"] as const;
+export type ActionDecision = (typeof ACTION_DECISIONS)[number];
+
+export interface ActionPlan {
+  id: number;
+  requestedBy: number;
+  objective: string;
+  summary: string;
+  status: ActionPlanStatus;
+  llmProvider: string | null;
+  llmModel: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+export interface ActionPlanItem {
+  id: number;
+  planId: number;
+  sequence: number;
+  actionId: string;
+  agent: string;
+  agentId: number;
+  tool: string;
+  toolId: number;
+  arguments: unknown;
+  dependencies: string[] | null;
+  reason: string | null;
+  confidence: string | null;
+  risk: ActionRisk;
+  decision: ActionDecision;
+  decisionReason: string | null;
+  executionStatus: ActionPlanItemStatus;
+  result: { success: boolean; summary: string; data: unknown; metadata?: Record<string, unknown> } | null;
+  error: { code: string; message: string } | null;
+  createdAt: string;
+  executedAt: string | null;
+}
+
+export interface ActionPlanDetail {
+  plan: ActionPlan;
+  items: ActionPlanItem[];
+}
+
+// Agentes v1.3 — Jobs, Runs, Delegation & Controlled Autonomy (correio.md).
+export const JOB_STATUSES = ["draft", "active", "paused", "completed", "failed", "cancelled"] as const;
+export type JobStatus = (typeof JOB_STATUSES)[number];
+
+export const JOB_TRIGGER_TYPES = ["manual", "schedule", "internal_event"] as const;
+export type JobTriggerType = (typeof JOB_TRIGGER_TYPES)[number];
+
+export const JOB_RUN_STATUSES = [
+  "queued",
+  "planning",
+  "running",
+  "waiting_approval",
+  "completed",
+  "partial",
+  "failed",
+  "cancelled",
+  "blocked",
+] as const;
+export type JobRunStatus = (typeof JOB_RUN_STATUSES)[number];
+
+export type ScheduleConfig = { frequency: "daily"; hour: number; minute: number } | { frequency: "hourly"; interval: number };
+
+export interface AgentJob {
+  id: number;
+  name: string;
+  description: string | null;
+  objective: string;
+  agentId: number;
+  createdBy: number;
+  status: JobStatus;
+  triggerType: JobTriggerType;
+  scheduleConfig: ScheduleConfig | null;
+  eventConfig: { event: string } | null;
+  maxRunsPerDay: number;
+  maxActionsPerRun: number;
+  maxOpenApprovals: number;
+  timeoutSeconds: number;
+  shadowMode: boolean;
+  allowConcurrentRuns: boolean;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Agentes v1.4 — Event Engine & Autonomous Operations (correio.md).
+export const EVENT_STATUSES = ["pending", "processing", "processed", "failed", "ignored"] as const;
+export type EventStatus = (typeof EVENT_STATUSES)[number];
+
+export const FILTER_OPERATORS = ["eq", "neq", "in", "not_in", "gt", "gte", "lt", "lte", "exists"] as const;
+export type FilterOperator = (typeof FILTER_OPERATORS)[number];
+
+export type FilterFieldType = "string" | "number" | "boolean";
+
+export type FilterCondition = Partial<Record<FilterOperator, string | number | boolean | (string | number | boolean)[]>>;
+export type EventFilters = Record<string, FilterCondition>;
+
+export interface EventCatalogEntry {
+  type: string;
+  version: number;
+  domain: string;
+  description: string;
+  filterableFields: Record<string, FilterFieldType>;
+  operators: readonly FilterOperator[];
+}
+
+export interface AgentEvent {
+  id: number;
+  eventType: string;
+  eventVersion: number;
+  source: string | null;
+  aggregateType: string | null;
+  aggregateId: string | null;
+  payload: unknown;
+  idempotencyKey: string | null;
+  status: EventStatus;
+  occurredAt: string;
+  receivedAt: string;
+  processedAt: string | null;
+  attemptCount: number;
+  lastError: string | null;
+  nextAttemptAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const EVENT_DELIVERY_STATUSES = ["matched", "triggered", "ignored", "failed"] as const;
+export type EventDeliveryStatus = (typeof EVENT_DELIVERY_STATUSES)[number];
+
+export interface AgentEventDelivery {
+  id: number;
+  eventId: number;
+  ruleId: number;
+  jobId: number;
+  jobRunId: number | null;
+  status: EventDeliveryStatus;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  processedAt: string | null;
+}
+
+export interface AgentEventDetail {
+  event: AgentEvent;
+  deliveries: AgentEventDelivery[];
+}
+
+export interface AgentEventRule {
+  id: number;
+  name: string;
+  description: string | null;
+  eventType: string;
+  eventVersion: number;
+  jobId: number;
+  filters: EventFilters;
+  enabled: boolean;
+  createdBy: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentJobRun {
+  id: number;
+  jobId: number;
+  triggerType: JobTriggerType;
+  triggerPayload: unknown;
+  status: JobRunStatus;
+  startedAt: string | null;
+  finishedAt: string | null;
+  actionPlanId: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  idempotencyKey: string | null;
+  createdAt: string;
 }
 
 export interface InterpreterStats {

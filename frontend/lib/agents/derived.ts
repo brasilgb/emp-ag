@@ -1,11 +1,21 @@
 import type {
+  ActionDecision,
+  ActionPlanItemStatus,
+  ActionPlanStatus,
+  ActionRisk,
   ApprovalStatus,
   AutonomyLevel,
   ChatResponse,
+  EventDeliveryStatus,
+  EventStatus,
   ExecutionStatus,
+  FilterOperator,
   HumanVerdict,
   InterpretationCategory,
   InterpretationErrorType,
+  JobRunStatus,
+  JobStatus,
+  JobTriggerType,
 } from "@/types/agents";
 
 /**
@@ -191,4 +201,138 @@ export const INTERPRETATION_ERROR_TYPE_LABELS: Record<InterpretationErrorType, s
 
 export function interpretationErrorTypeLabel(type: InterpretationErrorType): string {
   return INTERPRETATION_ERROR_TYPE_LABELS[type] ?? type;
+}
+
+// Agentes v1.2 — Action Planning + Approval Workflow (correio.md).
+export const ACTION_PLAN_STATUS_LABELS: Record<ActionPlanStatus, string> = {
+  draft: "Rascunho",
+  evaluating: "Avaliando",
+  waiting_approval: "Aguardando aprovação",
+  executing: "Executando",
+  completed: "Concluído",
+  partial: "Parcialmente concluído",
+  failed: "Falhou",
+  cancelled: "Cancelado",
+};
+
+export function actionPlanStatusLabel(status: ActionPlanStatus): string {
+  return ACTION_PLAN_STATUS_LABELS[status] ?? status;
+}
+
+export const ACTION_PLAN_ITEM_STATUS_LABELS: Record<ActionPlanItemStatus, string> = {
+  pending: "Pendente",
+  waiting_approval: "Aguardando aprovação",
+  approved: "Aprovado",
+  executing: "Executando",
+  completed: "Concluído",
+  failed: "Falhou",
+  blocked: "Bloqueado",
+  rejected: "Rejeitado",
+  skipped: "Shadow (não executado)",
+};
+
+export function actionPlanItemStatusLabel(status: ActionPlanItemStatus): string {
+  return ACTION_PLAN_ITEM_STATUS_LABELS[status] ?? status;
+}
+
+export const ACTION_RISK_LABELS: Record<ActionRisk, string> = {
+  read: "Leitura",
+  low: "Baixo",
+  medium: "Médio",
+  high: "Alto",
+};
+
+export function actionRiskLabel(risk: ActionRisk): string {
+  return ACTION_RISK_LABELS[risk] ?? risk;
+}
+
+export const ACTION_DECISION_LABELS: Record<ActionDecision, string> = {
+  execute: "Executa automaticamente",
+  approval_required: "Requer aprovação",
+  blocked: "Bloqueada",
+  shadow: "Shadow (só sugestão)",
+};
+
+export function actionDecisionLabel(decision: ActionDecision): string {
+  return ACTION_DECISION_LABELS[decision] ?? decision;
+}
+
+// Agentes v1.3 — Jobs, Runs, Delegation & Controlled Autonomy (correio.md).
+export const JOB_STATUS_LABELS: Record<JobStatus, string> = {
+  draft: "Rascunho",
+  active: "Ativo",
+  paused: "Pausado",
+  completed: "Concluído",
+  failed: "Falhou",
+  cancelled: "Cancelado",
+};
+
+export function jobStatusLabel(status: JobStatus): string {
+  return JOB_STATUS_LABELS[status] ?? status;
+}
+
+export const JOB_TRIGGER_TYPE_LABELS: Record<JobTriggerType, string> = {
+  manual: "Manual",
+  schedule: "Agendado",
+  internal_event: "Evento interno",
+};
+
+export function jobTriggerTypeLabel(triggerType: JobTriggerType): string {
+  return JOB_TRIGGER_TYPE_LABELS[triggerType] ?? triggerType;
+}
+
+export const JOB_RUN_STATUS_LABELS: Record<JobRunStatus, string> = {
+  queued: "Na fila",
+  planning: "Planejando",
+  running: "Executando",
+  waiting_approval: "Aguardando aprovação",
+  completed: "Concluído",
+  partial: "Parcialmente concluído",
+  failed: "Falhou",
+  cancelled: "Cancelado",
+  blocked: "Bloqueado",
+};
+
+export function jobRunStatusLabel(status: JobRunStatus): string {
+  return JOB_RUN_STATUS_LABELS[status] ?? status;
+}
+
+// Agentes v1.4 — Event Engine & Autonomous Operations (correio.md).
+export const EVENT_STATUS_LABELS: Record<EventStatus, string> = {
+  pending: "Pendente",
+  processing: "Processando",
+  processed: "Processado",
+  failed: "Falhou",
+  ignored: "Ignorado (nenhuma regra casou)",
+};
+
+export function eventStatusLabel(status: EventStatus): string {
+  return EVENT_STATUS_LABELS[status] ?? status;
+}
+
+export const EVENT_DELIVERY_STATUS_LABELS: Record<EventDeliveryStatus, string> = {
+  matched: "Casou",
+  triggered: "Disparou Run",
+  ignored: "Ignorada",
+  failed: "Falhou",
+};
+
+export function eventDeliveryStatusLabel(status: EventDeliveryStatus): string {
+  return EVENT_DELIVERY_STATUS_LABELS[status] ?? status;
+}
+
+export const FILTER_OPERATOR_LABELS: Record<FilterOperator, string> = {
+  eq: "é igual a",
+  neq: "é diferente de",
+  in: "está em",
+  not_in: "não está em",
+  gt: "é maior que",
+  gte: "é maior ou igual a",
+  lt: "é menor que",
+  lte: "é menor ou igual a",
+  exists: "existe",
+};
+
+export function filterOperatorLabel(operator: FilterOperator): string {
+  return FILTER_OPERATOR_LABELS[operator] ?? operator;
 }

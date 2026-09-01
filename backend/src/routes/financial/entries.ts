@@ -6,6 +6,7 @@ import { clients, financialCategories, financialEntries, projects } from '../../
 import { authenticate } from '../../middleware/authenticate.js';
 import { requirePermission } from '../../middleware/require-permission.js';
 import { audit } from '../../services/audit.js';
+import { publishAgentEvent } from '../../agents/events/publisher.js';
 import {
   createEntrySchema,
   entryIdParamSchema,
@@ -218,6 +219,18 @@ export async function entryRoutes(app: FastifyInstance) {
         ipAddress: request.ip,
         userAgent: request.headers['user-agent'],
       });
+
+      // Agentes v1.4 (correio.md seção 3) — só receita (type='income') é
+      // "a receber"; despesa não entra no catálogo de eventos desta versão.
+      if (entry.type === 'income') {
+        await publishAgentEvent({
+          type: 'finance.receivable.created',
+          aggregateType: 'financial.entry',
+          aggregateId: entry.id,
+          source: 'financial.entries',
+          payload: { entryId: entry.id, clientId: entry.clientId, amount: entry.amount, dueDate: entry.dueDate, status: entry.status },
+        });
+      }
 
       return reply.code(201).send({
         data: withComputedBalance({ ...entry, paidAmount: '0' }),

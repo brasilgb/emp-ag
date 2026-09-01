@@ -13,6 +13,7 @@ import {
 import { authenticate } from '../../middleware/authenticate.js';
 import { requirePermission } from '../../middleware/require-permission.js';
 import { audit } from '../../services/audit.js';
+import { publishAgentEvent } from '../../agents/events/publisher.js';
 import {
   createActivitySchema,
   createLeadSchema,
@@ -237,6 +238,22 @@ export async function leadRoutes(app: FastifyInstance) {
         userAgent: request.headers['user-agent'],
       });
 
+      await publishAgentEvent({
+        type: 'crm.lead.created',
+        aggregateType: 'crm.lead',
+        aggregateId: lead.id,
+        source: 'crm.leads',
+        payload: {
+          leadId: lead.id,
+          name: lead.name,
+          source: lead.source,
+          status: lead.status,
+          probability: lead.probability,
+          pipelineStageId: lead.pipelineStageId,
+          ownerUserId: lead.ownerUserId,
+        },
+      });
+
       return reply.code(201).send({ data: lead });
     },
   );
@@ -382,6 +399,28 @@ export async function leadRoutes(app: FastifyInstance) {
               toStageId: targetStage.id,
             },
           });
+
+          // Agentes v1.4 (correio.md seção 9) — evento na MESMA transação
+          // da mudança de negócio: este handler já é transacional, então
+          // o insert do evento é atômico com a mudança de estágio.
+          await publishAgentEvent(
+            {
+              type: 'crm.lead.stage_changed',
+              aggregateType: 'crm.lead',
+              aggregateId: updatedLead.id,
+              source: 'crm.leads',
+              payload: {
+                leadId: updatedLead.id,
+                previousStageId: existing.pipelineStageId,
+                newStageId: targetStage.id,
+                previousStageSlug: previousStage?.slug ?? null,
+                newStageSlug: targetStage.slug,
+                isWon: targetStage.isWon,
+                isLost: targetStage.isLost,
+              },
+            },
+            tx,
+          );
         }
 
         return updatedLead;
@@ -666,6 +705,14 @@ export async function leadRoutes(app: FastifyInstance) {
         newData: activity,
         ipAddress: request.ip,
         userAgent: request.headers['user-agent'],
+      });
+
+      await publishAgentEvent({
+        type: 'crm.activity.created',
+        aggregateType: 'crm.activity',
+        aggregateId: activity.id,
+        source: 'crm.leads',
+        payload: { activityId: activity.id, leadId: activity.leadId, clientId: null, type: activity.type },
       });
 
       return reply.code(201).send({ data: activity });

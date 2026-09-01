@@ -10,6 +10,11 @@ import { approvalsRoutes } from './approvals.js';
 import { conversationsRoutes } from './conversations.js';
 import { chatRoutes } from './chat.js';
 import { interpreterRoutes } from './interpreter.js';
+import { actionPlansRoutes } from './action-plans.js';
+import { jobsRoutes } from './jobs.js';
+import { jobRunsRoutes } from './job-runs.js';
+import { eventsRoutes } from './events.js';
+import { eventRulesRoutes } from './event-rules.js';
 
 export async function agentsModuleRoutes(app: FastifyInstance) {
   registerAllTools();
@@ -22,4 +27,9 @@ export async function agentsModuleRoutes(app: FastifyInstance) {
   await app.register(conversationsRoutes);
   await app.register(chatRoutes);
   await app.register(interpreterRoutes);
+  await app.register(actionPlansRoutes);
+  await app.register(jobsRoutes);
+  await app.register(jobRunsRoutes);
+  await app.register(eventsRoutes);
+  await app.register(eventRulesRoutes);
 }
