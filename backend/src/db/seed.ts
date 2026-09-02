@@ -356,6 +356,18 @@ const defaultPermissions = [
     description:
       'Permite consultar e alterar o global autonomy switch (GET/PATCH /agents/autonomy) — kill switch geral de execuções automáticas.',
   },
+  {
+    name: 'Visualizar configurações operacionais de agentes',
+    slug: 'agents.settings.read',
+    description:
+      'Permite consultar configuração operacional efetiva de agentes (GET /agents/settings, GET /agents/jobs/:id/settings).',
+  },
+  {
+    name: 'Gerenciar configurações operacionais de agentes',
+    slug: 'agents.settings.manage',
+    description:
+      'Permite criar/alterar/remover overrides de configuração operacional (circuit breaker, autonomy depth, chain budget, rate limit) — global ou por Job (PATCH/DELETE /agents/settings/:key e /agents/jobs/:id/settings/:key).',
+  },
 
   {
     name: 'Visualizar usuários',

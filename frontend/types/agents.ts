@@ -602,3 +602,29 @@ export interface AutonomyBlock {
   currentValue: number | null;
   createdAt: string;
 }
+
+// Agentes v1.7 — Agent Management & Operational Configuration (correio.md).
+export const SETTING_KEYS = [
+  "circuit.failureThreshold",
+  "circuit.cooldownSeconds",
+  "autonomy.maxDepth",
+  "chain.maxRunsPerAutonomyChain",
+  "rate.autonomyLimit",
+  "rate.autonomyWindowSeconds",
+] as const;
+export type SettingKey = (typeof SETTING_KEYS)[number];
+
+export type SettingSource = "job" | "global" | "default";
+
+export interface ResolvedSetting {
+  key: SettingKey;
+  configuredValue: number | null;
+  effectiveValue: number;
+  source: SettingSource;
+  defaultValue: number;
+  type: "number" | "boolean";
+  min: number;
+  max: number;
+  description: string;
+  scopes: readonly ("global" | "job")[];
+}

@@ -19,6 +19,7 @@ import { operationsRoutes } from './operations.js';
 import { incidentsRoutes } from './incidents.js';
 import { auditRoutes } from './audit.js';
 import { autonomyRoutes } from './autonomy.js';
+import { agentSettingsRoutes } from './settings.js';
 
 export async function agentsModuleRoutes(app: FastifyInstance) {
   registerAllTools();
@@ -40,4 +41,5 @@ export async function agentsModuleRoutes(app: FastifyInstance) {
   await app.register(incidentsRoutes);
   await app.register(auditRoutes);
   await app.register(autonomyRoutes);
+  await app.register(agentSettingsRoutes);
 }

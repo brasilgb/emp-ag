@@ -33,7 +33,9 @@ import type {
   JobStatus,
   JobTriggerType,
   OperationsSummary,
+  ResolvedSetting,
   ScheduleConfig,
+  SettingKey,
 } from "@/types/agents";
 
 import { apiFetch, toQueryString } from "./http";
@@ -354,4 +356,30 @@ export function getGlobalAutonomy(): Promise<{ data: GlobalAutonomyState }> {
 
 export function setGlobalAutonomy(enabled: boolean): Promise<{ data: GlobalAutonomyState }> {
   return apiFetch("/api/agents/autonomy", { method: "PATCH", body: JSON.stringify({ enabled }) });
+}
+
+// Agentes v1.7 — Agent Management & Operational Configuration (correio.md).
+
+export function listSettings(): Promise<{ data: ResolvedSetting[] }> {
+  return apiFetch("/api/agents/settings");
+}
+
+export function setSetting(key: SettingKey, value: number): Promise<{ data: ResolvedSetting }> {
+  return apiFetch(`/api/agents/settings/${key}`, { method: "PATCH", body: JSON.stringify({ value }) });
+}
+
+export function deleteSetting(key: SettingKey): Promise<{ data: ResolvedSetting }> {
+  return apiFetch(`/api/agents/settings/${key}`, { method: "DELETE" });
+}
+
+export function listJobSettings(jobId: number): Promise<{ data: ResolvedSetting[] }> {
+  return apiFetch(`/api/agents/jobs/${jobId}/settings`);
+}
+
+export function setJobSetting(jobId: number, key: SettingKey, value: number): Promise<{ data: ResolvedSetting }> {
+  return apiFetch(`/api/agents/jobs/${jobId}/settings/${key}`, { method: "PATCH", body: JSON.stringify({ value }) });
+}
+
+export function deleteJobSetting(jobId: number, key: SettingKey): Promise<{ data: ResolvedSetting }> {
+  return apiFetch(`/api/agents/jobs/${jobId}/settings/${key}`, { method: "DELETE" });
 }

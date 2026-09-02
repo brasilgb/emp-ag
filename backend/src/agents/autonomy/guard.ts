@@ -1,9 +1,9 @@
 import { and, count, eq, gte, ne } from 'drizzle-orm';
 
-import { env } from '../../config/env.js';
 import { agentEvents, agentJobRuns, agentJobs } from '../../db/schema/index.js';
 import type { Tx } from '../../routes/agents/helpers.js';
 import type { RunTrigger } from '../jobs/job-runner.js';
+import { effectiveValue, type SettingsSnapshot } from '../settings/resolver.js';
 import { AUTONOMY_BLOCK_REASONS, type AutonomyBlockReason } from './reasons.js';
 
 export type ResolvedCausation = {
@@ -67,14 +67,22 @@ export function resolveCausation(trigger: RunTrigger, causingEvent: typeof agent
  * upstream por agents/events/event-processor.ts, que só busca regras
  * `enabled=true` — nunca duplicado aqui) → circuit breaker → depth →
  * cycle → chain budget → rate limit.
+ *
+ * Agentes v1.7 — `settings` é um `SettingsSnapshot` já resolvido pelo
+ * chamador (job-runner.ts, uma vez por Run, mesmo lock da linha do Job —
+ * correio.md "Importante: consistência temporal") via
+ * agents/settings/resolver.ts. O guard nunca lê `config/env.ts` nem a
+ * tabela de settings diretamente — só consome o snapshot já resolvido,
+ * único ponto de leitura centralizado.
  */
 export async function evaluateAutonomousExecution(params: {
   tx: Tx;
   job: typeof agentJobs.$inferSelect;
   trigger: RunTrigger;
   causingEvent: typeof agentEvents.$inferSelect | null;
+  settings: SettingsSnapshot;
 }): Promise<GuardResult> {
-  const { tx, job, trigger, causingEvent } = params;
+  const { tx, job, trigger, causingEvent, settings } = params;
   const causation = resolveCausation(trigger, causingEvent);
 
   // 1) Job autonomy switch (seção 10).
@@ -92,7 +100,7 @@ export async function evaluateAutonomousExecution(params: {
   let circuitTrial = false;
 
   if (job.circuitState === 'open') {
-    const cooldownMs = env.AGENT_AUTONOMY_CIRCUIT_COOLDOWN_SECONDS * 1000;
+    const cooldownMs = effectiveValue(settings, 'circuit.cooldownSeconds') * 1000;
     const openedAt = job.circuitOpenedAt?.getTime() ?? 0;
 
     if (Date.now() - openedAt < cooldownMs) {
@@ -111,12 +119,13 @@ export async function evaluateAutonomousExecution(params: {
   }
 
   // 3) Depth (seção 5).
-  if (causation.autonomyDepth > env.AGENT_MAX_AUTONOMY_DEPTH) {
+  const maxDepth = effectiveValue(settings, 'autonomy.maxDepth');
+  if (causation.autonomyDepth > maxDepth) {
     return {
       allowed: false,
       reason: 'autonomy_depth_exceeded',
       causation,
-      limit: env.AGENT_MAX_AUTONOMY_DEPTH,
+      limit: maxDepth,
       current: causation.autonomyDepth,
     };
   }
@@ -149,22 +158,25 @@ export async function evaluateAutonomousExecution(params: {
     // (nunca fica NULL depois de criado — NULL só existe entre o insert e
     // esse update, dentro da mesma transação), então esta contagem já
     // inclui a raiz, sem necessidade de +1.
-    if (total >= env.AGENT_MAX_RUNS_PER_AUTONOMY_CHAIN) {
+    const maxRunsPerChain = effectiveValue(settings, 'chain.maxRunsPerAutonomyChain');
+    if (total >= maxRunsPerChain) {
       return {
         allowed: false,
         reason: 'autonomy_chain_budget_exceeded',
         causation,
-        limit: env.AGENT_MAX_RUNS_PER_AUTONOMY_CHAIN,
+        limit: maxRunsPerChain,
         current: total,
       };
     }
   }
 
-  // 6) Rate limit por Job (seção 8) — precedência job override → global →
-  // default (já resolvida pelos defaults do env). Coberto pelo lock da
-  // linha do Job (já travada por quem chamou), sem lock adicional.
-  const rateLimit = job.autonomyRateLimitOverride ?? env.AGENT_JOB_AUTONOMY_RATE_LIMIT;
-  const rateWindowSeconds = job.autonomyRateWindowOverrideSeconds ?? env.AGENT_JOB_AUTONOMY_RATE_WINDOW_SECONDS;
+  // 6) Rate limit por Job (seção 8) — precedência job override (tabela
+  // agent_operational_settings, com ponte de compatibilidade para a
+  // coluna legada) → global → default, já resolvida por
+  // agents/settings/resolver.ts. Coberto pelo lock da linha do Job (já
+  // travada por quem chamou), sem lock adicional.
+  const rateLimit = effectiveValue(settings, 'rate.autonomyLimit');
+  const rateWindowSeconds = effectiveValue(settings, 'rate.autonomyWindowSeconds');
   const windowStart = new Date(Date.now() - rateWindowSeconds * 1000);
 
   const [{ total: autonomousRunsInWindow }] = await tx

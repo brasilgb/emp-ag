@@ -98,5 +98,7 @@ export const queryKeys = {
     incidents: (params?: unknown) => ["agents", "incidents", params ?? {}] as const,
     auditLogs: (params?: unknown) => ["agents", "audit-logs", params ?? {}] as const,
     globalAutonomy: ["agents", "autonomy"] as const,
+    settings: ["agents", "settings"] as const,
+    jobSettings: (jobId: number) => ["agents", "jobs", jobId, "settings"] as const,
   },
 };

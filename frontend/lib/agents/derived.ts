@@ -19,6 +19,8 @@ import type {
   JobRunStatus,
   JobStatus,
   JobTriggerType,
+  SettingKey,
+  SettingSource,
 } from "@/types/agents";
 
 /**
@@ -376,4 +378,50 @@ export const INCIDENT_TYPE_LABELS: Record<IncidentType, string> = {
 
 export function incidentTypeLabel(type: IncidentType): string {
   return INCIDENT_TYPE_LABELS[type] ?? type;
+}
+
+// Agentes v1.7 — Agent Management & Operational Configuration (correio.md).
+export const SETTING_LABELS: Record<SettingKey, string> = {
+  "circuit.failureThreshold": "Circuit breaker — failure threshold",
+  "circuit.cooldownSeconds": "Circuit breaker — cooldown (segundos)",
+  "autonomy.maxDepth": "Autonomia — profundidade máxima",
+  "chain.maxRunsPerAutonomyChain": "Cadeia autônoma — orçamento de Runs",
+  "rate.autonomyLimit": "Rate limit — execuções autônomas",
+  "rate.autonomyWindowSeconds": "Rate limit — janela (segundos)",
+};
+
+export function settingLabel(key: SettingKey): string {
+  return SETTING_LABELS[key] ?? key;
+}
+
+export const SETTING_SOURCE_LABELS: Record<SettingSource, string> = {
+  job: "Override deste Job",
+  global: "Global",
+  default: "Default",
+};
+
+export function settingSourceLabel(source: SettingSource): string {
+  return SETTING_SOURCE_LABELS[source] ?? source;
+}
+
+// Agrupamento por domínio (correio.md v1.7 "Frontend": "agrupar
+// configurações por domínio") — usado tanto na tela /agents/settings
+// quanto na seção de overrides do detalhe do Job.
+export const SETTING_GROUPS: { title: string; keys: SettingKey[] }[] = [
+  { title: "Circuit Breaker", keys: ["circuit.failureThreshold", "circuit.cooldownSeconds"] },
+  { title: "Autonomia", keys: ["autonomy.maxDepth"] },
+  { title: "Jobs / Runs", keys: ["chain.maxRunsPerAutonomyChain", "rate.autonomyLimit", "rate.autonomyWindowSeconds"] },
+];
+
+// Mudanças nestas chaves exigem confirmação de UI (correio.md v1.7
+// "Confirmações para mudanças críticas": "Configurações que alterem
+// autonomia ou circuit breaker devem exigir confirmação").
+export const CRITICAL_SETTING_KEYS: readonly SettingKey[] = [
+  "circuit.failureThreshold",
+  "circuit.cooldownSeconds",
+  "autonomy.maxDepth",
+];
+
+export function isCriticalSetting(key: SettingKey): boolean {
+  return (CRITICAL_SETTING_KEYS as readonly string[]).includes(key);
 }

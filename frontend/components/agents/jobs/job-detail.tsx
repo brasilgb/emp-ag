@@ -22,6 +22,7 @@ import { formatDateTime } from "@/lib/agents/format";
 import { jobTriggerTypeLabel } from "@/lib/agents/derived";
 import { toErrorMessage } from "@/services/http";
 
+import { JobSettingsSection } from "../settings/job-settings-section";
 import { CircuitStateBadge, JobRunStatusBadge, JobStatusBadge } from "../status-badge";
 
 /**
@@ -225,6 +226,8 @@ export function JobDetail({ jobId }: { jobId: number }) {
           )}
         </CardContent>
       </Card>
+
+      <JobSettingsSection jobId={jobId} />
 
       <Link href="/agents/jobs" className="text-sm text-primary underline underline-offset-2">
         ← Voltar para todos os Jobs

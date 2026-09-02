@@ -2,6 +2,7 @@ import { and, count, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-
 
 import { db } from '../../db/index.js';
 import { agentAutonomyBlocks, agentEventDeliveries, agentJobRuns } from '../../db/schema/index.js';
+import { resolveGlobalSetting } from '../settings/resolver.js';
 
 import { INCIDENT_TYPES, type IncidentType } from './schemas.js';
 
@@ -142,6 +143,21 @@ async function fetchRepeatedFailureIncidents(
   const fromFilter = filters.from ? sql`and ${agentJobRuns.createdAt} >= ${filters.from}` : sql``;
   const toFilter = filters.to ? sql`and ${agentJobRuns.createdAt} <= ${filters.to}` : sql``;
 
+  // Agentes v1.7 — a janela usada para "falhas repetidas" agora é o
+  // circuit.failureThreshold efetivo (resolver central), eliminando a
+  // divergência com o circuit breaker real apontada no relatório da v1.6
+  // (a janela era um "3" fixo, sem relação com
+  // AGENT_AUTONOMY_CIRCUIT_FAILURE_THRESHOLD). Limitação documentada: só
+  // o valor GLOBAL é usado aqui — um Job com override próprio de
+  // circuit.failureThreshold não muda a janela desta query específica
+  // (uma janela por-Job variável exigiria uma window function com N
+  // dinâmico por partição, sem suporte direto em SQL padrão sem lateral
+  // join por Job; não implementado nesta versão por risco/complexidade
+  // desproporcional a uma tela de observabilidade — ver riscos na
+  // entrega).
+  const globalThreshold = await resolveGlobalSetting('circuit.failureThreshold');
+  const window = globalThreshold.effectiveValue;
+
   const ranked = db.$with('ranked_runs').as(
     db
       .select({
@@ -165,9 +181,9 @@ async function fetchRepeatedFailureIncidents(
       failedRunIds: sql<number[]>`array_agg(${ranked.id} order by ${ranked.createdAt} desc)`,
     })
     .from(ranked)
-    .where(sql`${ranked.rn} <= 3`)
+    .where(sql`${ranked.rn} <= ${window}`)
     .groupBy(ranked.jobId)
-    .having(sql`count(*) filter (where ${ranked.status} = 'failed') = 3`);
+    .having(sql`count(*) filter (where ${ranked.status} = 'failed') = ${window}`);
 
   const failingJobs = await failingJobsQuery;
   const total = failingJobs.length;
@@ -185,8 +201,8 @@ async function fetchRepeatedFailureIncidents(
       ruleId: null,
       eventId: null,
       rootExecutionId: null,
-      summary: `Job com as 3 últimas execuções falhando`,
-      details: { lastFailedRunIds: row.failedRunIds },
+      summary: `Job com as últimas ${window} execuções falhando (mesmo threshold do circuit breaker global)`,
+      details: { lastFailedRunIds: row.failedRunIds, threshold: window },
     })),
   };
 }

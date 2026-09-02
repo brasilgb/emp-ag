@@ -42,3 +42,4 @@ export * from './agent-event-rules.js';
 export * from './agent-event-deliveries.js';
 export * from './agent-interpretations.js';
 export * from './agent-autonomy-blocks.js';
+export * from './agent-operational-settings.js';

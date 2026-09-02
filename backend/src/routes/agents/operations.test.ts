@@ -23,6 +23,7 @@ import {
 import { database } from '../../services/database.js';
 import { redis } from '../../services/redis.js';
 import { isAutonomousExecutionEnabled, setAutonomousExecutionEnabled } from '../../agents/jobs/global-switch.js';
+import { resolveGlobalSetting } from '../../agents/settings/resolver.js';
 
 /*
  * Agentes v1.6 (correio.md seções 3/6/7/9) — Operations Dashboard,
@@ -178,6 +179,7 @@ describe('Agentes v1.6 — Operations, Incidents, Audit, Autonomy switch', () =>
 
   describe('GET /incidents', () => {
     let jobForIncidents: Awaited<ReturnType<typeof createJob>>;
+    let repeatedFailureWindow: number;
 
     before(async () => {
       jobForIncidents = await createJob();
@@ -222,8 +224,17 @@ describe('Agentes v1.6 — Operations, Incidents, Audit, Autonomy switch', () =>
         .returning();
       createdDeliveryIds.push(delivery.id);
 
-      // job_repeated_failure: 3 Runs mais recentes do Job, todos failed.
-      for (let i = 0; i < 3; i += 1) {
+      // job_repeated_failure: os N Runs mais recentes do Job, todos
+      // failed, onde N é o circuit.failureThreshold GLOBAL efetivo
+      // (agents/settings/resolver.ts) — não mais um "3" fixo desde a
+      // v1.7 (correio.md v1.7: "eliminar a divergência e fazer o
+      // incidente respeitar a configuração efetiva do threshold do
+      // circuit breaker"). Resolvido aqui em vez de hardcoded para o
+      // teste nunca dessincronizar do comportamento real de novo.
+      const threshold = await resolveGlobalSetting('circuit.failureThreshold');
+      repeatedFailureWindow = threshold.effectiveValue;
+
+      for (let i = 0; i < repeatedFailureWindow; i += 1) {
         await db.insert(agentJobRuns).values({
           jobId: jobForIncidents.id,
           triggerType: 'manual',
@@ -259,7 +270,7 @@ describe('Agentes v1.6 — Operations, Incidents, Audit, Autonomy switch', () =>
       assert.ok(data.every((incident: { type: string }) => incident.type === 'autonomous_cycle_detected'));
     });
 
-    test('filtro type=job_repeated_failure detecta as 3 últimas falhas consecutivas', async () => {
+    test('filtro type=job_repeated_failure detecta as últimas N falhas consecutivas (N = circuit.failureThreshold efetivo)', async () => {
       const response = await app.inject({
         method: 'GET',
         url: `/agents/incidents?type=job_repeated_failure&jobId=${jobForIncidents.id}`,

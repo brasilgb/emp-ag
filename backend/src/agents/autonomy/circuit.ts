@@ -2,8 +2,8 @@ import { eq } from 'drizzle-orm';
 
 import { db } from '../../db/index.js';
 import { agentJobs } from '../../db/schema/index.js';
-import { env } from '../../config/env.js';
 import { audit } from '../../services/audit.js';
+import { effectiveValue, resolveSettingsSnapshot } from '../settings/resolver.js';
 
 export type AutonomousRunOutcome = 'completed' | 'failed';
 
@@ -93,7 +93,28 @@ export async function recordAutonomousOutcome(jobId: number, outcome: Autonomous
 
     const nextFailureCount = job.circuitFailureCount + 1;
 
-    if (nextFailureCount >= env.AGENT_AUTONOMY_CIRCUIT_FAILURE_THRESHOLD) {
+    // Agentes v1.7 — resolvido no momento da finalização (não reaproveita
+    // o snapshot do início do Run, que já não é o único chamador desta
+    // função — syncJobRunStatus cobre também o fim de um fluxo de
+    // aprovação assíncrona, potencialmente muito depois do início do
+    // Run). Decisão documentada: usar sempre o valor mais atual na hora
+    // de decidir se o circuito abre é mais correto aqui do que carregar
+    // um snapshot potencialmente antigo por todo o ciclo de vida
+    // assíncrono do Run — o requisito de "snapshot coerente" do
+    // correio.md é sobre uma única avaliação (o guard, que decide
+    // permitir/bloquear), não sobre o ciclo de vida inteiro de um Run que
+    // pode esperar aprovação humana.
+    const settings = await resolveSettingsSnapshot({
+      jobId: job.id,
+      legacyJobOverrides: {
+        autonomyRateLimitOverride: job.autonomyRateLimitOverride,
+        autonomyRateWindowOverrideSeconds: job.autonomyRateWindowOverrideSeconds,
+      },
+      tx,
+    });
+    const threshold = effectiveValue(settings, 'circuit.failureThreshold');
+
+    if (nextFailureCount >= threshold) {
       await tx
         .update(agentJobs)
         .set({ circuitState: 'open', circuitFailureCount: nextFailureCount, circuitOpenedAt: new Date() })
@@ -106,7 +127,7 @@ export async function recordAutonomousOutcome(jobId: number, outcome: Autonomous
         action: 'agent_autonomy.circuit_opened',
         entityType: 'agent_job',
         entityId: String(jobId),
-        metadata: { reason: 'failure_threshold_reached', failureCount: nextFailureCount, threshold: env.AGENT_AUTONOMY_CIRCUIT_FAILURE_THRESHOLD },
+        metadata: { reason: 'failure_threshold_reached', failureCount: nextFailureCount, threshold },
       });
 
       return;

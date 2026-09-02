@@ -7,6 +7,7 @@ import {
   autonomyLevelLabel,
   executionStatusLabel,
   formatChatResponse,
+  isCriticalSetting,
 } from "./derived";
 
 const NOW = new Date("2026-08-30T12:00:00.000Z");
@@ -79,5 +80,20 @@ describe("formatChatResponse", () => {
 
     assert.equal(formatted.transparency, null);
     assert.match(formatted.text, /Não consegui identificar/);
+  });
+});
+
+// Agentes v1.7 — Agent Management & Operational Configuration.
+describe("isCriticalSetting", () => {
+  test("circuit breaker e autonomy.maxDepth exigem confirmação de UI", () => {
+    assert.equal(isCriticalSetting("circuit.failureThreshold"), true);
+    assert.equal(isCriticalSetting("circuit.cooldownSeconds"), true);
+    assert.equal(isCriticalSetting("autonomy.maxDepth"), true);
+  });
+
+  test("chain/rate limit não são tratados como críticos", () => {
+    assert.equal(isCriticalSetting("chain.maxRunsPerAutonomyChain"), false);
+    assert.equal(isCriticalSetting("rate.autonomyLimit"), false);
+    assert.equal(isCriticalSetting("rate.autonomyWindowSeconds"), false);
   });
 });

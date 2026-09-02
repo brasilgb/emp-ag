@@ -16,6 +16,7 @@ import { recordAutonomyBlock } from '../autonomy/dead-letter.js';
 import { evaluateAutonomousExecution, resolveCausation, type ResolvedCausation } from '../autonomy/guard.js';
 import { runWithLineage } from '../autonomy/lineage-context.js';
 import { publishAgentEvent } from '../events/publisher.js';
+import { resolveSettingsSnapshot } from '../settings/resolver.js';
 import { executeActionPlan } from '../executor/action-plan-executor.js';
 import { planEvaluateAndPersistActionPlan } from '../orchestration/create-action-plan.js';
 import type { AgentErrorCode } from '../errors.js';
@@ -172,7 +173,21 @@ export async function runAgentJob(
     let causation: ResolvedCausation = preResolvedCausation;
 
     if (trigger.type !== 'manual') {
-      const guardResult = await evaluateAutonomousExecution({ tx, job: lockedJob, trigger, causingEvent });
+      // Agentes v1.7 — resolve o snapshot de configuração operacional uma
+      // única vez aqui (mesma transação, mesmo lock da linha do Job já
+      // obtido acima) e passa para o guard; nunca reconsultado durante o
+      // resto da avaliação/execução deste Run (correio.md "consistência
+      // temporal").
+      const settings = await resolveSettingsSnapshot({
+        jobId: lockedJob.id,
+        legacyJobOverrides: {
+          autonomyRateLimitOverride: lockedJob.autonomyRateLimitOverride,
+          autonomyRateWindowOverrideSeconds: lockedJob.autonomyRateWindowOverrideSeconds,
+        },
+        tx,
+      });
+
+      const guardResult = await evaluateAutonomousExecution({ tx, job: lockedJob, trigger, causingEvent, settings });
 
       if (!guardResult.allowed) {
         return {
