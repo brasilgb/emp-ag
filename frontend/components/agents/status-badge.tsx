@@ -6,12 +6,15 @@ import {
   actionPlanStatusLabel,
   actionRiskLabel,
   approvalStateLabel,
+  autonomyBlockReasonLabel,
   autonomyLevelBadgeVariant,
   autonomyLevelLabel,
+  circuitStateLabel,
   eventDeliveryStatusLabel,
   eventStatusLabel,
   executionStatusLabel,
   humanVerdictLabel,
+  incidentTypeLabel,
   interpretationCategoryLabel,
   interpretationErrorTypeLabel,
   jobRunStatusLabel,
@@ -23,11 +26,14 @@ import type {
   ActionPlanItemStatus,
   ActionPlanStatus,
   ActionRisk,
+  AutonomyBlockReason,
   AutonomyLevel,
+  CircuitState,
   EventDeliveryStatus,
   EventStatus,
   ExecutionStatus,
   HumanVerdict,
+  IncidentType,
   InterpretationCategory,
   InterpretationError,
   JobRunStatus,
@@ -286,6 +292,37 @@ export function EventDeliveryStatusBadge({ status }: { status: EventDeliveryStat
   return (
     <Badge variant="secondary" className={cn("border-transparent", EVENT_DELIVERY_STATUS_STYLES[status])}>
       {eventDeliveryStatusLabel(status)}
+    </Badge>
+  );
+}
+
+// Agentes v1.6 — Operations Control & Observability (correio.md seção 8).
+const CIRCUIT_STATE_STYLES: Record<CircuitState, string> = {
+  closed: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  open: "bg-red-500/10 text-red-700 dark:text-red-400",
+  half_open: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+};
+
+export function CircuitStateBadge({ state }: { state: CircuitState }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", CIRCUIT_STATE_STYLES[state])}>
+      {circuitStateLabel(state)}
+    </Badge>
+  );
+}
+
+export function AutonomyBlockReasonBadge({ reason }: { reason: AutonomyBlockReason }) {
+  return (
+    <Badge variant="secondary" className="border-transparent bg-red-500/10 text-red-700 dark:text-red-400">
+      {autonomyBlockReasonLabel(reason)}
+    </Badge>
+  );
+}
+
+export function IncidentTypeBadge({ type }: { type: IncidentType }) {
+  return (
+    <Badge variant="secondary" className="border-transparent bg-red-500/10 text-red-700 dark:text-red-400">
+      {incidentTypeLabel(type)}
     </Badge>
   );
 }

@@ -4,13 +4,16 @@ import type {
   ActionPlanStatus,
   ActionRisk,
   ApprovalStatus,
+  AutonomyBlockReason,
   AutonomyLevel,
   ChatResponse,
+  CircuitState,
   EventDeliveryStatus,
   EventStatus,
   ExecutionStatus,
   FilterOperator,
   HumanVerdict,
+  IncidentType,
   InterpretationCategory,
   InterpretationErrorType,
   JobRunStatus,
@@ -335,4 +338,42 @@ export const FILTER_OPERATOR_LABELS: Record<FilterOperator, string> = {
 
 export function filterOperatorLabel(operator: FilterOperator): string {
   return FILTER_OPERATOR_LABELS[operator] ?? operator;
+}
+
+// Agentes v1.6 — Operations Control & Observability (correio.md).
+export const CIRCUIT_STATE_LABELS: Record<CircuitState, string> = {
+  closed: "Fechado",
+  open: "Aberto",
+  half_open: "Meio-aberto",
+};
+
+export function circuitStateLabel(state: CircuitState): string {
+  return CIRCUIT_STATE_LABELS[state] ?? state;
+}
+
+export const AUTONOMY_BLOCK_REASON_LABELS: Record<AutonomyBlockReason, string> = {
+  autonomy_job_disabled: "Autonomia do Job desligada",
+  autonomy_depth_exceeded: "Profundidade máxima excedida",
+  autonomous_cycle_detected: "Ciclo autônomo detectado",
+  autonomy_chain_budget_exceeded: "Orçamento da cadeia excedido",
+  autonomous_rate_limit_exceeded: "Rate limit autônomo excedido",
+  autonomy_circuit_open: "Circuit breaker aberto",
+};
+
+export function autonomyBlockReasonLabel(reason: AutonomyBlockReason): string {
+  return AUTONOMY_BLOCK_REASON_LABELS[reason] ?? reason;
+}
+
+export const INCIDENT_TYPE_LABELS: Record<IncidentType, string> = {
+  autonomy_circuit_open: "Circuit breaker aberto",
+  autonomous_cycle_detected: "Ciclo autônomo detectado",
+  autonomy_depth_exceeded: "Profundidade máxima excedida",
+  autonomy_chain_budget_exceeded: "Orçamento da cadeia excedido",
+  autonomous_rate_limit_exceeded: "Rate limit autônomo excedido",
+  job_repeated_failure: "Job com falhas repetidas",
+  event_delivery_failed: "Delivery de evento falhou",
+};
+
+export function incidentTypeLabel(type: IncidentType): string {
+  return INCIDENT_TYPE_LABELS[type] ?? type;
 }

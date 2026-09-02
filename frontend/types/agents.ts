@@ -325,9 +325,21 @@ export interface AgentJob {
   allowConcurrentRuns: boolean;
   lastRunAt: string | null;
   nextRunAt: string | null;
+  // Agentes v1.5 — Autonomous Safety & Governance. Nunca expostos no
+  // frontend até a v1.6 (correio.md v1.6 seção 8 — Circuit breaker
+  // visibility): o backend já os retornava, só não havia UI para eles.
+  autonomyEnabled: boolean;
+  circuitState: CircuitState;
+  circuitFailureCount: number;
+  circuitOpenedAt: string | null;
+  autonomyRateLimitOverride: number | null;
+  autonomyRateWindowOverrideSeconds: number | null;
   createdAt: string;
   updatedAt: string;
 }
+
+export const CIRCUIT_STATES = ["closed", "open", "half_open"] as const;
+export type CircuitState = (typeof CIRCUIT_STATES)[number];
 
 // Agentes v1.4 — Event Engine & Autonomous Operations (correio.md).
 export const EVENT_STATUSES = ["pending", "processing", "processed", "failed", "ignored"] as const;
@@ -366,6 +378,11 @@ export interface AgentEvent {
   attemptCount: number;
   lastError: string | null;
   nextAttemptAt: string | null;
+  // Agentes v1.5 — lineage de eventos causados por Run (correio.md v1.6
+  // seção 4/14).
+  causedByRunId: number | null;
+  rootExecutionId: number | null;
+  autonomyDepth: number | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -417,6 +434,11 @@ export interface AgentJobRun {
   errorCode: string | null;
   errorMessage: string | null;
   idempotencyKey: string | null;
+  // Agentes v1.5 — Execution lineage (correio.md v1.6 seções 4/5).
+  rootExecutionId: number | null;
+  causationRunId: number | null;
+  causationEventDeliveryId: number | null;
+  autonomyDepth: number;
   createdAt: string;
 }
 
@@ -442,4 +464,141 @@ export interface InterpreterStats {
   humanIncorrect: number;
   humanAccuracy: number | null;
   recentInterpretations: InterpretationEntry[];
+}
+
+// Agentes v1.6 — Operations Control & Observability (correio.md).
+
+export interface OperationsSummary {
+  period: { from: string; to: string };
+  jobs: {
+    total: number;
+    active: number;
+    paused: number;
+    draft: number;
+    completed: number;
+    failed: number;
+    cancelled: number;
+    autonomyDisabled: number;
+    circuitOpen: number;
+    circuitHalfOpen: number;
+  };
+  runs: {
+    queued: number;
+    planning: number;
+    running: number;
+    waitingApproval: number;
+    completed: number;
+    partial: number;
+    failed: number;
+    blocked: number;
+    cancelled: number;
+  };
+  autonomous: {
+    blockedTotal: number;
+    cycleDetected: number;
+    rateLimited: number;
+    depthExceeded: number;
+    chainBudgetExceeded: number;
+    circuitOpenBlocks: number;
+    jobDisabledBlocks: number;
+    reasons: readonly string[];
+  };
+  events: {
+    created: number;
+    processed: number;
+    pending: number;
+    ignored: number;
+    failed: number;
+    deliveriesFailed: number;
+  };
+  approvals: {
+    pending: number;
+    approved: number;
+    rejected: number;
+    expired: number;
+    cancelled: number;
+  };
+}
+
+export const INCIDENT_TYPES = [
+  "autonomy_circuit_open",
+  "autonomous_cycle_detected",
+  "autonomy_depth_exceeded",
+  "autonomy_chain_budget_exceeded",
+  "autonomous_rate_limit_exceeded",
+  "job_repeated_failure",
+  "event_delivery_failed",
+] as const;
+export type IncidentType = (typeof INCIDENT_TYPES)[number];
+
+export interface Incident {
+  id: string;
+  type: IncidentType;
+  occurredAt: string;
+  jobId: number | null;
+  ruleId: number | null;
+  eventId: number | null;
+  rootExecutionId: number | null;
+  summary: string;
+  details: Record<string, unknown>;
+}
+
+export interface AuditLogEntry {
+  id: number;
+  userId: number | null;
+  actorType: "user" | "agent" | "system" | "n8n" | "worker";
+  actorId: string | null;
+  action: string;
+  entityType: string | null;
+  entityId: string | null;
+  oldData: unknown;
+  newData: unknown;
+  metadata: unknown;
+  ipAddress: string | null;
+  userAgent: string | null;
+  createdAt: string;
+}
+
+export interface GlobalAutonomyState {
+  enabled: boolean;
+}
+
+export interface JobRunDetail {
+  run: AgentJobRun;
+  actionPlan: ActionPlan | null;
+  planItems: ActionPlanItem[];
+  causedByDelivery: AgentEventDelivery | null;
+  eventsPublished: AgentEvent[];
+  childRuns: AgentJobRun[];
+}
+
+export interface JobRunLineage {
+  rootExecutionId: number;
+  runs: AgentJobRun[];
+  blocks: AutonomyBlock[];
+}
+
+export const AUTONOMY_BLOCK_REASONS = [
+  "autonomy_job_disabled",
+  "autonomy_depth_exceeded",
+  "autonomous_cycle_detected",
+  "autonomy_chain_budget_exceeded",
+  "autonomous_rate_limit_exceeded",
+  "autonomy_circuit_open",
+] as const;
+export type AutonomyBlockReason = (typeof AUTONOMY_BLOCK_REASONS)[number];
+
+export interface AutonomyBlock {
+  id: number;
+  jobId: number;
+  ruleId: number | null;
+  eventId: number | null;
+  triggerType: JobTriggerType;
+  reason: AutonomyBlockReason;
+  rootExecutionId: number | null;
+  causationRunId: number | null;
+  attemptedDepth: number;
+  limitValue: number | null;
+  currentValue: number | null;
+  createdAt: string;
 }

@@ -333,6 +333,29 @@ const defaultPermissions = [
     slug: 'agents.event_rules.delete',
     description: 'Permite remover Event Rules (DELETE /agents/event-rules/:id).',
   },
+  {
+    name: 'Visualizar dashboard operacional de agentes',
+    slug: 'agents.operations.read',
+    description:
+      'Permite consultar o dashboard agregado de operações de agentes (GET /agents/operations/summary).',
+  },
+  {
+    name: 'Visualizar incidentes de agentes',
+    slug: 'agents.incidents.read',
+    description:
+      'Permite consultar o Incident Center, derivado de autonomy blocks, deliveries falhas e falhas repetidas de Job (GET /agents/incidents).',
+  },
+  {
+    name: 'Visualizar audit log de agentes',
+    slug: 'agents.audit.read',
+    description: 'Permite consultar a trilha de auditoria de operações de agentes (GET /agents/audit-logs).',
+  },
+  {
+    name: 'Gerenciar autonomia global de agentes',
+    slug: 'agents.autonomy.manage',
+    description:
+      'Permite consultar e alterar o global autonomy switch (GET/PATCH /agents/autonomy) — kill switch geral de execuções automáticas.',
+  },
 
   {
     name: 'Visualizar usuários',

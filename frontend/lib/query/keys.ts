@@ -92,5 +92,11 @@ export const queryKeys = {
     eventCatalog: ["agents", "events", "catalog"] as const,
     eventRules: (params?: unknown) => ["agents", "event-rules", params ?? {}] as const,
     eventRule: (id: number) => ["agents", "event-rules", id] as const,
+    jobRunDetail: (id: number) => ["agents", "job-runs", id, "detail"] as const,
+    jobRunLineage: (id: number) => ["agents", "job-runs", id, "lineage"] as const,
+    operationsSummary: (params?: unknown) => ["agents", "operations", "summary", params ?? {}] as const,
+    incidents: (params?: unknown) => ["agents", "incidents", params ?? {}] as const,
+    auditLogs: (params?: unknown) => ["agents", "audit-logs", params ?? {}] as const,
+    globalAutonomy: ["agents", "autonomy"] as const,
   },
 };

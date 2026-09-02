@@ -16,16 +16,23 @@ import type {
   AgentTool,
   AgentToolForAgent,
   ApprovalStatus,
+  AuditLogEntry,
   ChatResponse,
   EventCatalogEntry,
   EventFilters,
   EventStatus,
   ExecutionStatus,
+  GlobalAutonomyState,
   HumanVerdict,
+  Incident,
+  IncidentType,
   InterpreterStats,
+  JobRunLineage,
   JobRunStatus,
+  JobRunDetail,
   JobStatus,
   JobTriggerType,
+  OperationsSummary,
   ScheduleConfig,
 } from "@/types/agents";
 
@@ -194,6 +201,13 @@ export function cancelJob(id: number): Promise<{ data: AgentJob }> {
   return apiFetch(`/api/agents/jobs/${id}/cancel`, { method: "POST", body: JSON.stringify({}) });
 }
 
+// Agentes v1.5 — Granular Autonomy Switch, exposto ao frontend só na
+// v1.6 (correio.md v1.6 seção 7/8: o endpoint já existia no backend
+// desde a v1.5, sem UI até agora).
+export function setJobAutonomy(id: number, enabled: boolean): Promise<{ data: AgentJob }> {
+  return apiFetch(`/api/agents/jobs/${id}/autonomy`, { method: "PATCH", body: JSON.stringify({ enabled }) });
+}
+
 export function listJobRuns(
   jobId: number,
   params: { page?: number; limit?: number; status?: JobRunStatus } = {},
@@ -285,4 +299,59 @@ export function updateEventRule(id: number, input: UpdateEventRuleInput): Promis
 
 export function deleteEventRule(id: number): Promise<unknown> {
   return apiFetch(`/api/agents/event-rules/${id}`, { method: "DELETE" });
+}
+
+// Agentes v1.6 — Operations Control & Observability (correio.md).
+
+export function getJobRunDetail(id: number): Promise<{ data: JobRunDetail }> {
+  return apiFetch(`/api/agents/job-runs/${id}/detail`);
+}
+
+export function getJobRunLineage(id: number): Promise<{ data: JobRunLineage }> {
+  return apiFetch(`/api/agents/job-runs/${id}/lineage`);
+}
+
+export interface OperationsSummaryParams {
+  from?: string;
+  to?: string;
+}
+
+export function getOperationsSummary(params: OperationsSummaryParams = {}): Promise<{ data: OperationsSummary }> {
+  return apiFetch(`/api/agents/operations/summary${toQueryString({ ...params })}`);
+}
+
+export interface ListIncidentsParams {
+  page?: number;
+  limit?: number;
+  type?: IncidentType;
+  jobId?: number;
+  from?: string;
+  to?: string;
+}
+
+export function listIncidents(params: ListIncidentsParams = {}): Promise<Paginated<Incident>> {
+  return apiFetch(`/api/agents/incidents${toQueryString({ ...params })}`);
+}
+
+export interface ListAuditLogsParams {
+  page?: number;
+  limit?: number;
+  action?: string;
+  userId?: number;
+  entityType?: string;
+  entityId?: string;
+  from?: string;
+  to?: string;
+}
+
+export function listAuditLogs(params: ListAuditLogsParams = {}): Promise<Paginated<AuditLogEntry>> {
+  return apiFetch(`/api/agents/audit-logs${toQueryString({ ...params })}`);
+}
+
+export function getGlobalAutonomy(): Promise<{ data: GlobalAutonomyState }> {
+  return apiFetch("/api/agents/autonomy");
+}
+
+export function setGlobalAutonomy(enabled: boolean): Promise<{ data: GlobalAutonomyState }> {
+  return apiFetch("/api/agents/autonomy", { method: "PATCH", body: JSON.stringify({ enabled }) });
 }

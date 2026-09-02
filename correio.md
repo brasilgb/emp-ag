@@ -1,265 +1,490 @@
-# CORREÇÃO IMEDIATA — encerrar a flakiness da v1.5
+# Agência de Software 2026 — Agentes v1.6
 
-Pare de repetir a suíte.
+## Operations Control & Observability
 
-Já foram 13 rodadas e a causa está identificada. Agora quero CORREÇÃO, não nova tentativa.
+Implementar a v1.6 sobre a baseline já commitada da v1.5.
 
-## Objetivo
+A v1.5 deve ser considerada estável e não deve ser reimplementada.
 
-Eliminar definitivamente as falhas intermitentes da suíte relacionadas a:
+## 1. Objetivo
 
-1. `event-processor.test.ts`
-2. estado global de `settings`
-3. fila compartilhada `agent_events`
-4. Jobs órfãos `1546` e `1547`
+Criar a camada operacional e de observabilidade dos agentes.
 
-Não altere a lógica funcional da v1.5 sem evidência de bug de produção.
+Precisamos conseguir responder rapidamente:
 
----
+* O que os agentes estão fazendo?
+* O que acabaram de fazer?
+* Por que uma execução ocorreu?
+* Quem ou qual evento causou a execução?
+* Qual cadeia autônoma originou a ação?
+* O que falhou?
+* O que foi bloqueado?
+* Quais circuit breakers estão abertos?
+* Quais aprovações aguardam intervenção?
+* Quais Jobs estão consumindo mais execuções?
 
-# 1. Primeiro: eliminar os Jobs órfãos
+A v1.6 não cria outro executor, planner, policy engine ou mecanismo de autonomia.
 
-Cancelar imediatamente pelos mecanismos da aplicação:
-
-* Job 1546
-* Job 1547
-
-Confirmar:
-
-* `status != active`
-* nenhuma Event Rule antiga desses smoke tests continua habilitada
-* nenhum container auxiliar de smoke test permanece rodando
-* nenhum novo Run desses Jobs aparece após o cancelamento
-
-Se o sandbox impedir novamente, documentar exatamente o comando/API que precisa ser executado externamente, mas continuar com as correções dos testes.
+Tudo deve continuar utilizando a arquitetura v1.1–v1.5 existente.
 
 ---
 
-# 2. Corrigir `event-processor.test.ts`
+# 2. Princípios obrigatórios
 
-Este é o principal problema.
+Preservar:
 
-A fila global `agent_events` não pode mais ser utilizada pelos testes como se fosse exclusiva.
+LLM
+→ Planner
+→ Policy Evaluator
+→ Action Plan
+→ Executor determinístico
+→ Approval Workflow
+→ Jobs/Runs
+→ Event Engine
+→ Autonomy Guard
 
-Cada teste deve possuir e identificar explicitamente:
+Observabilidade não pode interferir na decisão de execução.
 
-* seu `eventId`
-* seus `ruleIds`
-* seus `jobIds`
-* suas `deliveryIds`
-* seus `runIds`
+Frontend nunca é barreira de segurança.
 
-Todas as verificações devem ser filtradas pelos IDs da própria fixture.
+Toda autorização permanece server-side.
 
-## Proibido nos testes
+Não expor:
 
-Não utilizar lógica baseada em:
-
-* último evento global;
-* primeira delivery disponível;
-* quantidade global de Runs;
-* fila global estar vazia;
-* consumir indiscriminadamente eventos pendentes;
-* esperar que outro arquivo não esteja usando o banco.
-
-## Corrigir `drainUntil`
-
-`drainUntil` deve esperar somente pelo evento/delivery pertencente à fixture atual.
-
-Ele não deve considerar atividade de outros testes como progresso.
-
-Se o Event Processor atual somente consegue consumir a fila global, crie no teste um mecanismo controlado para acompanhar exclusivamente o `eventId` criado pela fixture.
-
-Não mudar o comportamento de produção apenas para facilitar o teste, salvo se a mudança representar melhoria arquitetural legítima.
+* secrets;
+* tokens;
+* API keys;
+* credenciais;
+* conteúdo interno sensível desnecessário;
+* stack traces para usuários comuns.
 
 ---
 
-# 3. Corrigir o global autonomy switch
+# 3. Operations Dashboard
 
-Encontrar todos os testes que chamam:
+Criar uma área operacional dos agentes.
 
-`setAutonomousExecutionEnabled(false)`
-`setAutonomousExecutionEnabled(true)`
+Sugestão de rota:
 
-Eles não podem competir pela mesma linha global de `settings`.
+`/agents/operations`
 
-Quero isolamento real.
+Exibir pelo menos:
 
-Ordem de preferência:
+### Jobs
 
-1. injeção/mock/stub da configuração global dentro dos testes;
-2. fixture isolada;
-3. mecanismo de exclusão mútua especificamente para os testes que alteram configuração global;
-4. serialização somente desse grupo de testes, se as opções anteriores forem desproporcionalmente complexas.
+* total;
+* active;
+* paused;
+* cancelled;
+* autonomy disabled;
+* circuit open;
+* circuit half_open.
 
-Não serializar toda a suíte como primeira solução.
+### Runs
 
-Garantir restauração do estado em `finally`/`afterEach`.
+Por período:
 
----
+* running;
+* completed;
+* failed;
+* partial;
+* blocked;
+* cancelled.
 
-# 4. Cleanup determinístico
+### Autonomous operations
 
-Cada teste deverá remover exclusivamente os artefatos que criou.
+* execuções autônomas;
+* bloqueios;
+* ciclos detectados;
+* rate limits;
+* depth exceeded;
+* chain budget exceeded;
+* circuit open blocks.
 
-Revisar cleanup de:
+### Events
 
-* `agent_events`
-* `agent_event_deliveries`
-* `agent_job_runs`
-* `agent_autonomy_blocks`
-* Event Rules
-* Jobs
-* alterações temporárias de `settings`
+* eventos criados;
+* processados;
+* pendentes;
+* deliveries failed.
 
-Usar prefixo/identificador único de fixture quando ajudar.
+### Approvals
 
-Não executar `TRUNCATE` global durante execução concorrente da suíte.
+* pendentes;
+* aprovadas;
+* rejeitadas.
 
----
+Não calcular essas métricas no frontend a partir de centenas de registros.
 
-# 5. Banco de teste
-
-A suíte de integração não deve continuar utilizando o mesmo banco de desenvolvimento poluído por smoke tests e execuções anteriores.
-
-Criar/configurar banco de teste dedicado se ainda não existir.
-
-Exemplo conceitual:
-
-`agencia_test`
-
-A suíte deve:
-
-1. apontar explicitamente para o banco de teste;
-2. aplicar migrations;
-3. criar fixtures;
-4. executar;
-5. limpar somente seus artefatos.
-
-Não destruir o banco normal de desenvolvimento.
+Criar endpoints agregados adequados no backend.
 
 ---
 
-# 6. Agora corrija o código
+# 4. Execution Timeline
 
-Não quero novo relatório de diagnóstico antes da correção.
+Criar visão detalhada de uma execução.
 
-Faça as alterações necessárias nos testes/fixtures/helpers.
+Exemplo:
 
-Depois mostre os arquivos modificados e explique resumidamente a causa corrigida.
+`/agents/runs/:id`
 
----
+A tela precisa reconstruir:
 
-# 7. Validação — limite rígido
+Job
+→ Run
+→ Action Plan
+→ Plan Items
+→ Executions
+→ Events publicados
+→ Event Deliveries
+→ Runs causados posteriormente
+→ Autonomy Blocks
 
-Depois da correção:
+Usar:
 
-## Rodada A — somente os arquivos problemáticos
+* `root_execution_id`;
+* `causation_run_id`;
+* `caused_by_run_id`;
+* `autonomy_depth`;
+* event/rule/delivery IDs existentes.
 
-Rodar:
+Exibir claramente:
 
-* `event-processor.test.ts`
-* `job-runner.autonomy.test.ts`
+`Root Run`
 
-Resultado obrigatório: 100%.
+`Caused by Run`
 
-Se falhar:
+`Depth`
 
-PARE.
+`Trigger Type`
 
-Investigue e corrija.
+`Event`
 
-Não rode de novo cegamente.
-
----
-
-## Rodada B — suíte completa
-
-Somente quando A estiver verde:
-
-rodar backend completo UMA VEZ.
-
-Se falhar:
-
-PARE → investigar → corrigir.
-
-Não iniciar segunda tentativa sem mudança concreta.
+`Event Rule`
 
 ---
 
-## Rodadas C e D — estabilidade
+# 5. Chain View
 
-Quando a suíte completa passar:
+Criar endpoint para reconstrução de cadeia:
 
-rodar mais DUAS vezes.
+por exemplo:
 
-Portanto, após a correção, máximo de:
+`GET /agents/runs/:id/chain`
 
-**3 execuções completas verdes**
+ou equivalente arquiteturalmente melhor.
 
-Isso é suficiente para comprovar que removemos a flakiness.
+Deve retornar estrutura determinística baseada exclusivamente em IDs persistidos.
 
-Não faça rodada 4, 5, 10 ou 20.
+Não utilizar LLM para inferir relacionamentos.
+
+A API deve permitir reconstruir algo como:
+
+Run A
+└── Event X
+└── Rule 15
+└── Run B
+└── Event Y
+└── Rule 21
+└── Blocked Run C
+
+Também precisa funcionar para cadeia com múltiplos filhos.
+
+Evitar N+1 queries.
 
 ---
 
-# 8. Gates finais
+# 6. Incident Center
 
-Executar uma única vez:
+Criar visão:
 
-* backend `tsc --noEmit`
-* frontend `npm test`
-* frontend `next build`
+`/agents/incidents`
 
-Todos verdes.
+Incidentes derivados inicialmente dos dados existentes.
+
+Tipos mínimos:
+
+* `autonomy_circuit_open`
+* `autonomous_cycle_detected`
+* `autonomy_depth_exceeded`
+* `autonomy_chain_budget_exceeded`
+* `autonomous_rate_limit_exceeded`
+* `job_repeated_failure`
+* `event_delivery_failed`
+
+Não criar automaticamente um sistema paralelo de incidentes se os dados existentes forem suficientes.
+
+Primeiro avaliar se uma projection/query agregada sobre:
+
+* autonomy blocks;
+* runs;
+* jobs;
+* event deliveries;
+* audit logs;
+
+resolve o problema.
+
+Persistência adicional só se houver justificativa arquitetural.
 
 ---
 
-# 9. Git
+# 7. Controles administrativos
 
-Depois:
+Na interface operacional permitir, respeitando permissions existentes:
 
-`git status`
+### Job
 
-Separar:
+* pause;
+* resume;
+* cancel;
+* enable autonomy;
+* disable autonomy.
 
-* alterações reais da v1.5;
-* correções de testes;
+### Event Rule
+
+* enable;
+* disable.
+
+### Global autonomy
+
+Exibir estado atual.
+
+Se já existir endpoint seguro para alterar, reutilizá-lo.
+
+Caso não exista interface adequada, implementar endpoint autorizado e auditado.
+
+Ações destrutivas ou de impacto amplo devem exigir confirmação de UI.
+
+Autorização final sempre no backend.
+
+---
+
+# 8. Circuit breaker visibility
+
+Exibir claramente em Jobs:
+
+* state;
+* failure count;
+* openedAt;
+* cooldown quando puder ser derivado;
+* autonomia enabled/disabled.
+
+Estados:
+
+* closed;
+* open;
+* half_open.
+
+Não criar estado frontend diferente do persistido.
+
+---
+
+# 9. Auditoria
+
+Criar uma tela utilizável para `audit_logs`.
+
+Filtros mínimos:
+
+* action;
+* actor/user;
+* Job;
+* Run/rootExecutionId quando disponível;
+* intervalo de data;
+* autonomia;
+* approvals.
+
+Paginação obrigatória.
+
+Não carregar a tabela inteira no navegador.
+
+Metadata JSON deve poder ser inspecionada, mas com apresentação legível.
+
+---
+
+# 10. APIs
+
+Criar somente APIs necessárias.
+
+Preferência:
+
+* endpoints agregados;
+* paginação cursor/limit consistente com o projeto;
+* queries indexadas;
+* schemas Zod;
+* permissions explícitas;
+* validação server-side.
+
+Não disponibilizar query SQL arbitrária.
+
+---
+
+# 11. Performance
+
+As páginas de observabilidade não podem executar dezenas de requests por render.
+
+Criar endpoints compostos/agregados quando fizer sentido.
+
+Revisar índices existentes antes de adicionar novos.
+
+Adicionar índice somente quando a query real justificar.
+
+---
+
+# 12. Frontend
+
+Usar arquitetura existente:
+
+* Next.js;
+* TypeScript;
+* Tailwind;
+* shadcn/ui;
+* TanStack Query;
+* BFF existente.
+
+Criar componentes reutilizáveis para:
+
+* metric cards;
+* status;
+* run timeline;
+* chain nodes;
+* incident rows;
+* filters.
+
+Evitar dashboard visualmente poluído.
+
+Prioridade é legibilidade operacional.
+
+---
+
+# 13. Segurança
+
+Obrigatório:
+
+* permissions no backend;
+* Zod;
+* nenhuma ação privilegiada confiando no frontend;
+* audit log das operações administrativas;
+* não retornar secrets;
+* não retornar env;
+* não retornar credentials de providers;
+* não expor prompt interno completo sem necessidade.
+
+A v1.6 deve respeitar o princípio permanente do projeto:
+
+Segurança é requisito de arquitetura, não etapa posterior.
+
+---
+
+# 14. Testes
+
+Adicionar testes para:
+
+* operações dashboard aggregation;
+* filtros;
+* chain reconstruction;
+* múltiplos filhos da mesma chain;
+* circuit visibility;
+* autonomy blocks;
+* incident derivation;
+* authorization;
+* paginação;
+* controles administrativos.
+
+A correção adicionada na v1.5:
+
+`--test-concurrency=1`
+
+deve permanecer.
+
+Não remover essa configuração nesta versão.
+
+---
+
+# 15. Regra operacional de testes
+
+A partir desta versão:
+
+Não executar a suíte repetidamente esperando uma falha desaparecer.
+
+Fluxo obrigatório:
+
+1. executar;
+2. falhou;
+3. diagnosticar;
+4. corrigir;
+5. executar novamente.
+
+Máximo de 3 validações completas consecutivas sem descoberta nova.
+
+Se a mesma falha aparecer novamente:
+
+PARAR E INVESTIGAR.
+
+Não executar uma sequência de dezenas de testes.
+
+---
+
+# 16. Não fazer nesta versão
+
+Não implementar ainda:
+
+* billing de agentes;
+* marketplace;
+* multi-agent chat livre;
+* memória vetorial;
+* RAG;
+* shell;
+* SQL via LLM;
+* acesso arbitrário a ferramentas;
+* execução remota;
+* Kubernetes;
+* novo workflow engine.
+
+Manter foco em Operations & Observability.
+
+---
+
+# 17. Gates finais
+
+Ao concluir:
+
+Backend:
+
+* typecheck;
+* testes;
 * migrations;
-* arquivos temporários;
-* qualquer arquivo não relacionado.
+* validação de permissions.
 
-Confirmar que nenhum secret será commitado.
+Frontend:
+
+* testes;
+* build.
+
+Executar smoke test somente das funcionalidades novas necessárias.
+
+Não recriar loops autônomos grandes apenas para provar novamente a v1.5.
 
 ---
 
-# 10. Resultado esperado
+# 18. Entrega
 
-Sua próxima resposta deve conter SOMENTE:
+Apresentar:
 
-1. `ROOT CAUSE 1` — event processor
-2. `ROOT CAUSE 2` — global settings
-3. `CORREÇÃO IMPLEMENTADA`
-4. arquivos alterados
-5. status dos Jobs `1546/1547`
-6. testes isolados: X/X
-7. suíte completa rodada 1: X/X
-8. suíte completa rodada 2: X/X
-9. suíte completa rodada 3: X/X
-10. typecheck
-11. frontend tests
-12. frontend build
-13. git status resumido
-14. decisão final:
+1. resumo;
+2. arquitetura;
+3. arquivos criados;
+4. arquivos alterados;
+5. migrations;
+6. endpoints;
+7. páginas;
+8. modelo da chain;
+9. incident model;
+10. permissions;
+11. segurança;
+12. testes;
+13. resultados;
+14. riscos/débitos;
+15. compatibilidade v1.0–v1.5;
+16. recomendação final.
 
-`APROVAR v1.5 PARA COMMIT`
-
-ou
-
-`NÃO APROVAR v1.5 PARA COMMIT`
-
-Não faça mais análise repetitiva.
-
-Não rode novamente esperando que o acaso faça o teste passar.
-
-**Falhou = corrigir. Passou após correção = validar estabilidade e encerrar.**
+Não fazer commit automaticamente até a revisão final.

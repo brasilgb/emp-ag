@@ -16,6 +16,9 @@ const ITEMS = [
   { href: "/agents/approvals", label: "Aprovações", permission: "agents.approve" },
   { href: "/agents/executions", label: "Execuções", permission: "agent.executions.read" },
   { href: "/agents/interpreter", label: "LLM Interpreter", permission: "agent.executions.read" },
+  { href: "/agents/operations", label: "Operações", permission: "agents.operations.read" },
+  { href: "/agents/incidents", label: "Incidentes", permission: "agents.incidents.read" },
+  { href: "/agents/audit", label: "Auditoria", permission: "agents.audit.read" },
 ] as const;
 
 // Navegação interna do módulo Agentes (seções 38-41) — mesmo princípio de

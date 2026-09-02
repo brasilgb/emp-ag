@@ -15,6 +15,7 @@ import {
   pauseJob,
   resumeJob,
   runJob,
+  setJobAutonomy,
 } from "@/services/agents";
 
 // Agentes v1.3 — Jobs, Runs, Delegation & Controlled Autonomy (correio.md).
@@ -103,6 +104,17 @@ export function useCancelAgentJob() {
 
   return useMutation({
     mutationFn: (id: number) => cancelJob(id),
+    onSuccess: invalidate,
+  });
+}
+
+// Agentes v1.6 (correio.md seção 7/8) — kill switch granular por Job,
+// exposto ao frontend agora (backend já existia desde a v1.5).
+export function useSetAgentJobAutonomy() {
+  const invalidate = useInvalidateJobs();
+
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) => setJobAutonomy(id, enabled),
     onSuccess: invalidate,
   });
 }

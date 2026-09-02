@@ -16,12 +16,13 @@ import {
   usePauseAgentJob,
   useResumeAgentJob,
   useRunAgentJob,
+  useSetAgentJobAutonomy,
 } from "@/hooks/agents/use-agent-jobs";
 import { formatDateTime } from "@/lib/agents/format";
 import { jobTriggerTypeLabel } from "@/lib/agents/derived";
 import { toErrorMessage } from "@/services/http";
 
-import { JobRunStatusBadge, JobStatusBadge } from "../status-badge";
+import { CircuitStateBadge, JobRunStatusBadge, JobStatusBadge } from "../status-badge";
 
 /**
  * Correio.md v1.3 seção 17 — detalhe: mostra a cadeia Job → Run → Action
@@ -38,6 +39,7 @@ export function JobDetail({ jobId }: { jobId: number }) {
   const pause = usePauseAgentJob();
   const resume = useResumeAgentJob();
   const cancel = useCancelAgentJob();
+  const setAutonomy = useSetAgentJobAutonomy();
 
   if (isLoading) return <LoadingState label="Carregando Job..." />;
   if (isError || !jobData) return <ErrorState onRetry={() => refetch()} />;
@@ -80,6 +82,16 @@ export function JobDetail({ jobId }: { jobId: number }) {
     }
   }
 
+  // Agentes v1.6 (correio.md seção 7) — kill switch granular por Job.
+  async function handleToggleAutonomy() {
+    try {
+      await setAutonomy.mutateAsync({ id: jobId, enabled: !job.autonomyEnabled });
+      toast.success(job.autonomyEnabled ? "Autonomia do Job desligada." : "Autonomia do Job ligada.");
+    } catch (error) {
+      toast.error(toErrorMessage(error, "Erro ao alterar autonomia do Job."));
+    }
+  }
+
   return (
     <div className="space-y-6">
       <Card>
@@ -106,6 +118,23 @@ export function JobDetail({ jobId }: { jobId: number }) {
             <span>Timeout: {job.timeoutSeconds}s</span>
           </div>
 
+          {/* Agentes v1.6 (correio.md seção 8) — Circuit breaker visibility:
+              state/failureCount/openedAt/autonomyEnabled, nunca um estado
+              inventado no frontend — sempre o que o backend persistiu. */}
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1.5">
+              Circuit breaker: <CircuitStateBadge state={job.circuitState} />
+            </span>
+            <span>Falhas consecutivas: {job.circuitFailureCount}</span>
+            {job.circuitOpenedAt ? <span>Aberto em: {formatDateTime(job.circuitOpenedAt)}</span> : null}
+            <span>
+              Autonomia:{" "}
+              <span className={job.autonomyEnabled ? "text-emerald-700 dark:text-emerald-400" : "text-red-700 dark:text-red-400"}>
+                {job.autonomyEnabled ? "ligada" : "desligada"}
+              </span>
+            </span>
+          </div>
+
           <div className="flex gap-2">
             <PermissionGate permission="agents.jobs.run">
               <Button size="sm" disabled={run.isPending} onClick={handleRun}>
@@ -127,6 +156,14 @@ export function JobDetail({ jobId }: { jobId: number }) {
                   Cancelar
                 </Button>
               ) : null}
+              <Button
+                size="sm"
+                variant={job.autonomyEnabled ? "destructive" : "outline"}
+                disabled={setAutonomy.isPending}
+                onClick={handleToggleAutonomy}
+              >
+                {job.autonomyEnabled ? "Desligar autonomia" : "Ligar autonomia"}
+              </Button>
             </PermissionGate>
           </div>
         </CardContent>
@@ -155,7 +192,11 @@ export function JobDetail({ jobId }: { jobId: number }) {
                 <TableBody>
                   {runsData.data.map((jobRun) => (
                     <TableRow key={jobRun.id}>
-                      <TableCell className="text-xs text-muted-foreground">#{jobRun.id}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        <Link href={`/agents/runs/${jobRun.id}`} className="text-primary underline underline-offset-2">
+                          #{jobRun.id}
+                        </Link>
+                      </TableCell>
                       <TableCell className="text-xs text-muted-foreground">{jobTriggerTypeLabel(jobRun.triggerType)}</TableCell>
                       <TableCell>
                         <JobRunStatusBadge status={jobRun.status} />

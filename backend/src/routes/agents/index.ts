@@ -15,6 +15,10 @@ import { jobsRoutes } from './jobs.js';
 import { jobRunsRoutes } from './job-runs.js';
 import { eventsRoutes } from './events.js';
 import { eventRulesRoutes } from './event-rules.js';
+import { operationsRoutes } from './operations.js';
+import { incidentsRoutes } from './incidents.js';
+import { auditRoutes } from './audit.js';
+import { autonomyRoutes } from './autonomy.js';
 
 export async function agentsModuleRoutes(app: FastifyInstance) {
   registerAllTools();
@@ -32,4 +36,8 @@ export async function agentsModuleRoutes(app: FastifyInstance) {
   await app.register(jobRunsRoutes);
   await app.register(eventsRoutes);
   await app.register(eventRulesRoutes);
+  await app.register(operationsRoutes);
+  await app.register(incidentsRoutes);
+  await app.register(auditRoutes);
+  await app.register(autonomyRoutes);
 }

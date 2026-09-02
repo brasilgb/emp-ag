@@ -2,7 +2,14 @@ import type { FastifyInstance } from 'fastify';
 import { asc, eq } from 'drizzle-orm';
 
 import { db } from '../../db/index.js';
-import { agentAutonomyBlocks, agentJobRuns } from '../../db/schema/index.js';
+import {
+  agentActionPlanItems,
+  agentActionPlans,
+  agentAutonomyBlocks,
+  agentEventDeliveries,
+  agentEvents,
+  agentJobRuns,
+} from '../../db/schema/index.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { requirePermission } from '../../middleware/require-permission.js';
 import { jobRunIdParamSchema } from '../../agents/jobs/schemas.js';
@@ -71,6 +78,65 @@ export async function jobRunsRoutes(app: FastifyInstance) {
       ]);
 
       return { data: { rootExecutionId, runs, blocks } };
+    },
+  );
+
+  // Agentes v1.6 (correio.md seção 4) — Execution Timeline. Endpoint
+  // composto único (seção 11: "não pode executar dezenas de requests por
+  // render") que reconstrói Job → Run → Action Plan → Plan Items →
+  // Events publicados → Runs causados diretamente → causador (rule/event
+  // que disparou este Run, via causation_event_delivery_id). Tudo por
+  // consultas indexadas (job_run_id, caused_by_run_id, causation_run_id),
+  // nunca N+1 nem CTE recursiva.
+  app.get(
+    '/job-runs/:id/detail',
+    { preHandler: [authenticate, requirePermission('agents.runs.read')] },
+    async (request, reply) => {
+      const params = jobRunIdParamSchema.safeParse(request.params);
+
+      if (!params.success) {
+        return badRequest(reply, params.error);
+      }
+
+      const [run] = await db.select().from(agentJobRuns).where(eq(agentJobRuns.id, params.data.id)).limit(1);
+
+      if (!run) {
+        return notFound(reply, 'Run não encontrado.');
+      }
+
+      const [actionPlan, causingDelivery, causedEvents, childRuns] = await Promise.all([
+        run.actionPlanId
+          ? db.select().from(agentActionPlans).where(eq(agentActionPlans.id, run.actionPlanId)).limit(1)
+          : Promise.resolve([]),
+        run.causationEventDeliveryId
+          ? db
+              .select()
+              .from(agentEventDeliveries)
+              .where(eq(agentEventDeliveries.id, run.causationEventDeliveryId))
+              .limit(1)
+          : Promise.resolve([]),
+        db.select().from(agentEvents).where(eq(agentEvents.causedByRunId, run.id)).orderBy(asc(agentEvents.receivedAt)),
+        db.select().from(agentJobRuns).where(eq(agentJobRuns.causationRunId, run.id)).orderBy(asc(agentJobRuns.createdAt)),
+      ]);
+
+      const planItems = run.actionPlanId
+        ? await db
+            .select()
+            .from(agentActionPlanItems)
+            .where(eq(agentActionPlanItems.planId, run.actionPlanId))
+            .orderBy(asc(agentActionPlanItems.sequence))
+        : [];
+
+      return {
+        data: {
+          run,
+          actionPlan: actionPlan[0] ?? null,
+          planItems,
+          causedByDelivery: causingDelivery[0] ?? null,
+          eventsPublished: causedEvents,
+          childRuns,
+        },
+      };
     },
   );
 }
