@@ -7,6 +7,7 @@ import { useDirectorBrief } from "@/hooks/agents/use-director";
 import { formatDateTime } from "@/lib/agents/format";
 import { signalDomainLabel } from "@/lib/agents/derived";
 
+import { DecisionQueue } from "./decision-queue";
 import { DomainSection } from "./domain-section";
 
 const DOMAIN_ORDER = ["crm", "projects", "finance", "support", "agents"] as const;
@@ -51,6 +52,8 @@ export function DirectorDashboard() {
           <DomainSection key={domain} domain={domain} signals={brief.domains[domain]} />
         ))}
       </div>
+
+      <DecisionQueue />
     </div>
   );
 }

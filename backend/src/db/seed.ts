@@ -368,6 +368,12 @@ const defaultPermissions = [
     description:
       'Permite criar/alterar/remover overrides de configuração operacional (circuit breaker, autonomy depth, chain budget, rate limit) — global ou por Job (PATCH/DELETE /agents/settings/:key e /agents/jobs/:id/settings/:key).',
   },
+  {
+    name: 'Gerenciar fila de decisões do Diretor',
+    slug: 'agents.director.decisions.manage',
+    description:
+      'Permite reconhecer, atribuir, dispensar e sincronizar itens da Director Decision Queue. Leitura segue em agents.read; propor ação segue em agents.use + agents.plan.',
+  },
 
   {
     name: 'Visualizar usuários',
@@ -627,6 +633,18 @@ const defaultAgentTools = [
     requiresApproval: false,
   },
   {
+    name: 'Sincronizar fila de decisões do Diretor',
+    slug: 'director-sync-decision-queue',
+    description:
+      'Sincroniza Operational Signals com a Director Decision Queue — cria/atualiza/resolve itens de forma determinística (Agentes v1.9).',
+    department: 'director',
+    autonomyLevel: 'execute',
+    handler: 'director.sync_decision_queue',
+    risk: 'low',
+    mutatesData: true,
+    requiresApproval: false,
+  },
+  {
     name: 'Resumo do funil de vendas',
     slug: 'sales-get-pipeline-summary',
     description: 'Contagem e valor estimado de leads por estágio do pipeline.',
@@ -853,7 +871,7 @@ const defaultAgentTools = [
 // agentSlug → handlers das tools que este agente pode usar (seção 37 —
 // associar apenas tools apropriadas a cada agente).
 const defaultAgentToolPermissions: Record<string, string[]> = {
-  director: ['director.get_business_overview', 'director.generate_daily_brief'],
+  director: ['director.get_business_overview', 'director.generate_daily_brief', 'director.sync_decision_queue'],
   sales: [
     'sales.get_pipeline_summary',
     'sales.list_open_leads',

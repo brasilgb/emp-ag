@@ -2,6 +2,7 @@ import type { Paginated } from "@/types/shared";
 import type {
   ActionPlan,
   ActionPlanDetail,
+  ActionPlanItem,
   ActionPlanStatus,
   Agent,
   AgentApproval,
@@ -18,6 +19,10 @@ import type {
   ApprovalStatus,
   AuditLogEntry,
   ChatResponse,
+  DecisionQueueOverview,
+  DecisionStatus,
+  DecisionSyncSummary,
+  DirectorDecision,
   EventCatalogEntry,
   EventFilters,
   EventStatus,
@@ -39,6 +44,8 @@ import type {
   ResolvedSetting,
   ScheduleConfig,
   SettingKey,
+  SignalDomain,
+  SignalSeverity,
   SignalSourceError,
 } from "@/types/agents";
 
@@ -407,4 +414,60 @@ export function proposeSignalAction(id: string): Promise<{ data: ProposeActionRe
     method: "POST",
     body: JSON.stringify({}),
   });
+}
+
+// Agentes v1.9 — Director Decision Queue (correio.md).
+export interface ListDecisionsParams {
+  page?: number;
+  limit?: number;
+  status?: DecisionStatus;
+  domain?: SignalDomain;
+  severity?: SignalSeverity;
+  assignedUserId?: number;
+  requiresHumanAttention?: boolean;
+}
+
+export function listDirectorDecisions(params: ListDecisionsParams = {}): Promise<Paginated<DirectorDecision>> {
+  return apiFetch(`/api/agents/director/decisions${toQueryString({ ...params })}`);
+}
+
+export function getDirectorDecisionsOverview(): Promise<{ data: DecisionQueueOverview }> {
+  return apiFetch("/api/agents/director/decisions/overview");
+}
+
+export interface DirectorDecisionDetail {
+  decision: DirectorDecision;
+  pendingApproval: AgentApproval | null;
+}
+
+export function getDirectorDecision(id: number): Promise<{ data: DirectorDecisionDetail }> {
+  return apiFetch(`/api/agents/director/decisions/${id}`);
+}
+
+export function syncDirectorDecisionQueue(): Promise<{ data: DecisionSyncSummary }> {
+  return apiFetch("/api/agents/director/decisions/sync", { method: "POST", body: JSON.stringify({}) });
+}
+
+export function acknowledgeDecision(id: number): Promise<{ data: DirectorDecision }> {
+  return apiFetch(`/api/agents/director/decisions/${id}/acknowledge`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function assignDecision(id: number, userId: number): Promise<{ data: DirectorDecision }> {
+  return apiFetch(`/api/agents/director/decisions/${id}/assign`, {
+    method: "POST",
+    body: JSON.stringify({ userId }),
+  });
+}
+
+export function dismissDecision(id: number, reason: string): Promise<{ data: DirectorDecision }> {
+  return apiFetch(`/api/agents/director/decisions/${id}/dismiss`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function proposeDecisionAction(
+  id: number,
+): Promise<{ data: { decision: DirectorDecision; plan: ActionPlan; items: ActionPlanItem[] } }> {
+  return apiFetch(`/api/agents/director/decisions/${id}/propose`, { method: "POST", body: JSON.stringify({}) });
 }

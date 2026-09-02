@@ -103,5 +103,8 @@ export const queryKeys = {
     directorBrief: ["agents", "director", "brief"] as const,
     directorSignals: ["agents", "director", "signals"] as const,
     directorSignal: (id: string) => ["agents", "director", "signals", id] as const,
+    directorDecisions: (params?: unknown) => ["agents", "director", "decisions", params ?? {}] as const,
+    directorDecisionsOverview: ["agents", "director", "decisions", "overview"] as const,
+    directorDecision: (id: number) => ["agents", "director", "decisions", id] as const,
   },
 };

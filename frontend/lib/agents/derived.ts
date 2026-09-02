@@ -8,6 +8,9 @@ import type {
   AutonomyLevel,
   ChatResponse,
   CircuitState,
+  DecisionImpact,
+  DecisionStatus,
+  DecisionUrgency,
   EventDeliveryStatus,
   EventStatus,
   ExecutionStatus,
@@ -484,4 +487,59 @@ export function signalEntityHref(signal: {
     default:
       return null;
   }
+}
+
+// Agentes v1.9 — Director Decision Queue (correio.md seção 25/26/33).
+export const DECISION_STATUS_LABELS: Record<DecisionStatus, string> = {
+  open: "Aberto",
+  acknowledged: "Reconhecido",
+  action_planned: "Plano criado",
+  awaiting_approval: "Aguardando aprovação",
+  resolved: "Resolvido",
+  dismissed: "Dispensado",
+};
+
+export function decisionStatusLabel(status: DecisionStatus): string {
+  return DECISION_STATUS_LABELS[status] ?? status;
+}
+
+// Estados terminais/somente-leitura — nenhuma ação de ciclo de vida
+// (acknowledge/assign/dismiss/propose) faz sentido a partir daqui.
+export const DECISION_CLOSED_STATUSES: readonly DecisionStatus[] = ["resolved", "dismissed"];
+
+export function isDecisionClosed(status: DecisionStatus): boolean {
+  return DECISION_CLOSED_STATUSES.includes(status);
+}
+
+export const DECISION_IMPACT_LABELS: Record<DecisionImpact, string> = {
+  high: "Alto",
+  medium: "Médio",
+  low: "Baixo",
+};
+
+export function decisionImpactLabel(impact: DecisionImpact): string {
+  return DECISION_IMPACT_LABELS[impact] ?? impact;
+}
+
+export const DECISION_URGENCY_LABELS: Record<DecisionUrgency, string> = {
+  immediate: "Imediata",
+  soon: "Em breve",
+  normal: "Normal",
+};
+
+export function decisionUrgencyLabel(urgency: DecisionUrgency): string {
+  return DECISION_URGENCY_LABELS[urgency] ?? urgency;
+}
+
+// Só pode propor ação a partir de "open"/"acknowledged" (mesma regra do
+// backend — actions-service.ts — duplicada aqui apenas para UX, o
+// backend é quem realmente barra).
+export function canProposeActionForDecision(status: DecisionStatus): boolean {
+  return status === "open" || status === "acknowledged";
+}
+
+export function daysOpen(firstDetectedAt: string, now: Date = new Date()): number {
+  const detected = new Date(firstDetectedAt);
+  const diffMs = now.getTime() - detected.getTime();
+  return Math.max(0, Math.floor(diffMs / (24 * 60 * 60 * 1000)));
 }

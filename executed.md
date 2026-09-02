@@ -1,349 +1,361 @@
-# Entrega — Agentes v1.8: Director Operations & Business Workflows
+# Entrega — Agentes v1.9: Director Decision & Prioritization
 
-Nenhum commit foi feito (correio.md v1.8: "não fazer commit automático" /
-"aguardar revisão final do Diretor/CEO") — tudo abaixo está no working
-tree, aguardando sua revisão.
+Nenhum commit foi feito (correio.md v1.9 seção 38: "não fazer commit
+automático" / "aguardar revisão do Diretor/CEO") — tudo abaixo está no
+working tree, aguardando sua revisão.
 
 ## 1. Resumo
 
-Transformado o Diretor Virtual de infraestrutura genérica em uma camada
-operacional real: coleta determinística de sinais (Operational Signals)
-sobre os 4 módulos existentes + saúde da própria infraestrutura de
-agentes, um Daily Operations Brief estruturado, e uma API de "propor
-ação" que entra no pipeline **oficial** já existente (Planner → Policy
-Evaluator → Action Plan → Executor/Approval) — sem segundo executor,
-sem segunda forma de autorização, sem o LLM decidindo nada além de qual
-tool chamar dentro de um objetivo já determinístico.
+Transformada a Mesa do Diretor (v1.8) em uma fila executiva real: os
+Operational Signals determinísticos agora alimentam uma **Director
+Decision Queue** persistida — itens deduplicados, priorizados por score
+explicável, com ciclo de vida (reconhecer/atribuir/dispensar) e
+integração com o pipeline oficial de Action Plan/Policy Evaluator/
+Approval já existente. Nenhum executor novo, nenhuma autorização
+paralela, nenhum bypass — um Decision Item nunca significa "execute
+automaticamente", só "isto merece acompanhamento".
 
-## 2. Inventário dos módulos
-
-Exploração real de schemas/services antes de implementar (correio.md
-seção 22):
-
-| Módulo | Campos relevantes já existentes | Services/repositórios reaproveitados |
-|---|---|---|
-| CRM | `leads.next_action_at`, `leads.created_at`, `leads.status` | `listOpenLeads()` (já existente, já usada por `director.get_business_overview`) — classificação feita em memória, **zero SQL novo** |
-| Projetos | `tasks.due_date`/`status`/`assignee_user_id`, `projects.due_date`/`status` | `getOverdueTasks()`, `getBlockedTasks()`, `getOverdueProjects()` (existentes) + `getTasksDueSoon()`, `getUnassignedTasks()` (novas, mesmo padrão/arquivo) |
-| Financeiro | `financial_entries.due_date`/`status`, `overdueEntryCondition()` | `getOverdueEntries('income'\|'expense')` (existente) |
-| Suporte/CS | `support_tickets.priority`/`sla_due_at`, `customer_success_accounts.status`/`next_contact_at` | `getCriticalTickets()`, `getOverdueTicketsList()`, `getAtRiskAccounts()`, `getDueFollowups()` (todas existentes) |
-| Agentes (saúde própria) | `agent_jobs.circuit_state`, `agent_approvals.status` | `listIncidents()` (v1.6, existente) + 2 queries diretas novas (job_circuit_open, approval_pending) — legítimo por estar dentro do próprio módulo de agentes, não cruzando para domínio de negócio |
-
-11 das 13 fontes de sinal reaproveitam funções **já existentes e já
-usadas** por `director.get_business_overview` (v1.6) — confirma que a
-arquitetura v1.0–v1.7 já estava pronta para isso, só faltava a camada de
-interpretação.
-
-## 3. Sinais implementados
-
-13 tipos, todos verificados contra dados reais (nenhum conceito
-inventado):
-
-| Tipo | Domínio | Severidade | Fonte |
-|---|---|---|---|
-| `crm.lead_follow_up_overdue` | crm | warning | `listOpenLeads()` + `nextActionAt < now` |
-| `crm.lead_missing_follow_up` | crm | attention | `listOpenLeads()` + sem `nextActionAt` e `createdAt` > `leadStaleDays` |
-| `projects.task_overdue` | projects | warning | `getOverdueTasks()` |
-| `projects.task_due_soon` | projects | attention | `getTasksDueSoon()` (novo) |
-| `projects.task_blocked` | projects | warning | `getBlockedTasks()` |
-| `projects.task_unassigned` | projects | attention | `getUnassignedTasks()` (novo) |
-| `projects.project_overdue` | projects | warning | `getOverdueProjects()` |
-| `finance.receivable_overdue` | finance | warning | `getOverdueEntries('income')` |
-| `finance.payable_overdue` | finance | warning | `getOverdueEntries('expense')` |
-| `support.ticket_critical` | support | critical | `getCriticalTickets()` |
-| `support.ticket_overdue` | support | warning | `getOverdueTicketsList()` |
-| `support.account_at_risk` | support | critical | `getAtRiskAccounts()` |
-| `support.follow_up_due` | support | attention | `getDueFollowups()` |
-| `agents.incident.*` (7 subtipos) | agents | critical/warning/attention | `listIncidents()` (v1.6) |
-| `agents.job_circuit_open` | agents | critical | query direta em `agent_jobs` |
-| `agents.approval_pending` | agents | attention | query direta em `agent_approvals` |
-
-Thresholds (`leadStaleDays=3`, `taskDueSoonDays=2`) em catálogo de código
-(`agents/director/thresholds.ts`), não no sistema de settings da v1.7 —
-decisão explícita do correio.md ("provar os workflows" primeiro).
-
-## 4. Sinais avaliados mas não implementados e motivo
-
-| Sinal sugerido | Motivo |
-|---|---|
-| "lead parado em uma etapa do pipeline" | Exigiria rastrear quando o lead entrou no estágio atual — não existe hoje (só `updated_at` do lead inteiro, que muda em qualquer edição, não só mudança de estágio) |
-| "cliente sem contato recente" (CRM) | Já coberto pelo domínio support via `customer_success_accounts.next_contact_at` (`support.follow_up_due`) — não duplicado |
-| "atividade CRM vencida" | `crm_activities` não tem due date, só `occurred_at` (log do que já aconteceu, não uma pendência futura) |
-| "projeto sem atividade recente" | `projects` não tem campo de última-atividade real; `updated_at` muda em qualquer edição administrativa, não só progresso |
-| "cobrança próxima" (due soon, financeiro) | Decisão de escopo, não limitação de dados — overdue já cobre o sinal de maior urgência; candidato natural de extensão futura (mesmo padrão de `getTasksDueSoon`) |
-| "tarefas sem responsável, caso esse conceito exista" | **Implementado** — `assigneeUserId` é nullable, confirmado e usado |
-
-## 5. Arquitetura
+## 2. Arquitetura final
 
 ```
-Dados reais (services/repositórios existentes)
+Operational Signal (v1.8, sem mudança)
         ↓
-Collectors por domínio (agents/director/collectors/*.ts)
+syncDirectorDecisionQueue() — upsert por deduplicationKey, concorrência segura
         ↓
-collectOperationalSignals() — Promise.allSettled, falha isolada por domínio
+agent_director_decisions (Decision Item) — priorityScore + priorityFactors explicáveis
         ↓
-operations-service.ts — ordena por severidade, monta o Brief (status ok/partial)
+propose (POST /director/decisions/:id/propose)
         ↓
-WORKFLOW_TEMPLATES (por domínio) — objetivo determinístico a partir do sinal
+planEvaluateAndPersistActionPlan() + executeActionPlan() — MESMAS funções da v1.2/v1.8
         ↓
-planEvaluateAndPersistActionPlan() + executeActionPlan() — MESMA função de POST /agents/action-plans
-        ↓
-Policy Evaluator (autoridade real, inalterada) → Action Plan Items persistidos
+Policy Evaluator (autoridade real, inalterada) → Action Plan Item → Approval (se necessário)
 ```
 
-`now` sempre parametrizável (nunca `Date.now()`/`new Date()` direto dentro
-dos collectors) — testes com relógio controlado, sem flakiness de data.
+## 3. Inventário explorado antes de implementar
 
-## 6. Arquivos criados
+Backend: schemas/migrations v1.0–v1.8, `operational-signals.ts`,
+`operations-service.ts`, `workflows/catalog.ts`, Action Plans,
+Approvals, Jobs, Events, Governance, auditoria, incidents, settings,
+circuit breakers, permissions existentes. Frontend: `use-director.ts`,
+`director-dashboard.tsx`, `domain-section.tsx`,
+`propose-action-button.tsx`, `status-badge.tsx`, `derived.ts`/
+`format.ts`, `permission-gate.tsx`, `use-users-directory.ts`,
+`pagination-bar.tsx`, kit de UI (dialog/select/textarea), padrão das
+rotas-proxy `app/api/**`.
+
+## 4. Decision Item — schema
+
+Nome escolhido: `agent_director_decisions` (consistente com o prefixo
+`agent_*` já usado por `agent_autonomy_blocks`,
+`agent_operational_settings` etc.).
+
+Campos: id, `deduplicationKey` (único, normalizado —
+`signalType::entityType::entityId`, com fallback estável para sinais
+sem `entityId`), `signalType`, `domain`, `entityType`/`entityId`,
+`title`/`description`, `severity`/`impact`/`urgency`, `priorityScore` +
+`priorityFactors` (jsonb, persistidos — não derivados a cada leitura,
+decisão documentada no código), `status`, `requiresHumanAttention`,
+`firstDetectedAt`/`lastDetectedAt`/`occurrenceCount`,
+`resolvedAt`/`resolvedBy`, `actionPlanId` (FK), `assignedUserId` (FK),
+`acknowledgedAt`/`acknowledgedBy`, `dismissedAt`/`dismissedBy`/
+`dismissReason`, `metadata`, `createdAt`/`updatedAt`.
+
+**`approvalId` deliberadamente não existe como coluna** — um approval
+real já é relacionável via `action_plan_id → agent_action_plan_items →
+agent_approvals` (mesma cadeia real do domínio, sem cópia
+inconsistente).
+
+## 5. Deduplication strategy
+
+Chave única `deduplicationKey` (nunca constraint composto com colunas
+nullable — mesmo problema já resolvido na v1.7 com índices parciais,
+aqui resolvido normalizando tudo em uma string sempre presente).
+Upsert via `ON CONFLICT` nesta coluna é o mecanismo real de
+deduplicação sob concorrência (correio.md seção 30) — nunca
+find-then-insert. Provado por teste de concorrência real (duas
+sincronizações simultâneas para o mesmo sinal).
+
+## 6. State machine
+
+`open → acknowledged → action_planned → awaiting_approval → resolved`
+e `dismissed` (soft state, a partir de qualquer estado não-terminal,
+com `reason` obrigatório). Toda transição valida origem/estado atual/
+permission e é auditada. Reabertura por reocorrência: item resolvido
+reabre quando a condição reaparece no próximo sync (regra clara,
+testada).
+
+## 7. Priority algorithm
+
+`priorityScore = severityWeight + impactWeight + urgencyWeight +
+agingWeight + recurrenceWeight`, pesos e thresholds centralizados em
+`agents/director/decisions/thresholds.ts` (aging: 2 pontos/dia, capado
+em 40; recurrence: 5 pontos/ocorrência extra, capado em 30) — sem
+números mágicos espalhados, `now` sempre parametrizável (nunca
+`Date.now()`/`new Date()` direto em regra de negócio). Persistido em
+`priorityFactors` para explicabilidade sem recálculo redundante em
+cada leitura.
+
+## 8. Impacto e urgência
+
+Regras fixas por `signalType` (`impact.ts`/`urgency.ts`) — nunca
+inventadas pelo LLM. `finance.receivable_overdue` usa o valor real do
+sinal quando disponível, cai no default do tipo quando não;
+`support.ticket_critical`/`agents.job_circuit_open` → impacto alto;
+`projects.task_unassigned` → impacto baixo. Urgência por SLA vencido/
+circuit breaker aberto → immediate; due-soon → soon; hygiene → normal.
+
+## 9. Integração com Operational Signals
+
+`syncDirectorDecisionQueue()` — coleta sinais, cria/atualiza itens,
+recalcula prioridade, resolve itens cuja condição desapareceu,
+**preserva intocados os itens de domínios cuja coleta falhou** (regra
+obrigatória da seção 7, testada explicitamente). Retorna
+`{created, updated, resolved, unchanged, errors}`.
+
+## 10. Integração com Action Plans
+
+`POST /director/decisions/:id/propose` reutiliza exatamente
+`planEvaluateAndPersistActionPlan()` + `executeActionPlan()` — as
+mesmas funções de `POST /agents/action-plans` (v1.2) e de `POST
+/director/signals/:id/propose` (v1.8, mantido **sem nenhuma mudança**,
+compatibilidade total). Ao nascer um Action Plan a partir de um
+Decision Item: relação persistida (`actionPlanId`), status atualizado
+para `action_planned` ou `awaiting_approval` conforme a decisão real do
+Policy Evaluator, audit trail mantido.
+
+## 11. Integração com Approvals
+
+Nenhum segundo approval criado — `getPendingApprovalForPlan()` consulta
+o approval real via `action_plan_items → agent_approvals` sob demanda.
+
+## 12. Integração com Jobs
+
+Tool nova `director.sync_decision_queue` (WRITE, `risk='low'`,
+`mutatesData=true`) — **nunca** reaproveita `director.generate_daily_brief`
+(READ, v1.8) para isso, decisão arquitetural explícita da seção 21
+(transformar silenciosamente uma tool READ em mutação foi proibido).
+Passa pelo mesmo Action Policy Evaluator que qualquer outra tool
+mutante, sem tratamento especial. Também existe `POST
+/director/decisions/sync` como trigger administrativo direto — ambos
+chamam a mesma função, nenhuma lógica duplicada.
+
+## 13. Events
+
+Nenhum evento novo implementado — decisão documentada (seção 22:
+"somente se houver consumidores reais"). Extensão futura se algum
+fluxo passar a reagir a `director.decision.created/resolved/escalated`
+em tempo real.
+
+## 14. Escalation
+
+Não implementada como mecanismo separado nesta versão —
+`requiresHumanAttention` já cobre o conceito de "atenção humana" na
+sincronização (marcado quando `awaiting_approval`), que é o caso de uso
+central da seção 24. Escalada por aging/recurrence acima de threshold
+fica como extensão futura documentada, não bloqueante para os
+critérios de aprovação.
+
+## 15. Permissions
+
+**Uma permission nova**, justificada individualmente:
+`agents.director.decisions.manage` — reconhecer/atribuir/dispensar/
+sincronizar. Leitura segue em `agents.read` (já usada por todo o
+módulo Director); propor ação segue em `agents.use` + `agents.plan`
+(mesma exigência de `POST /agents/action-plans`). CEO recebe todas as
+permissions automaticamente no seed (padrão já existente).
+
+## 16. Endpoints
+
+```
+GET  /agents/director/decisions              agents.read
+GET  /agents/director/decisions/overview     agents.read
+GET  /agents/director/decisions/:id          agents.read
+POST /agents/director/decisions/sync         agents.director.decisions.manage
+POST /agents/director/decisions/:id/acknowledge  agents.director.decisions.manage
+POST /agents/director/decisions/:id/assign       agents.director.decisions.manage
+POST /agents/director/decisions/:id/dismiss      agents.director.decisions.manage
+POST /agents/director/decisions/:id/propose      agents.use + agents.plan
+```
+
+Filtros: `?status=&domain=&severity=&assignedUserId=&requiresHumanAttention=`.
+Ordenação: `priorityScore DESC`, desempate `firstDetectedAt ASC`
+(determinístico, documentado no código).
+
+## 17. Auditoria
+
+```
+agents.director.decision.acknowledged
+agents.director.decision.assigned
+agents.director.decision.dismissed
+agents.director.decision.action_proposed
+```
+
+(`resolved` é resultado de sync automático, sem ator humano — não
+auditado como ação de usuário, coerente com o resto do módulo.) Mesmo
+serviço `audit()` existente, nenhum sistema paralelo.
+
+## 18. Frontend
+
+Expandida `/agents/director` (nenhuma área desconectada): nova seção
+**"Fila de Prioridades"** abaixo das seções de domínio existentes —
+resumo executivo (abertos/críticos/requerem decisão humana/aguardando
+aprovação/recorrentes), filtros (status/domínio/severidade/atenção
+humana), tabela com prioridade, severidade, domínio, título, tempo em
+aberto, ocorrências, responsável, status, indicador de atenção humana,
+e ações por permission (reconhecer/atribuir/propor ação/dispensar com
+justificativa obrigatória). Drill-down dedicado em
+`/agents/director/decisions/:id` — origem, entidade relacionada,
+fatores do score, Action Plan e approval relacionados (reusando
+`ApprovalStateBadge`/link para `/agents/plans/:id` já existentes),
+ciclo de vida completo. Botão "Sincronizar" (gated por
+`agents.director.decisions.manage`) chama o trigger administrativo.
+
+## 19. Arquivos criados
 
 Backend:
 
 ```
-agents/director/types.ts
-agents/director/thresholds.ts
-agents/director/schemas.ts
-agents/director/operational-signals.ts
-agents/director/operations-service.ts
-agents/director/collectors/{crm,projects,finance,support,agents}.ts
-agents/director/workflows/catalog.ts
-agents/director/operational-signals.test.ts   — 5 testes
-agents/director/operations-service.test.ts    — 5 testes
-agents/jobs/director-brief-job.test.ts        — 1 teste (Job → Run real)
-routes/agents/director.ts
-routes/agents/director.test.ts                — 6 testes
+db/schema/agent-director-decisions.ts
+drizzle/0014_agent_director_decisions.sql (+ meta/0014_snapshot.json)
+agents/director/decisions/{types,thresholds,impact,urgency,priority,dedup,
+  queue-service,schemas,actions-service,sync-service}.ts
+agents/director/decisions/{priority,sync-service,integration}.test.ts
+routes/agents/director-decisions.ts
+routes/agents/director-decisions.test.ts
 ```
 
 Frontend:
 
 ```
-app/api/agents/director/brief/route.ts
-app/api/agents/director/signals/route.ts
-app/api/agents/director/signals/[id]/route.ts
-app/api/agents/director/signals/[id]/propose/route.ts
-app/(dashboard)/agents/director/page.tsx
-components/agents/director/{director-dashboard,domain-section,propose-action-button}.tsx
-hooks/agents/use-director.ts
+app/api/agents/director/decisions/route.ts
+app/api/agents/director/decisions/overview/route.ts
+app/api/agents/director/decisions/sync/route.ts
+app/api/agents/director/decisions/[id]/route.ts
+app/api/agents/director/decisions/[id]/{acknowledge,assign,dismiss,propose}/route.ts
+app/(dashboard)/agents/director/decisions/[id]/page.tsx
+components/agents/director/{decision-queue,decision-detail,
+  assign-decision-dialog,dismiss-decision-dialog}.tsx
+hooks/agents/use-director-decisions.ts
 ```
 
-## 7. Arquivos alterados
+## 20. Arquivos alterados
 
 ```
-backend/src/agents/tools/director.ts       — nova tool director.generate_daily_brief
-backend/src/db/seed.ts                     — tool nova + vínculo agente↔tool (sem permission nova)
-backend/src/routes/agents/index.ts         — registro da rota
-backend/src/routes/agents/operations.ts    — export de getJobsSummary/getApprovalsSummary (reuso pelo Director)
-backend/src/routes/projects/projects.ts    — + getTasksDueSoon/getUnassignedTasks
-frontend/types/agents.ts                   — OperationalSignal/DailyOperationsBrief/...
-frontend/services/agents.ts                — 4 funções novas
-frontend/hooks/... (indireto via use-director.ts, novo)
-frontend/lib/agents/derived.ts             — labels + signalEntityHref
-frontend/lib/agents/derived.test.ts        — 5 testes novos (signalEntityHref)
-frontend/lib/query/keys.ts                 — chaves novas
-frontend/components/agents/status-badge.tsx — SignalSeverityBadge
-frontend/components/agents/agents-sub-nav.tsx — link "Mesa do Diretor"
+backend/src/agents/tools/director.ts   — tool director.sync_decision_queue
+backend/src/db/schema/index.ts         — export do schema novo
+backend/src/db/seed.ts                 — permission + tool + vínculo agente↔tool
+backend/src/routes/agents/index.ts     — registro das rotas
+frontend/types/agents.ts               — DirectorDecision/PriorityFactors/...
+frontend/services/agents.ts            — 8 funções novas
+frontend/lib/query/keys.ts             — chaves novas
+frontend/lib/agents/derived.ts (+test) — labels + daysOpen/canProposeActionForDecision/isDecisionClosed
+frontend/components/agents/status-badge.tsx — DecisionStatusBadge
+frontend/components/agents/director/director-dashboard.tsx — <DecisionQueue />
 ```
 
-## 8. Endpoints
+## 21. Segurança
 
-```
-GET  /agents/director/brief                agents.read
-GET  /agents/director/signals              agents.read
-GET  /agents/director/signals/:id          agents.read
-POST /agents/director/signals/:id/propose  agents.use + agents.plan
-```
+- Autorização 100% server-side (`requirePermission` em cada rota,
+  `PermissionGate` no frontend é só UX).
+- Nenhuma decisão de permission pelo LLM; nenhuma execução direta pelo
+  Decision Queue; zero SQL/tool/shell/credential acessível ao LLM.
+- Nenhum bypass do Policy Evaluator ou do Approval — `propose` sempre
+  passa pelas mesmas duas funções oficiais.
+- Nenhum aumento de privilégio por severity/priority: `critical` e
+  `priorityScore` alto nunca autorizam nada sozinhos.
+- Validação Zod em toda rota mutante; `assign` rejeita usuário
+  inexistente; `dismiss` exige `reason` não-vazio.
 
-Consolidado em relação à sugestão literal do correio.md: sem
-`/director/operations` separado de `/director/brief` (redundante — o
-brief já é a visão consolidada; seção 13 permite explicitamente "avaliar
-nomes finais").
+## 22. Testes
 
-## 9. Permissions
-
-**Nenhuma permission nova criada** — decisão deliberada (correio.md
-seção 14: "antes verificar se permissions equivalentes já existem. Não
-duplicar"). Reaproveitadas:
-
-- `agents.read` — já usada por `director.get_business_overview` (v1.6) para o mesmo tipo de dado cross-departamento; cobre os 3 endpoints de leitura.
-- `agents.use` + `agents.plan` — exatamente as mesmas exigidas por `POST /agents/action-plans` (v1.2); o endpoint `propose` literalmente chama a mesma função, então exige a mesma autorização, sem exceção.
-
-## 10. Workflow templates
-
-4 templates por domínio (não por tipo de sinal — os nomes sugeridos pelo
-correio.md são de domínio) + 1 especial:
-
-```
-crm.follow_up_stale_lead        — qualquer sinal domain='crm'
-projects.handle_overdue_task    — qualquer sinal domain='projects'
-finance.review_overdue_item     — qualquer sinal domain='finance'
-support.review_stale_ticket     — qualquer sinal domain='support'
-director.daily_operations_review — objetivo do Job recorrente (não é "propose" sobre um sinal)
-```
-
-Nenhum define autorização — só o texto do objetivo enviado ao Planner.
-
-## 11. Integração com Planner/Policy/Executor
-
-Zero bypass: `POST /director/signals/:id/propose` chama exatamente
-`planEvaluateAndPersistActionPlan()` + `executeActionPlan()`, as mesmas
-duas funções de `POST /agents/action-plans` (v1.2), na mesma ordem. Prova
-por teste real (`routes/agents/director.test.ts`): a decisão do item
-retornado é sempre um dos 4 valores reais do Policy Evaluator
-(`execute`/`approval_required`/`blocked`/`shadow`), nunca hardcoded pelo
-endpoint do Diretor, e o item fica de fato persistido em
-`agent_action_plan_items`.
-
-## 12. Integração Jobs/Events
-
-**Jobs**: nova tool `director.generate_daily_brief` (READ), registrada no
-agente `director`. Um `agent_jobs` comum (nenhuma tabela/coluna nova)
-com objetivo `"Gerar briefing operacional diário da agência e
-identificar situações que requerem atenção."` roda via `runAgentJob()`
-— o Scheduler v1.3 já consegue disparar isso sem mudança nenhuma.
-Provado com Run real, ponta a ponta: `agents/jobs/director-brief-job.test.ts`
-(e validado manualmente contra o LLM real desta sessão, não só mockado —
-briefing real de 22 sinais gerado a partir dos dados reais do Postgres de
-dev).
-
-**Events**: nenhum evento novo publicado nesta versão — decisão
-documentada (correio.md seção 12: "não instrumentar dezenas de eventos
-apenas por antecipação"). O brief é uma agregação de leitura, não um fato
-transacional; se um workflow futuro precisar reagir a "task ficou
-overdue" em tempo real (não só quando alguém abre o brief), aí sim
-justificaria um evento novo — não implementado agora.
-
-## 13. Segurança
-
-- LLM nunca decide autorização — só escolhe qual tool chamar dentro de um
-  objetivo já determinístico montado pelo backend.
-- `propose` nunca executa nada diretamente — sempre via
-  `planEvaluateAndPersistActionPlan`/`executeActionPlan` reais.
-- Nenhum Action Plan Item pode fazer o que o usuário criador (`requestedBy`)
-  não poderia fazer diretamente — mesma regra de permissions por tool já
-  existente, inalterada.
-- Sinais são 100% determinísticos (dados reais, comparações de data) —
-  o LLM nunca gera um sinal, só interpreta os que já existem.
-- Nenhuma tool nova mutante: `director.generate_daily_brief` é READ, sem
-  `mutatesData`, sem `requiresApproval`.
-
-## 14. Auditoria
-
-```
-agents.director.brief_generated   — a cada GET /director/brief
-agents.director.action_proposed   — a cada POST propose bem-sucedido
-```
-
-Metadata: `signalId`/`signalType`/`domain`/`entityType`/`entityId`/
-`resultingActionPlanId` (proposed) e `status`/`summary`/`errors` (brief).
-Mesmo serviço `audit()` existente, nenhum sistema paralelo.
-
-## 15. Frontend
-
-`/agents/director` — "mesa do diretor": card de resumo (críticos/avisos/
-atenção/info, com aviso visível quando o brief está `partial` e qual
-domínio falhou) + 5 seções por domínio (CRM/Projetos/Financeiro/Suporte/
-Agentes), cada sinal com severidade, descrição, link para a entidade
-quando existe rota real (`signalEntityHref` — nunca um link quebrado:
-`task` usa `metadata.projectId`, não o id da própria tarefa, já que não
-existe página de tarefa isolada) e botão "Propor ação". O resultado do
-propose mostra a decisão real (Executável automaticamente/Approval
-necessário/Bloqueado/Shadow) e linka para a tela de planos já existente —
-nenhuma confirmação paralela, nenhuma mutação direta na UI.
-
-## 16. Testes
-
-**17 novos no backend** (308 → 326... na verdade 18, ver nota): 5
-(detecção: positiva, falso positivo, threshold, isolamento de domínio,
-ordenação por severidade) + 5 (brief: consolidação, contadores, módulos
-vazios, falha isolada de fonte sem mascarar erro, `now` controlado) + 6
-(API: autorização read/propose separadas, GET signal existente/404,
-propose prova pipeline sem bypass) + 1 (Job real → Run → tool → briefing
-determinístico). **5 novos no frontend** (`signalEntityHref`: 5 casos).
+**Backend — 37 testes novos** (5 `computePriority` + 2 `daysBetween` +
+5 `resolveImpact` + 2 `resolveUrgency` + 3 `buildDeduplicationKey` + 7
+`syncDirectorDecisionQueue` — incluindo concorrência e preservação em
+falha de domínio — + 12 API (autorização/transições/propose/filtros/
+dismiss) + 1 cenário integrado obrigatório fim-a-fim, seção 34).
+**Frontend — 8 testes novos** em `lib/agents/derived.test.ts` (labels,
+`isDecisionClosed`/`canProposeActionForDecision`, `daysOpen` com `now`
+controlado).
 
 ```
 backend typecheck:   limpo, 0 erros
-backend tests:       326/326, 0 fail (--test-concurrency=1, confirmado 2x)
+backend tests:       363/363, 0 fail (suíte completa v1.0–v1.9, --test-concurrency=1)
 frontend typecheck:  limpo, 0 erros
-frontend tests:      56/56, 0 fail
-frontend build:      limpo, 0 erros — /agents/director + 4 rotas BFF compilam
+frontend tests:      22/22, 0 fail (lib/agents/derived.test.ts completo)
+frontend build:      limpo, 0 erros — 8 rotas novas compilam
 ```
 
-## 17. Compatibilidade v1.0–v1.7
+## 23. Cenário integrado (correio.md seção 34)
 
-Confirmada: suíte completa anterior (todos os 308 testes de v1.0–v1.7)
-continua passando dentro dos 326. Nenhuma rota/comportamento/permission
-existente foi alterado — só leitura nova e reuso do pipeline de Action
-Plan já existente.
+Provado em `agents/director/decisions/integration.test.ts` com
+componentes reais (DB real, Planner real, Policy Evaluator real —
+só o provider LLM mockado para determinismo): lead real → signal →
+sync cria Decision Item → sync de novo não duplica → propose → Action
+Plan persistido com a decisão real do Policy Evaluator → status do
+item reflete → lead resolvido → sync → item `resolved`.
 
-## 18. Bugs encontrados
+## 24. Bugs encontrados durante o desenvolvimento
 
-1. **Tool nova sem vínculo agente↔tool no seed**: `director.generate_daily_brief`
-   foi registrada no código (`tool-registry`) mas esquecida no catálogo
-   de seed e em `defaultAgentToolPermissions['director']` — o Planner
-   validava o Action Plan mockado e rejeitava com `validation_error:
-   "Action Plan gerado é inválido"` porque a tool não estava associada ao
-   agente `director` em `agent_tool_permissions`. Diagnosticado com um
-   script isolado reproduzindo o Run fora da suíte de teste (para inspecionar
-   o erro real sem o `after()` do teste limpar os dados antes de eu
-   conseguir ler); corrigido adicionando a tool ao catálogo de seed e ao
-   vínculo do agente, `db:seed` re-rodado no Postgres de dev. Teste
-   voltou a passar sem alterar nenhuma expectativa.
+Nenhum bug de lógica encontrado na implementação já presente no início
+desta execução — validação (typecheck + suíte completa + build)
+confirmou que o backend estava correto de ponta a ponta. Os únicos
+ajustes feitos nesta sessão foram no frontend, recém-criado: dois
+erros de tipo pegos pelo `tsc` (Select `onValueChange` aceitando
+`null`; `signalEntityHref` recebendo `entityType: string | null` sem
+normalizar para `undefined`) — corrigidos antes de qualquer commit.
 
-Nenhum outro bug real encontrado nesta versão (diferente da v1.5/v1.7,
-que tiveram mais achados) — a maior parte do trabalho reaproveitou
-funções já testadas em outros módulos.
+## 25. Riscos / débitos técnicos
 
-## 19. Riscos / débitos técnicos
+1. Escalation (seção 23) não tem mecanismo automático dedicado além de
+   `requiresHumanAttention` já setado no sync quando há approval
+   pendente — aging/recurrence acima de threshold como gatilho
+   explícito de escalada fica como extensão futura.
+2. Nenhum evento (`director.decision.*`) implementado — sem
+   consumidor real hoje; documentado, não bloqueante.
+3. Frontend não tem testes de componente React para `DecisionQueue`/
+   `DecisionDetail` — só a lógica pura em `lib/agents/derived.ts` foi
+   testada, consistente com o padrão já usado no resto do módulo
+   Agentes (nenhum outro componente do módulo tem teste de
+   componente).
 
-1. **`agents.job_circuit_open`/`agents.approval_pending` usam query
-   direta em `agent_jobs`/`agent_approvals`** dentro do collector — não é
-   uma violação da regra "nunca SQL no Diretor" (essa regra é sobre não
-   duplicar lógica de domínio de negócio; este collector vive dentro do
-   próprio módulo de agentes), mas documentado aqui para transparência
-   total sobre onde exatamente há uma exceção deliberada.
-2. **Paginação de `listIncidents` limitada a 20** dentro do collector de
-   agentes — um ambiente com muitos incidents simultâneos veria só os 20
-   mais recentes no brief. Aceitável para uma tela operacional (não uma
-   auditoria completa, que já existe em `/agents/incidents`), mas vale
-   registro.
-3. **Sinais "due soon" cobrem só tarefas**, não financeiro — decisão de
-   escopo documentada na seção 4, não limitação técnica.
-4. **`director.generate_daily_brief` foi testada com o LLM real desta
-   sessão** (não só mockada) — confirma que funciona em produção, mas
-   isso consumiu uma chamada real ao provider configurado (fora dos
-   testes automatizados, que usam mock).
-5. Segue pendente de sessões anteriores: os Jobs órfãos `1546`/`1547`
-   ainda `active` (dormentes) no Postgres de dev, aguardando
-   cancelamento aprovado.
+## 26. Compatibilidade v1.0–v1.8
 
-## 20. Deploy/migrations
+Confirmada pela suíte completa (363/363, incluindo todos os testes
+anteriores a esta versão). `POST /director/signals/:id/propose` (v1.8)
+intocado. Nenhuma rota/comportamento/permission existente alterado —
+tudo aditivo.
 
-**Nenhuma migration nova** — v1.8 não criou tabela nem coluna.
+## 27. Comandos de migration/seed/deploy
 
 ```bash
-npm run db:seed   # cria a tool director.generate_daily_brief e o vínculo agente↔tool (idempotente)
+npm run db:migrate   # aplica 0014_agent_director_decisions.sql
+npm run db:seed      # cria a permission agents.director.decisions.manage,
+                      # a tool director.sync_decision_queue e o vínculo agente↔tool (idempotente)
 ```
 
-Sem isso, um Job com objetivo de briefing diário rodando com LLM real não
-teria acesso à tool (mesmo bug da seção 18) — já corrigido e re-rodado
-nesta sessão, mas necessário em qualquer outro ambiente antes do deploy.
-
-## 21. Git status
+## 28. Git status
 
 ```
-?? backend/src/agents/director/
-?? backend/src/agents/jobs/director-brief-job.test.ts
-?? backend/src/routes/agents/director.test.ts
-?? backend/src/routes/agents/director.ts
-?? frontend/app/api/agents/director/
-?? frontend/app/(dashboard)/agents/director/
-?? frontend/components/agents/director/
-?? frontend/hooks/agents/use-director.ts
+?? backend/drizzle/0014_agent_director_decisions.sql
+?? backend/drizzle/meta/0014_snapshot.json
+?? backend/src/agents/director/decisions/
+?? backend/src/db/schema/agent-director-decisions.ts
+?? backend/src/routes/agents/director-decisions.test.ts
+?? backend/src/routes/agents/director-decisions.ts
+?? frontend/app/api/agents/director/decisions/
+?? frontend/app/(dashboard)/agents/director/decisions/
+?? frontend/components/agents/director/assign-decision-dialog.tsx
+?? frontend/components/agents/director/decision-detail.tsx
+?? frontend/components/agents/director/decision-queue.tsx
+?? frontend/components/agents/director/dismiss-decision-dialog.tsx
+?? frontend/hooks/agents/use-director-decisions.ts
+ M backend/drizzle/meta/_journal.json
  M backend/src/agents/tools/director.ts
+ M backend/src/db/schema/index.ts
  M backend/src/db/seed.ts
  M backend/src/routes/agents/index.ts
- M backend/src/routes/agents/operations.ts
- M backend/src/routes/projects/projects.ts
  M correio.md
- M frontend/components/agents/agents-sub-nav.tsx
+ M frontend/components/agents/director/director-dashboard.tsx
  M frontend/components/agents/status-badge.tsx
  M frontend/lib/agents/derived.test.ts
  M frontend/lib/agents/derived.ts

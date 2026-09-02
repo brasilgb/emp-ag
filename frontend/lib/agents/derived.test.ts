@@ -5,9 +5,15 @@ import {
   approvalState,
   autonomyLevelBadgeVariant,
   autonomyLevelLabel,
+  canProposeActionForDecision,
+  daysOpen,
+  decisionImpactLabel,
+  decisionStatusLabel,
+  decisionUrgencyLabel,
   executionStatusLabel,
   formatChatResponse,
   isCriticalSetting,
+  isDecisionClosed,
   signalEntityHref,
 } from "./derived";
 
@@ -124,5 +130,52 @@ describe("signalEntityHref", () => {
   test("entityType desconhecido ou ausente nunca gera link", () => {
     assert.equal(signalEntityHref({ entityType: "agent_approval", entityId: 1, metadata: {} }), null);
     assert.equal(signalEntityHref({ metadata: {} }), null);
+  });
+});
+
+// Agentes v1.9 — Director Decision Queue.
+describe("decisionStatusLabel / decisionImpactLabel / decisionUrgencyLabel", () => {
+  test("todo status/impact/urgency conhecido tem rótulo em pt-BR", () => {
+    assert.equal(decisionStatusLabel("open"), "Aberto");
+    assert.equal(decisionStatusLabel("awaiting_approval"), "Aguardando aprovação");
+    assert.equal(decisionImpactLabel("high"), "Alto");
+    assert.equal(decisionUrgencyLabel("immediate"), "Imediata");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor (nunca undefined)", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(decisionStatusLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+describe("isDecisionClosed / canProposeActionForDecision", () => {
+  test("resolved e dismissed são os únicos estados terminais", () => {
+    assert.equal(isDecisionClosed("resolved"), true);
+    assert.equal(isDecisionClosed("dismissed"), true);
+    assert.equal(isDecisionClosed("open"), false);
+    assert.equal(isDecisionClosed("awaiting_approval"), false);
+  });
+
+  test("só é possível propor ação a partir de open/acknowledged (mesma regra do backend)", () => {
+    assert.equal(canProposeActionForDecision("open"), true);
+    assert.equal(canProposeActionForDecision("acknowledged"), true);
+    assert.equal(canProposeActionForDecision("action_planned"), false);
+    assert.equal(canProposeActionForDecision("awaiting_approval"), false);
+    assert.equal(canProposeActionForDecision("resolved"), false);
+    assert.equal(canProposeActionForDecision("dismissed"), false);
+  });
+});
+
+describe("daysOpen", () => {
+  test("now controlado, nunca Date.now() implícito", () => {
+    assert.equal(daysOpen("2026-08-25T12:00:00.000Z", NOW), 5);
+  });
+
+  test("nunca retorna negativo (relógio do servidor levemente à frente)", () => {
+    assert.equal(daysOpen("2026-08-31T12:00:00.000Z", NOW), 0);
+  });
+
+  test("menos de 24h ainda conta como 0 dias (arredonda para baixo)", () => {
+    assert.equal(daysOpen("2026-08-30T01:00:00.000Z", NOW), 0);
   });
 });

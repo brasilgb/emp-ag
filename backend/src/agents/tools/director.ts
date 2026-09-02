@@ -6,6 +6,7 @@ import { getFinancialSummary } from '../../routes/financial/stats.js';
 import { getProjectsOverviewCounts } from '../../routes/projects/projects.js';
 import { getSupportOverviewCounts } from '../../routes/support/stats.js';
 import { getDailyOperationsBrief } from '../director/operations-service.js';
+import { syncDirectorDecisionQueue } from '../director/decisions/sync-service.js';
 import { registerTool } from '../tool-registry.js';
 import type { ToolDefinition } from '../types.js';
 
@@ -87,7 +88,34 @@ export const directorGenerateDailyBrief: ToolDefinition<Record<string, never>> =
   },
 };
 
+// director.sync_decision_queue (WRITE) — Agentes v1.9 (correio.md
+// seção 21): decisão arquitetural explícita — sincronizar a Decision
+// Queue é uma escrita real (cria/atualiza/resolve linhas em
+// agent_director_decisions), então NUNCA reaproveita
+// director.generate_daily_brief (READ, v1.8) para isso — transformar
+// silenciosamente uma tool READ em mutação foi explicitamente proibido.
+// Tool nova, classificada no catálogo (seed.ts) como mutatesData=true,
+// risk='low' (bookkeeping interno determinístico, não uma mutação de
+// negócio) — passa pelo MESMO Action Policy Evaluator que qualquer
+// outra tool mutante, sem tratamento especial: se a política decidir
+// que precisa de approval, precisará (não há bypass aqui).
+export const directorSyncDecisionQueue: ToolDefinition<Record<string, never>> = {
+  handler: 'director.sync_decision_queue',
+  requiredPermission: 'agents.director.decisions.manage',
+  inputSchema: emptyInput,
+  async run() {
+    const summary = await syncDirectorDecisionQueue();
+
+    return {
+      success: true,
+      summary: `Fila de decisões sincronizada: ${summary.created} novos, ${summary.updated} atualizados, ${summary.resolved} resolvidos.`,
+      data: summary,
+    };
+  },
+};
+
 export function registerDirectorTools() {
   registerTool(directorGetBusinessOverview);
   registerTool(directorGenerateDailyBrief);
+  registerTool(directorSyncDecisionQueue);
 }

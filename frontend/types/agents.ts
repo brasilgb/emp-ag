@@ -664,3 +664,77 @@ export interface ProposeActionResult {
   plan: ActionPlan;
   items: ActionPlanItem[];
 }
+
+// Agentes v1.9 — Director Decision Queue (correio.md).
+export const DECISION_STATUSES = [
+  "open",
+  "acknowledged",
+  "action_planned",
+  "awaiting_approval",
+  "resolved",
+  "dismissed",
+] as const;
+export type DecisionStatus = (typeof DECISION_STATUSES)[number];
+
+export type DecisionImpact = "high" | "medium" | "low";
+export type DecisionUrgency = "immediate" | "soon" | "normal";
+
+export interface PriorityFactors {
+  severity: { value: SignalSeverity; weight: number };
+  impact: { value: DecisionImpact; weight: number };
+  urgency: { value: DecisionUrgency; weight: number };
+  aging: { days: number; weight: number };
+  recurrence: { count: number; weight: number };
+  total: number;
+}
+
+export interface DirectorDecision {
+  id: number;
+  deduplicationKey: string;
+  signalType: string;
+  domain: SignalDomain;
+  entityType: string | null;
+  entityId: number | null;
+  title: string;
+  description: string;
+  severity: SignalSeverity;
+  impact: DecisionImpact;
+  urgency: DecisionUrgency;
+  priorityScore: number;
+  priorityFactors: PriorityFactors;
+  status: DecisionStatus;
+  requiresHumanAttention: boolean;
+  firstDetectedAt: string;
+  lastDetectedAt: string;
+  occurrenceCount: number;
+  resolvedAt: string | null;
+  resolvedBy: number | null;
+  actionPlanId: number | null;
+  assignedUserId: number | null;
+  acknowledgedAt: string | null;
+  acknowledgedBy: number | null;
+  dismissedAt: string | null;
+  dismissedBy: number | null;
+  dismissReason: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DecisionQueueOverview {
+  generatedAt: string;
+  topCritical: DirectorDecision[];
+  awaitingHumanAttention: DirectorDecision[];
+  awaitingApproval: DirectorDecision[];
+  agingOldestFirst: DirectorDecision[];
+  mostRecurrent: DirectorDecision[];
+  openTotal: number;
+}
+
+export interface DecisionSyncSummary {
+  created: number;
+  updated: number;
+  resolved: number;
+  unchanged: number;
+  errors: { domain: SignalDomain; code: string; message: string }[];
+}

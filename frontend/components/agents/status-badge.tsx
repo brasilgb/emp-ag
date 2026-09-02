@@ -10,6 +10,7 @@ import {
   autonomyLevelBadgeVariant,
   autonomyLevelLabel,
   circuitStateLabel,
+  decisionStatusLabel,
   eventDeliveryStatusLabel,
   eventStatusLabel,
   executionStatusLabel,
@@ -30,6 +31,7 @@ import type {
   AutonomyBlockReason,
   AutonomyLevel,
   CircuitState,
+  DecisionStatus,
   EventDeliveryStatus,
   EventStatus,
   ExecutionStatus,
@@ -341,6 +343,24 @@ export function SignalSeverityBadge({ severity }: { severity: SignalSeverity }) 
   return (
     <Badge variant="secondary" className={cn("border-transparent", SIGNAL_SEVERITY_STYLES[severity])}>
       {signalSeverityLabel(severity)}
+    </Badge>
+  );
+}
+
+// Agentes v1.9 — Director Decision Queue (correio.md seção 25).
+const DECISION_STATUS_STYLES: Record<DecisionStatus, string> = {
+  open: "bg-muted text-muted-foreground",
+  acknowledged: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  action_planned: "bg-violet-500/10 text-violet-700 dark:text-violet-400",
+  awaiting_approval: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  resolved: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  dismissed: "bg-muted text-muted-foreground line-through",
+};
+
+export function DecisionStatusBadge({ status }: { status: DecisionStatus }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", DECISION_STATUS_STYLES[status])}>
+      {decisionStatusLabel(status)}
     </Badge>
   );
 }
