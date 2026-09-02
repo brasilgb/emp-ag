@@ -628,3 +628,39 @@ export interface ResolvedSetting {
   description: string;
   scopes: readonly ("global" | "job")[];
 }
+
+// Agentes v1.8 — Director Operations & Business Workflows (correio.md).
+export type SignalDomain = "crm" | "projects" | "finance" | "support" | "agents";
+export type SignalSeverity = "info" | "attention" | "warning" | "critical";
+
+export interface OperationalSignal {
+  id: string;
+  type: string;
+  domain: SignalDomain;
+  severity: SignalSeverity;
+  title: string;
+  description: string;
+  entityType?: string;
+  entityId?: number;
+  detectedAt: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface SignalSourceError {
+  domain: SignalDomain;
+  code: "SOURCE_UNAVAILABLE";
+  message: string;
+}
+
+export interface DailyOperationsBrief {
+  generatedAt: string;
+  status: "ok" | "partial";
+  errors: SignalSourceError[];
+  summary: { critical: number; warning: number; attention: number; info: number };
+  domains: Record<SignalDomain, OperationalSignal[]>;
+}
+
+export interface ProposeActionResult {
+  plan: ActionPlan;
+  items: ActionPlanItem[];
+}

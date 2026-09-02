@@ -1,1023 +1,716 @@
-# Execução — Agentes v1.7: Agent Management & Operational Configuration
+# Execução — Agentes v1.8: Director Operations & Business Workflows
 
-## Contexto obrigatório
+## Objetivo
 
-Estamos evoluindo o módulo de Agentes da plataforma **Agência de Software 2026**.
+Transformar o Diretor Virtual de uma infraestrutura genérica de agentes em uma camada operacional capaz de acompanhar a agência e coordenar ações reais sobre:
 
-Arquitetura atual:
+* CRM;
+* Projetos e Tarefas;
+* Financeiro;
+* Suporte / Customer Success.
 
-* Backend: Fastify + TypeScript + Drizzle + PostgreSQL + Redis.
-* Frontend: Next.js + TypeScript + Tailwind + shadcn/ui + TanStack Query.
-* PostgreSQL é a fonte oficial de dados.
-* Segurança é requisito estrutural, não etapa posterior.
-* Autorização sempre no backend.
-* LLM nunca recebe acesso direto a SQL, shell, credenciais, permissões ou mecanismos arbitrários de execução.
-* Toda ação continua passando pela arquitetura já existente de planner → policy evaluator → action plan/items → executor → approvals.
-* Não criar segundo executor, segundo planner, segundo policy engine ou mecanismo paralelo de autonomia.
+A v1.8 NÃO deve criar um novo motor de agentes, novo executor ou novo mecanismo de autorização.
 
-Versões existentes e já aprovadas:
+Toda ação deve continuar obrigatoriamente passando pela arquitetura já existente:
 
-* v1.0 — Agentes + Diretor Virtual.
-* v1.1 — LLM Interpreter + Shadow Mode + Policy/Approvals.
-* v1.2 — Action Planning + Approval Workflow.
-* v1.3 — Jobs, Runs, Delegation & Controlled Autonomy.
-* v1.4 — Event Engine & Autonomous Operations.
-* v1.5 — Autonomous Safety & Governance.
-* v1.6 — Operations Control & Observability.
+Objetivo
+→ Planner
+→ Policy Evaluator
+→ Action Plan / Plan Items
+→ Executor determinístico
+→ Approvals quando necessárias
+→ Audit
+→ Jobs / Runs / Events quando aplicável.
 
-A v1.6 já fornece:
-
-* operations dashboard;
-* incidents;
-* audit logs;
-* run detail;
-* lineage;
-* circuit breaker visibility;
-* global autonomy switch;
-* autonomy switch por Job;
-* métricas operacionais;
-* controle e observabilidade sobre Jobs, Runs, Events e autonomia.
-
-Não alterar comportamento existente sem necessidade comprovada.
+O LLM nunca decide autorização.
 
 ---
 
-# Objetivo da v1.7
+# 1. Regra arquitetural principal
 
-Criar uma camada centralizada, persistente, auditável e segura para **configuração operacional dos agentes**, reduzindo dependência de valores espalhados em:
+O Diretor Virtual deve funcionar como um coordenador dos módulos existentes.
 
-* `.env`;
-* constants;
-* configurações hardcoded;
-* defaults internos;
-* parâmetros fixos do circuit breaker;
-* budgets;
-* limites operacionais;
-* comportamento de Jobs;
-* parâmetros relacionados à autonomia.
+Ele poderá:
 
-A v1.7 deve permitir que operadores autorizados administrem configurações pelo produto sem editar código ou `.env`.
+* consultar situação operacional;
+* detectar situações que merecem atenção;
+* montar briefing diário;
+* propor ações;
+* criar Action Plans;
+* delegar ações aos agentes existentes;
+* disparar workflows já autorizados;
+* acompanhar resultados de Runs;
+* reportar bloqueios, approvals e incidentes.
 
-A versão NÃO deve aumentar a autonomia dos agentes.
+Ele NÃO poderá:
 
-Ela deve apenas:
-
-* configurar;
-* limitar;
-* administrar;
-* visualizar;
-* sobrescrever de forma controlada;
-
-capacidades que já existem.
-
----
-
-# Princípio fundamental
-
-Configuração nunca pode significar elevação silenciosa de privilégio.
-
-Nenhuma configuração pode:
-
-* conceder permission;
-* alterar role;
-* ignorar approval;
-* permitir ferramenta não registrada;
-* fazer bypass do Policy Evaluator;
-* substituir autorização server-side;
-* permitir que o LLM modifique suas próprias regras;
-* aumentar autonomia por falha de leitura/configuração.
-
-Sempre aplicar comportamento **fail-safe**:
-
-> Em caso de valor inválido, configuração ausente, erro de leitura ou inconsistência, usar a configuração mais restritiva aplicável.
+* acessar SQL diretamente;
+* acessar shell;
+* executar ferramenta arbitrária;
+* ignorar permissions;
+* aprovar a própria ação;
+* alterar policy;
+* alterar roles/permissões;
+* alterar secrets;
+* executar operações destrutivas fora do executor existente.
 
 ---
 
-# ETAPA 1 — Inventário antes de implementar
+# 2. Criar uma camada de Operational Signals
 
-Antes de escrever código novo, faça uma exploração completa do backend e produza um inventário das configurações operacionais atuais relacionadas aos agentes.
+Precisamos de uma representação determinística dos fatos relevantes da agência.
 
-Pesquisar pelo menos:
+Criar algo conceitualmente semelhante a:
 
-* `process.env`
-* `AGENT_`
-* `AUTONOMY`
-* `CIRCUIT`
-* `BUDGET`
-* `LIMIT`
-* `TIMEOUT`
-* `MAX_`
-* `MIN_`
-* `THRESHOLD`
-* `CONFIDENCE`
-* `SHADOW`
-* `APPROVAL`
-* `SCHEDULE`
-* `RETRY`
-* `EVENT`
-* `DEPTH`
-* `RUN`
-* `JOB`
+`agents/director/operational-signals.ts`
 
-Classifique cada configuração encontrada em:
+Os sinais devem ser produzidos através dos services/repositories existentes dos módulos.
 
-1. deve permanecer exclusivamente em `.env`;
-2. deve ser runtime-configurável;
-3. pode ter default em `.env` e override no PostgreSQL;
-4. é constante de segurança e não deve ser editável pela UI.
+Não fazer queries SQL dentro do Diretor.
 
-Não transforme tudo indiscriminadamente em configuração editável.
-
-Antes da implementação, registrar no relatório quais parâmetros foram encontrados e qual decisão foi tomada para cada um.
-
----
-
-# ETAPA 2 — Modelo de configuração
-
-Criar modelo persistente adequado para configurações operacionais.
-
-Evitar uma tabela completamente solta sem validação semântica.
-
-Pode ser usada uma tabela genérica de settings apenas se houver:
-
-* chave conhecida;
-* schema conhecido;
-* validação explícita;
-* tipo;
-* escopo;
-* default;
-* limites;
-* documentação no código.
-
-Sugestão conceitual:
-
-`agent_operational_settings`
-
-Campos possíveis:
-
-* `id`
-* `key`
-* `scope`
-* `scope_id`
-* `value`
-* `value_type`
-* `created_at`
-* `updated_at`
-* `updated_by`
-
-Escopos mínimos:
-
-* `global`
-* `job`
-
-Não implementar escopo por usuário ou tenant nesta versão, a menos que a arquitetura atual já exija isso.
-
-Usar unique constraint adequada, por exemplo:
-
-`(key, scope, scope_id)`
-
-Garantir que configuração global tenha `scope_id = null`.
-
-Se Drizzle/PostgreSQL dificultar unique parcial, implementar de forma segura equivalente.
-
----
-
-# Configurações inicialmente suportadas
-
-Após o inventário, priorizar configurações diretamente ligadas à autonomia já existente.
-
-Pelo menos avaliar:
-
-### Circuit breaker
-
-* failure threshold;
-* recovery/cooldown se já existir;
-* demais limites reais encontrados no código.
-
-O Incident Center da v1.6 possui atualmente `job_repeated_failure` baseado em 3 Runs.
-
-Se tecnicamente adequado, eliminar essa divergência e fazer o incidente respeitar a configuração efetiva do threshold do circuit breaker.
-
-Não duplicar regra.
-
-### Autonomy depth
-
-Se já existir limite hardcoded/env para profundidade de autonomia/delegação:
-
-* expor como configuração operacional;
-* validar mínimo/máximo;
-* nunca permitir profundidade ilimitada.
-
-### Job/run budgets
-
-Configurar limites que já existam no runtime, por exemplo:
-
-* máximo de runs;
-* ações;
-* eventos;
-* duração;
-* custo;
-* tokens;
-
-somente se esses conceitos já existirem concretamente no projeto.
-
-Não inventar budget fictício somente para preencher interface.
-
-### Retry
-
-Se existir retry operacional real:
-
-* máximo de tentativas;
-* backoff;
-
-avaliar se deve ser configurável.
-
-### Outros limites
-
-Adicionar somente os que forem encontrados durante o inventário e fizerem sentido operacional.
-
----
-
-# Hierarquia das configurações
-
-Implementar resolução explícita:
-
-1. override específico do Job;
-2. configuração global persistida;
-3. default configurado no backend / `.env`;
-4. fallback seguro hardcoded.
-
-A resolução precisa estar centralizada.
-
-Criar algo equivalente a:
-
-`AgentOperationalConfigResolver`
-
-ou outro nome coerente com a arquitetura atual.
-
-Não espalhar:
+Estrutura sugerida:
 
 ```ts
-setting ?? env ?? default
+type OperationalSignal = {
+  id: string
+  type: string
+  domain: 'crm' | 'projects' | 'finance' | 'support'
+  severity: 'info' | 'attention' | 'warning' | 'critical'
+  title: string
+  description: string
+  entityType?: string
+  entityId?: number
+  detectedAt: Date
+  metadata: Record<string, unknown>
+}
 ```
 
-por vários módulos.
+A geração deve ser determinística.
 
-Toda leitura runtime deve passar pelo resolver central.
+O LLM pode interpretar sinais posteriormente, mas não inventá-los.
 
 ---
 
-# Cache
+# 3. Sinais mínimos da v1.8
 
-Se necessário, pode usar Redis para cache de configuração.
+Implementar somente sinais baseados em dados e funcionalidades que realmente existem hoje.
+
+Antes de escrever código:
+
+1. inventariar schemas;
+2. inventariar services;
+3. inventariar endpoints;
+4. determinar quais sinais podem ser derivados com segurança dos dados existentes.
+
+Não criar coluna ou conceito fictício apenas para atender a esta lista.
+
+Prioridade:
+
+## CRM
+
+Exemplos, caso os dados atuais permitam:
+
+* lead sem atividade há X dias;
+* lead parado em uma etapa do pipeline;
+* cliente sem contato recente;
+* atividade CRM vencida;
+* lead criado sem follow-up.
+
+## Projetos / Tarefas
+
+* tarefa atrasada;
+* tarefa próxima do vencimento;
+* projeto com tarefas críticas atrasadas;
+* projeto sem atividade recente;
+* tarefas sem responsável, caso esse conceito exista.
+
+## Financeiro
+
+Somente com dados já existentes:
+
+* contas/recebimentos vencidos;
+* cobrança próxima;
+* receita ou despesa que demande atenção;
+* pendência financeira associada a cliente/projeto.
+
+Não inventar regras contábeis ou financeiras que o módulo ainda não suporte.
+
+## Suporte / Customer Success
+
+* ticket aberto há muito tempo;
+* ticket sem atualização;
+* ticket de prioridade alta pendente;
+* cliente com múltiplas ocorrências recentes;
+* situação compatível com risco de atendimento, se houver dados suficientes.
+
+---
+
+# 4. Regras operacionais
+
+Não espalhar números mágicos pelo código.
+
+Os thresholds iniciais podem viver em catálogo determinístico próprio da v1.8.
+
+Exemplo:
+
+```ts
+leadStaleDays
+taskDueSoonDays
+ticketStaleHours
+projectInactiveDays
+```
+
+Não colocar isso ainda no módulo administrativo da v1.7 sem necessidade.
+
+Primeiro queremos provar os workflows.
+
+Se esses parâmetros demonstrarem necessidade operacional real de alteração em runtime, serão promovidos posteriormente ao sistema de settings da v1.7.
+
+---
+
+# 5. Director Operations Service
+
+Criar uma camada central:
+
+`agents/director/operations-service.ts`
+
+Responsabilidades:
+
+* coletar sinais;
+* classificar por domínio;
+* ordenar por prioridade;
+* fornecer visão consolidada da agência;
+* produzir dados estruturados para briefing;
+* fornecer contexto controlado para o Planner.
+
+Não permitir que esse service execute ações diretamente.
+
+---
+
+# 6. Daily Operations Brief
+
+Criar a primeira capacidade operacional real do Diretor:
+
+**Daily Operations Brief**
+
+O briefing deve responder deterministicamente:
+
+* O que precisa de atenção hoje?
+* Quais clientes/leads merecem acompanhamento?
+* Quais tarefas/projetos estão atrasados?
+* Quais pendências financeiras precisam ser observadas?
+* Quais tickets/situações de suporte estão críticos?
+* Existem approvals pendentes?
+* Existem Jobs/Runs com falhas?
+* Existem circuit breakers abertos?
+* Existem incidents ativos?
+
+Formato da API deve ser estruturado.
+
+Exemplo conceitual:
+
+```json
+{
+  "generatedAt": "...",
+  "summary": {
+    "critical": 2,
+    "warning": 4,
+    "attention": 7
+  },
+  "domains": {
+    "crm": [],
+    "projects": [],
+    "finance": [],
+    "support": [],
+    "agents": []
+  }
+}
+```
+
+Evitar gerar apenas texto.
+
+A estrutura é a fonte oficial.
+
+---
+
+# 7. Briefing narrativo opcional por LLM
+
+Se o LLM estiver habilitado, poderá transformar o briefing estruturado em uma apresentação executiva amigável.
 
 Porém:
 
-* PostgreSQL continua fonte oficial;
-* cache nunca pode ser fonte da verdade;
-* alterações devem invalidar cache imediatamente;
-* falha de Redis não pode impedir aplicação das configurações;
-* fallback deve consultar PostgreSQL.
+* os fatos vêm do backend;
+* números vêm do backend;
+* IDs vêm do backend;
+* entidades vêm do backend;
+* severidade vem do backend.
 
-Se não houver necessidade real de cache nesta escala, preferir simplicidade e não implementá-lo ainda.
+O LLM apenas resume/organiza o conteúdo.
+
+Se LLM estiver desligado ou falhar, o briefing estruturado deve continuar funcionando completamente.
+
+Não tornar essa feature dependente de OpenAI/Gemini.
 
 ---
 
-# Backend — endpoints
+# 8. Proposed Actions
 
-Criar API administrativa coerente com os padrões existentes.
+O Diretor poderá transformar um OperationalSignal em uma proposta operacional.
+
+Exemplos:
+
+* “Criar atividade de follow-up para este lead.”
+* “Criar tarefa para tratar atraso deste projeto.”
+* “Preparar ação de acompanhamento deste cliente.”
+* “Encaminhar ticket para acompanhamento.”
+* “Criar plano para analisar essas pendências.”
+
+IMPORTANTE:
+
+Nenhuma dessas ações é executada pelo Director Operations Service.
+
+Ele deve criar um objetivo/intenção compatível com o Planner já existente.
+
+Esse objetivo entra no pipeline oficial de Action Planning.
+
+---
+
+# 9. Workflow templates
+
+Criar uma pequena camada de templates determinísticos.
+
+Exemplo:
+
+`agents/director/workflows/catalog.ts`
+
+Primeiros workflows sugeridos:
+
+```text
+crm.follow_up_stale_lead
+projects.handle_overdue_task
+finance.review_overdue_item
+support.review_stale_ticket
+director.daily_operations_review
+```
+
+Cada workflow deve definir:
+
+* domínio;
+* trigger/signal aceito;
+* objetivo que será enviado ao Planner;
+* campos obrigatórios;
+* permissions necessárias indiretamente pelas tools/actions envolvidas.
+
+O workflow NÃO define autorização.
+
+Policy Evaluator continua sendo autoridade.
+
+---
+
+# 10. Não criar automação cega
+
+Nesta versão, sinais não devem automaticamente gerar mutações em massa.
+
+Classificação inicial:
+
+### Pode rodar automaticamente
+
+Somente leituras e geração de briefing.
+
+### Pode gerar Action Plan automaticamente
+
+Situações explicitamente consideradas seguras pela policy já existente.
+
+### Deve exigir approval
+
+Qualquer operação cuja tool/action já seja classificada assim pelo mecanismo atual.
+
+### Bloqueado
+
+Continua bloqueado normalmente.
+
+Não modificar regras existentes para facilitar a v1.8.
+
+---
+
+# 11. Integração com Jobs
+
+Criar suporte para um Job do tipo operacional do Diretor reutilizando `agent_jobs`.
+
+Não criar tabela paralela de scheduler.
+
+Exemplo de objetivo recorrente:
+
+```text
+Gerar briefing operacional diário da agência e identificar situações que requerem atenção.
+```
+
+O Scheduler v1.3 deverá conseguir executá-lo.
+
+Se houver necessidade de metadata específica, avaliar extensão mínima do Job atual antes de criar nova estrutura.
+
+---
+
+# 12. Integração com Events
+
+Aproveitar o Event Engine da v1.4 quando fizer sentido.
+
+Não criar event bus paralelo.
+
+Exemplo futuro:
+
+* CRM activity overdue;
+* support ticket escalated;
+* payment overdue;
+* task overdue.
+
+Nesta v1.8, só publicar novos eventos quando existir um fato transacional claro e uma integração limpa com os módulos.
+
+Não instrumentar dezenas de eventos apenas por antecipação.
+
+---
+
+# 13. Director Operations API
+
+Criar endpoints administrativos.
 
 Sugestão:
 
 ```text
-GET    /agents/settings
-GET    /agents/settings/:key
-PATCH  /agents/settings/:key
-DELETE /agents/settings/:key
+GET  /agents/director/operations
+GET  /agents/director/brief
+GET  /agents/director/signals
+
+GET  /agents/director/signals/:id
+
+POST /agents/director/signals/:id/propose
 ```
 
-Para override por Job:
+O endpoint `propose` deve gerar Action Plan através da orquestração existente.
 
-```text
-GET    /agents/jobs/:id/settings
-PATCH  /agents/jobs/:id/settings/:key
-DELETE /agents/jobs/:id/settings/:key
-```
+Não executar uma mutação diretamente.
 
-Ou estrutura equivalente mais apropriada ao projeto.
-
-`DELETE` deve significar remover override persistido e voltar à configuração herdada/default.
-
-Não deletar conceito/default da configuração.
+Avaliar nomes finais seguindo o padrão atual das rotas.
 
 ---
 
-# Effective configuration
+# 14. Permissions
 
-É essencial que a API permita distinguir:
-
-* valor configurado;
-* valor efetivo;
-* origem.
-
-Exemplo:
-
-```json
-{
-  "key": "circuit.failureThreshold",
-  "configuredValue": 5,
-  "effectiveValue": 5,
-  "source": "global",
-  "defaultValue": 3
-}
-```
-
-Para um Job:
-
-```json
-{
-  "key": "circuit.failureThreshold",
-  "configuredValue": null,
-  "effectiveValue": 5,
-  "source": "global",
-  "defaultValue": 3
-}
-```
-
-Valores válidos para `source` podem ser:
-
-* `job`
-* `global`
-* `env`
-* `default`
-
-ou equivalente.
-
-Isso é necessário para a UI explicar claramente o comportamento real.
-
----
-
-# Validation
-
-Toda configuração deve ter schema explícito.
-
-Usar Zod ou padrão já existente no backend.
-
-Cada setting conhecido deve possuir metadados equivalentes a:
-
-```ts
-{
-  key,
-  type,
-  defaultValue,
-  min?,
-  max?,
-  enum?,
-  description,
-  securityLevel
-}
-```
-
-Não aceitar keys arbitrárias vindas do frontend.
-
-Endpoint deve rejeitar:
-
-* chave desconhecida;
-* tipo inválido;
-* valor fora da faixa;
-* enum inválido;
-* valor inseguro;
-* escopo inadequado.
-
----
-
-# Configurações sensíveis
-
-Não expor nem tornar editáveis:
-
-* API keys;
-* JWT secret;
-* database URL;
-* Redis credentials;
-* SMTP passwords;
-* OpenAI/Gemini keys;
-* tokens;
-* secrets;
-* certificados;
-* credentials de integração.
-
-A tela de configurações de agentes é operacional, não gerenciamento de secrets.
-
----
-
-# Permissions
-
-Criar permissões explícitas.
+Criar permissions específicas apenas se forem realmente necessárias.
 
 Sugestão:
 
 ```text
-agents.settings.read
-agents.settings.manage
+agents.director.operations.read
+agents.director.operations.manage
 ```
 
-Somente quem possui `manage` pode escrever.
+Mas antes verificar se permissions equivalentes já existem.
 
-`read` pode visualizar configuração efetiva.
+Não duplicar permissão semanticamente idêntica.
 
-Seguir o padrão atual de seed de permissions.
-
-Garantir que o CEO receba as novas permissions pelo mecanismo existente.
-
-Lembrar que `db:seed` deverá ser executado após deploy.
+O CEO recebe as permissions administrativas conforme mecanismo atual.
 
 ---
 
-# Auditoria
+# 15. Frontend — Director Operations
 
-Toda alteração deve gerar audit log.
+Criar uma página operacional do Diretor.
 
-Registrar no mínimo:
+Sugestão:
 
-* actor;
-* action;
-* key;
-* scope;
-* scopeId;
-* valor anterior;
-* valor novo;
-* timestamp.
+`/agents/director`
 
-Não registrar secrets porque secrets não fazem parte deste módulo.
-
-Actions sugeridas:
-
-```text
-agents.settings.updated
-agents.settings.override_created
-agents.settings.override_removed
-```
-
-Usar o mecanismo de auditoria existente.
-
-Não criar segundo sistema de auditoria.
-
----
-
-# Frontend
-
-Criar página:
-
-```text
-/agents/settings
-```
-
-Adicionar à navegação existente de Agentes.
-
-A página deve ser operacional, não um formulário genérico de key/value.
-
-Agrupar configurações por domínio.
-
-Exemplo:
-
-### Autonomia
-
-* máximo de profundidade;
-* parâmetros relacionados a autonomia.
-
-### Circuit Breaker
-
-* failure threshold;
-* cooldown/recovery se aplicável.
-
-### Jobs / Runs
-
-* budgets;
-* retries;
-* outros limites encontrados.
-
----
-
-# UI de configuração
-
-Para cada setting mostrar:
-
-* nome amigável;
-* descrição;
-* valor efetivo;
-* origem;
-* default;
-* valor global configurado;
-* faixa permitida quando aplicável.
-
-No detalhe do Job, mostrar overrides.
-
-Exemplo:
-
-```text
-Circuit breaker failure threshold
-
-Efetivo: 5
-Origem: Global
-
-[ Usar configuração global ]
-
-Override deste Job:
-[ 7 ]
-```
-
-Se houver override:
-
-```text
-Efetivo: 7
-Origem: Job
-Global: 5
-Default: 3
-```
-
-Deve ser visualmente impossível confundir valor herdado com override explícito.
-
----
-
-# Confirmações para mudanças críticas
-
-Configurações que alterem autonomia ou circuit breaker devem exigir confirmação na UI.
-
-Preferir componente de dialog já disponível no shadcn/ui.
-
-A v1.6 ainda usa `window.confirm`.
-
-Nesta v1.7, para a página nova, usar modal/dialog apropriado.
-
-Não é obrigatório refatorar todos os confirms antigos da v1.6, salvo se for trivial e sem risco.
-
----
-
-# Segurança de valores
-
-Definir limites razoáveis.
-
-Exemplos conceituais:
-
-```text
-circuit.failureThreshold: 1..20
-autonomy.maxDepth: 0..10
-retry.maxAttempts: 0..10
-```
-
-Mas não adotar estes números cegamente.
-
-Derivar os valores reais do comportamento atual do projeto.
-
-Se precisar alterar limites, documentar justificativa.
-
-Nunca permitir:
-
-* `Infinity`;
-* número negativo quando não fizer sentido;
-* número absurdamente alto;
-* `null` como meio de remover proteção;
-* string arbitrária para setting numérico.
-
----
-
-# Integração real
-
-Depois de persistir settings, substituir o uso dos valores antigos nos pontos reais do runtime.
-
-Exemplo:
-
-Se hoje existe algo como:
-
-```ts
-const threshold = Number(
-  process.env.AGENT_AUTONOMY_CIRCUIT_FAILURE_THRESHOLD ?? 3
-)
-```
-
-isso deve passar a usar o resolver central.
-
-Não basta criar a tela e salvar no banco.
-
-A configuração deve efetivamente governar:
-
-* Job Runner;
-* circuit breaker;
-* autonomia;
-* incidents;
-* budgets;
-
-onde aplicável.
-
----
-
-# Importante: consistência temporal
-
-Para cada execução, decidir claramente quando a configuração é lida.
-
-Recomendação:
-
-* resolver settings no início do Run;
-* usar snapshot coerente durante aquele Run.
-
-Evitar que uma alteração no meio de uma execução produza comportamento inconsistente.
-
-Se o projeto já possui arquitetura que favoreça leitura em cada etapa, documentar a decisão.
-
----
-
-# Kill switch
-
-O kill switch global e o kill switch por Job da v1.6 continuam sendo controles independentes.
-
-Configuração NÃO deve substituir kill switch.
-
-A lógica efetiva de autonomia continua respeitando algo equivalente a:
-
-```text
-global switch
-AND job switch
-AND policy
-AND permissions
-AND circuit state
-AND budgets
-AND operational settings
-```
-
-Nenhuma configuração pode reativar um Job/global switch desligado.
-
----
-
-# Policy Engine
-
-Nesta versão, policies podem ser visualizadas, mas não transformar o Policy Evaluator em engine editável livremente.
-
-Se as regras atuais forem hardcoded, pode ser criada uma visão somente leitura mostrando:
-
-* tipo de ação;
-* requirement;
-* approval requirement;
-* shadow/block;
-* explicação.
-
-Não implementar editor arbitrário de policy se isso significar que um operador pode acidentalmente criar bypass de segurança.
-
-Caso existam regras claramente seguras para parametrização, documentar antes de implementar.
-
----
-
-# Migrations
-
-Criar migration apenas se necessária para o modelo persistente.
-
-Ela deve ser:
-
-* reversível conceitualmente;
-* idempotência respeitada pelo sistema de migration;
-* compatível com dados existentes;
-* sem apagar configurações atuais.
-
-Se valores anteriores existirem somente em `.env`, não é necessário migrá-los automaticamente para rows.
-
-O resolver pode tratá-los como fallback/origin `env`.
-
----
-
-# Testes obrigatórios
-
-Adicionar testes reais no backend.
-
-Cobrir pelo menos:
-
-## Authorization
-
-* usuário sem permission → 403;
-* read vs manage;
-* frontend nunca é considerado barreira.
-
-## Validation
-
-* chave desconhecida → 400;
-* tipo inválido;
-* abaixo do min;
-* acima do max;
-* enum inválido.
-
-## Resolution hierarchy
-
-Testar:
-
-```text
-job override > global DB > env/default > safe fallback
-```
-
-## Override
-
-* criar;
-* alterar;
-* remover;
-* voltar a herdar valor global.
-
-## Audit
-
-* alteração gera audit;
-* valor anterior/novo corretos.
-
-## Runtime
-
-Pelo menos um teste precisa provar que alterar um setting muda efetivamente o comportamento operacional.
-
-Exemplo ideal:
-
-* configurar circuit threshold;
-* executar Runs falhando;
-* verificar circuit breaker usando novo valor.
-
-## Fail-safe
-
-Simular erro/valor inválido quando possível e comprovar que não ocorre aumento de autonomia.
-
-## Compatibility
-
-Suíte v1.0–v1.6 continua passando integralmente.
-
----
-
-# Frontend
-
-Executar:
-
-```text
-typecheck
-build
-test
-```
-
-Adicionar testes quando houver lógica pura relevante.
-
-Não criar testes cosméticos apenas para aumentar contagem.
-
----
-
-# Seed
-
-Atualizar seed das permissions.
-
-Testar seed idempotente.
-
-Registrar explicitamente no relatório final:
-
-```text
-Deploy requires:
-db:migrate
-db:seed
-```
-
-antes da aplicação utilizar as novas telas.
-
----
-
-# Documentação da configuração
-
-Criar no código um catálogo único dos settings suportados.
-
-Algo conceitualmente semelhante:
-
-```ts
-AGENT_OPERATIONAL_SETTINGS = {
-  "circuit.failureThreshold": {...},
-  "autonomy.maxDepth": {...}
-}
-```
-
-Esse catálogo deve servir como fonte para:
-
-* validação;
-* defaults;
-* metadata da API;
-* frontend quando apropriado.
-
-Evitar duplicar a definição dos limites em backend e frontend.
-
----
-
-# Não fazer
-
-Não:
-
-* criar segundo executor;
-* criar segundo planner;
-* criar policy engine paralelo;
-* permitir configuração arbitrária;
-* permitir LLM editar settings;
-* armazenar secrets;
-* permitir bypass de approval;
-* permitir bypass de permission;
-* executar SQL dinâmico;
-* criar shell tool;
-* criar tabela desnecessária para cada setting;
-* mover tudo do `.env` para PostgreSQL;
-* quebrar v1.0–v1.6;
-* alterar arquitetura fundamental sem necessidade;
-* fazer commit antes da revisão final.
-
----
-
-# Resultado esperado
-
-Ao final, um operador autorizado deve conseguir abrir:
-
-```text
-/agents/settings
-```
-
-e compreender imediatamente:
-
-* quais proteções estão ativas;
-* quais valores estão sendo usados;
-* qual a origem de cada valor;
-* quais parâmetros podem ser alterados;
-* quais valores são globais;
-* quais Jobs possuem overrides.
-
-E o backend deve usar esses valores efetivamente.
-
-A arquitetura deve continuar garantindo:
-
-```text
-LLM
- ↓
-Planner
- ↓
-Policy Evaluator
- ↓
-Permissions
- ↓
-Operational Settings
- ↓
-Budgets / Circuit Breaker
- ↓
-Approval quando necessário
- ↓
-Deterministic Executor
- ↓
-Audit
-```
-
-O LLM nunca controla esta cadeia.
-
----
-
-# Processo obrigatório de execução
-
-Não repetir o problema que tivemos no saneamento da v1.5.
-
-Trabalhar assim:
-
-```text
-implementar
-→ typecheck/test
-→ analisar causa concreta de qualquer falha
-→ corrigir a causa
-→ executar novamente
-```
-
-Não fazer dezenas de execuções cegas esperando flakiness desaparecer.
-
-Se houver teste intermitente, investigar imediatamente isolamento/estado compartilhado.
-
-A suíte backend deve continuar usando a estratégia estabilizada após a v1.5, inclusive `--test-concurrency=1` se esse continuar sendo o padrão atual do projeto.
-
----
-
-# Relatório final obrigatório
-
-Quando terminar, NÃO fazer commit.
-
-Entregar relatório contendo:
-
-## 1. Resumo
-
-O que foi implementado.
-
-## 2. Inventário
-
-Todas as configurações encontradas e classificação:
-
-```text
-env-only
-runtime configurable
-env + DB override
-constant/security invariant
-```
-
-## 3. Arquitetura
-
-Como funciona o resolver e a hierarquia de configuração.
-
-## 4. Arquivos criados
-
-Lista completa.
-
-## 5. Arquivos alterados
-
-Lista completa.
-
-## 6. Migration
-
-Nome e conteúdo conceitual.
-
-## 7. Settings suportados
-
-Tabela:
-
-```text
-key
-tipo
-default
-min/max
-scopes
-origem anterior
-```
-
-## 8. Endpoints
-
-Método, rota e permission.
-
-## 9. Permissions
-
-Novas permissions e seed.
-
-## 10. Segurança
-
-Explicar por que nenhuma configuração consegue elevar privilégio ou ignorar safety controls.
-
-## 11. Auditoria
-
-Actions registradas e dados armazenados.
-
-## 12. Runtime integration
-
-Mostrar exatamente quais partes do runtime passaram a consultar o resolver.
-
-## 13. Testes
-
-Quantidade nova e total.
-
-Informar:
-
-```text
-backend typecheck
-backend tests
-frontend typecheck
-frontend tests
-frontend build
-```
-
-## 14. Compatibilidade
-
-Confirmar v1.0–v1.6.
-
-## 15. Riscos / débitos técnicos
-
-Listar explicitamente.
-
-## 16. Deploy
-
-Confirmar necessidade de:
-
-```bash
-npm run db:migrate
-npm run db:seed
-```
-
-ou comandos equivalentes reais do projeto.
-
-## 17. Git
+A tela deve funcionar como uma “mesa do diretor”, não como outro dashboard genérico.
 
 Mostrar:
 
-```bash
-git status --short
-```
+## Resumo
 
-Não executar commit.
+* críticas;
+* warnings;
+* attention;
+* approvals pendentes;
+* incidents;
+* circuitos abertos;
+* Jobs com problema.
+
+## CRM
+
+Lista dos principais sinais.
+
+## Projetos
+
+Principais atrasos/riscos.
+
+## Financeiro
+
+Pendências relevantes.
+
+## Suporte
+
+Pendências relevantes.
+
+Cada sinal deve permitir:
+
+* abrir a entidade relacionada quando houver rota;
+* visualizar detalhes;
+* solicitar proposta de ação.
+
+Não permitir mutações diretas na UI se elas deveriam passar pelo Action Plan.
 
 ---
 
-# Critério de aprovação da v1.7
+# 16. UX de proposta
 
-A versão somente poderá ser considerada concluída se:
+Quando o usuário selecionar “Propor ação”:
 
-1. configuração estiver persistida e validada;
-2. runtime realmente consumir os valores;
-3. overrides de Job funcionarem;
-4. hierarquia estiver testada;
-5. alterações forem auditadas;
-6. permissions forem server-side;
-7. fail-safe estiver preservado;
-8. nenhuma autonomia nova tiver sido criada;
-9. toda suíte anterior continuar verde;
-10. working tree estiver pronto para nossa revisão final.
+1. backend constrói o objetivo determinístico a partir do signal/workflow;
+2. Planner cria o Action Plan;
+3. Policy Evaluator avalia;
+4. tela mostra resultado:
 
-Não fazer commit automaticamente.
+```text
+Executável automaticamente
+Approval necessário
+Bloqueado
+Shadow
+```
+
+Se houver approval necessária, utilizar a interface de approvals já existente.
+
+Não criar confirmação paralela.
+
+---
+
+# 17. Agent Operations Signals devem ser reproduzíveis
+
+Precisamos conseguir testar sinal → ação.
+
+Portanto:
+
+* separar coleta de dados de interpretação;
+* separar signal detector de workflow;
+* evitar depender do relógio global diretamente;
+* permitir injeção/controlabilidade de `now` nos testes quando necessário.
+
+Isso evita testes flaky de data/hora.
+
+---
+
+# 18. Segurança
+
+Manter as diretrizes permanentes do projeto.
+
+Obrigatório:
+
+* autorização backend;
+* validação Zod;
+* nenhum acesso SQL pelo LLM;
+* nenhuma tool arbitrária;
+* nenhuma interpolação de prompt capaz de mudar permissions;
+* nenhum Action Plan pode executar algo que o usuário criador não poderia executar diretamente;
+* outputs do LLM continuam não confiáveis até validação;
+* auditoria de ações administrativas;
+* não expor dados de outros tenants/contextos caso o sistema possua escopo correspondente.
+
+A v1.8 não deve enfraquecer nenhum controle da v1.0–v1.7.
+
+---
+
+# 19. Auditoria
+
+Registrar pelo menos:
+
+```text
+agents.director.brief_generated
+agents.director.action_proposed
+```
+
+Não registrar toda leitura automática se isso produzir ruído excessivo.
+
+Seguir o padrão do audit service existente.
+
+Metadata útil:
+
+* signal id/type;
+* domain;
+* entityType;
+* entityId;
+* resultingActionPlanId;
+* actor.
+
+---
+
+# 20. Testes obrigatórios
+
+Criar testes suficientes para comprovar comportamento, sem perseguir número artificial.
+
+Cobrir obrigatoriamente:
+
+### Signals
+
+* detecção positiva;
+* não detectar falso positivo;
+* threshold;
+* ordenação por severidade;
+* isolamento entre domínios;
+* datas controladas.
+
+### Brief
+
+* consolidação correta;
+* contadores;
+* módulos vazios;
+* falha isolada de uma fonte sem corromper silenciosamente dados.
+
+Definir explicitamente se falha de um módulo torna briefing parcial ou erro total.
+
+Minha preferência:
+
+**briefing parcial explícito**, com algo como:
+
+```json
+{
+  "status": "partial",
+  "errors": [
+    {
+      "domain": "finance",
+      "code": "SOURCE_UNAVAILABLE"
+    }
+  ]
+}
+```
+
+Nunca fingir que `[]` significa “sem problema” quando na verdade houve erro na consulta.
+
+### Proposed Action
+
+Teste de integração:
+
+OperationalSignal real/fixture
+→ POST propose
+→ createActionPlan oficial
+→ Policy Evaluator
+→ Plan persistido.
+
+Provar que não existe bypass.
+
+### Permissions
+
+* usuário sem read;
+* usuário com read;
+* manage/propose separado quando aplicável.
+
+### Regression
+
+Toda suíte v1.0–v1.7 continua verde.
+
+---
+
+# 21. Não fazer
+
+Não implementar nesta versão:
+
+* novo LLM provider;
+* nova arquitetura de executor;
+* nova tabela de approvals;
+* scheduler paralelo;
+* event bus paralelo;
+* SQL gerado por IA;
+* “agentes especializados” duplicando services;
+* memória vetorial/RAG sem caso de uso concreto;
+* envio de e-mail;
+* WhatsApp;
+* integração n8n;
+* cobrança automática;
+* criação automática de leads externos;
+* prospecção;
+* alteração dos settings v1.7 além do estritamente necessário.
+
+Esses itens virão em fases próprias.
+
+---
+
+# 22. Processo obrigatório
+
+Antes de implementar:
+
+1. revisar a arquitetura v1.0–v1.7;
+2. inventariar os quatro módulos reais;
+3. listar os sinais que são realmente possíveis com os dados atuais;
+4. informar quais sinais sugeridos acima não podem ser implementados sem inventar dados;
+5. propor o escopo definitivo da v1.8;
+6. somente então implementar.
+
+Durante a execução:
+
+* corrigir causa raiz, não mascarar teste;
+* não diminuir cobertura;
+* não alterar expectativas válidas só para deixar teste verde;
+* registrar qualquer bug real encontrado;
+* evitar refatorações não relacionadas.
+
+Não fazer commit automático.
+
+---
+
+# 23. Critério de sucesso
+
+A v1.8 só está concluída quando conseguirmos demonstrar este fluxo real:
+
+```text
+Dados reais dos módulos
+        ↓
+Operational Signals
+        ↓
+Director Operations Brief
+        ↓
+Usuário identifica uma situação
+        ↓
+Propor ação
+        ↓
+Planner existente
+        ↓
+Policy Evaluator
+        ↓
+Action Plan
+        ↓
+Executor / Approval / Block / Shadow
+        ↓
+Audit
+```
+
+E, adicionalmente, um Job recorrente deve conseguir gerar o briefing usando a infraestrutura existente de Jobs/Runs.
+
+---
+
+# 24. Entrega final
+
+Ao finalizar, entregar relatório exatamente nesta estrutura:
+
+1. Resumo
+2. Inventário dos módulos
+3. Sinais implementados
+4. Sinais avaliados mas não implementados e motivo
+5. Arquitetura
+6. Arquivos criados
+7. Arquivos alterados
+8. Endpoints
+9. Permissions
+10. Workflow templates
+11. Integração com Planner/Policy/Executor
+12. Integração Jobs/Events
+13. Segurança
+14. Auditoria
+15. Frontend
+16. Testes
+17. Compatibilidade v1.0–v1.7
+18. Bugs encontrados
+19. Riscos/débitos técnicos
+20. Deploy/migrations
+21. Git status
+
+Não fazer commit.
+
+Aguardar revisão final do Diretor/CEO.

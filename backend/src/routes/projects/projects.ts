@@ -93,6 +93,61 @@ export async function getBlockedTasks() {
     .orderBy(tasks.dueDate);
 }
 
+// Agentes v1.8 (correio.md seção 3) — usadas por
+// agents/director/collectors/projects.ts (Operational Signals). Mesmo
+// padrão de getOverdueTasks/getBlockedTasks acima: nunca current_date/now()
+// direto no SQL aqui — `now` sempre recebido do chamador, para os sinais
+// ficarem controláveis em teste (correio.md seção 17: "evitar depender do
+// relógio global diretamente").
+export async function getTasksDueSoon(now: Date, days: number) {
+  const today = now.toISOString().slice(0, 10);
+  const limit = new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+  return db
+    .select({
+      id: tasks.id,
+      title: tasks.title,
+      projectId: tasks.projectId,
+      projectName: projects.name,
+      status: tasks.status,
+      priority: tasks.priority,
+      dueDate: tasks.dueDate,
+      assigneeName: users.name,
+    })
+    .from(tasks)
+    .innerJoin(projects, eq(tasks.projectId, projects.id))
+    .leftJoin(users, eq(tasks.assigneeUserId, users.id))
+    .where(
+      and(
+        sql`${tasks.dueDate} >= ${today} and ${tasks.dueDate} <= ${limit}`,
+        sql`${tasks.status} not in ('done', 'cancelled')`,
+      ),
+    )
+    .orderBy(tasks.dueDate);
+}
+
+export async function getUnassignedTasks() {
+  return db
+    .select({
+      id: tasks.id,
+      title: tasks.title,
+      projectId: tasks.projectId,
+      projectName: projects.name,
+      status: tasks.status,
+      priority: tasks.priority,
+      dueDate: tasks.dueDate,
+    })
+    .from(tasks)
+    .innerJoin(projects, eq(tasks.projectId, projects.id))
+    .where(
+      and(
+        sql`${tasks.assigneeUserId} is null`,
+        sql`${tasks.status} not in ('done', 'cancelled')`,
+      ),
+    )
+    .orderBy(tasks.dueDate);
+}
+
 // Contagens usadas por director.get_business_overview (seção 23) — mesma
 // query de GET /projects/stats, apenas o subconjunto necessário ao
 // overview.

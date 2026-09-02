@@ -100,5 +100,8 @@ export const queryKeys = {
     globalAutonomy: ["agents", "autonomy"] as const,
     settings: ["agents", "settings"] as const,
     jobSettings: (jobId: number) => ["agents", "jobs", jobId, "settings"] as const,
+    directorBrief: ["agents", "director", "brief"] as const,
+    directorSignals: ["agents", "director", "signals"] as const,
+    directorSignal: (id: string) => ["agents", "director", "signals", id] as const,
   },
 };

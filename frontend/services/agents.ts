@@ -31,11 +31,15 @@ import type {
   JobRunStatus,
   JobRunDetail,
   JobStatus,
+  DailyOperationsBrief,
   JobTriggerType,
+  OperationalSignal,
   OperationsSummary,
+  ProposeActionResult,
   ResolvedSetting,
   ScheduleConfig,
   SettingKey,
+  SignalSourceError,
 } from "@/types/agents";
 
 import { apiFetch, toQueryString } from "./http";
@@ -382,4 +386,25 @@ export function setJobSetting(jobId: number, key: SettingKey, value: number): Pr
 
 export function deleteJobSetting(jobId: number, key: SettingKey): Promise<{ data: ResolvedSetting }> {
   return apiFetch(`/api/agents/jobs/${jobId}/settings/${key}`, { method: "DELETE" });
+}
+
+// Agentes v1.8 — Director Operations & Business Workflows (correio.md).
+
+export function getDirectorBrief(): Promise<{ data: DailyOperationsBrief }> {
+  return apiFetch("/api/agents/director/brief");
+}
+
+export function listDirectorSignals(): Promise<{ data: OperationalSignal[]; errors: SignalSourceError[] }> {
+  return apiFetch("/api/agents/director/signals");
+}
+
+export function getDirectorSignal(id: string): Promise<{ data: OperationalSignal }> {
+  return apiFetch(`/api/agents/director/signals/${encodeURIComponent(id)}`);
+}
+
+export function proposeSignalAction(id: string): Promise<{ data: ProposeActionResult }> {
+  return apiFetch(`/api/agents/director/signals/${encodeURIComponent(id)}/propose`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
 }

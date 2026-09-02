@@ -19,6 +19,7 @@ import {
   interpretationErrorTypeLabel,
   jobRunStatusLabel,
   jobStatusLabel,
+  signalSeverityLabel,
   type DerivedApprovalState,
 } from "@/lib/agents/derived";
 import type {
@@ -38,6 +39,7 @@ import type {
   InterpretationError,
   JobRunStatus,
   JobStatus,
+  SignalSeverity,
 } from "@/types/agents";
 
 const EXECUTION_STATUS_STYLES: Record<ExecutionStatus, string> = {
@@ -323,6 +325,22 @@ export function IncidentTypeBadge({ type }: { type: IncidentType }) {
   return (
     <Badge variant="secondary" className="border-transparent bg-red-500/10 text-red-700 dark:text-red-400">
       {incidentTypeLabel(type)}
+    </Badge>
+  );
+}
+
+// Agentes v1.8 — Director Operations & Business Workflows (correio.md).
+const SIGNAL_SEVERITY_STYLES: Record<SignalSeverity, string> = {
+  critical: "bg-red-500/10 text-red-700 dark:text-red-400",
+  warning: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  attention: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  info: "bg-muted text-muted-foreground",
+};
+
+export function SignalSeverityBadge({ severity }: { severity: SignalSeverity }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", SIGNAL_SEVERITY_STYLES[severity])}>
+      {signalSeverityLabel(severity)}
     </Badge>
   );
 }

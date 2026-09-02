@@ -5,6 +5,7 @@ import { getOpenLeadsCount } from '../../routes/crm/leads.js';
 import { getFinancialSummary } from '../../routes/financial/stats.js';
 import { getProjectsOverviewCounts } from '../../routes/projects/projects.js';
 import { getSupportOverviewCounts } from '../../routes/support/stats.js';
+import { getDailyOperationsBrief } from '../director/operations-service.js';
 import { registerTool } from '../tool-registry.js';
 import type { ToolDefinition } from '../types.js';
 
@@ -64,6 +65,29 @@ export const directorGetBusinessOverview: ToolDefinition<Record<string, never>> 
   },
 };
 
+// director.generate_daily_brief (READ) — Agentes v1.8 (correio.md
+// seção 11): permite que um Job recorrente ("Gerar briefing operacional
+// diário...") produza o briefing determinístico usando a infraestrutura
+// já existente de Jobs/Runs, sem criar um segundo mecanismo de execução
+// — o LLM só decide chamar esta tool a partir do objetivo do Job; a
+// coleta/classificação dos sinais em si é 100% determinística
+// (agents/director/operations-service.ts), nunca inventada pelo LLM.
+export const directorGenerateDailyBrief: ToolDefinition<Record<string, never>> = {
+  handler: 'director.generate_daily_brief',
+  requiredPermission: 'agents.read',
+  inputSchema: emptyInput,
+  async run() {
+    const brief = await getDailyOperationsBrief();
+
+    return {
+      success: true,
+      summary: `Briefing gerado: ${brief.summary.critical} críticos · ${brief.summary.warning} avisos · ${brief.summary.attention} para atenção.`,
+      data: brief,
+    };
+  },
+};
+
 export function registerDirectorTools() {
   registerTool(directorGetBusinessOverview);
+  registerTool(directorGenerateDailyBrief);
 }

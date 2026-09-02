@@ -1,474 +1,355 @@
-# Execução — Agentes v1.7: Agent Management & Operational Configuration (em andamento)
+# Entrega — Agentes v1.8: Director Operations & Business Workflows
 
-**Status: inventário concluído, implementação começando agora — nada
-commitado, nada ainda funcional.** Esta é uma nota de progresso, não o
-relatório final (que virá no formato exato pedido em `correio.md` §17,
-seções 1–17).
-
-## Inventário (correio.md Etapa 1)
-
-Configurações relacionadas a agentes encontradas em `backend/src/config/env.ts`
-e no código:
-
-| Config | Onde hoje | Classificação |
-|---|---|---|
-| `AGENT_LLM_ENABLED`/`SHADOW_MODE`/`PROVIDER`/`MODEL`/`API_KEY`/`TIMEOUT_MS`/`MIN_CONFIDENCE`/`CONTEXT_MESSAGES` | env | env-only (ativação deliberada de LLM/shadow mode — fora do escopo operacional desta versão, decisão de infraestrutura/custo, não "limite operacional") |
-| `OPENAI_API_KEY` | env | constante de segurança — nunca editável (é credential) |
-| `AGENT_JOBS_SCHEDULER_ENABLED`/`_INTERVAL_MS` | env | env-only (liga/desliga infraestrutura do processo, não comportamento de negócio) |
-| `AGENT_EVENTS_PROCESSOR_ENABLED`/`_POLL_INTERVAL_MS`/`_MAX_ATTEMPTS`/`_RETRY_BASE_SECONDS`/`_PROCESSING_TIMEOUT_SECONDS` | env | mistos — `POLL_INTERVAL_MS`/`ENABLED` ficam env-only (infra do processo); `MAX_ATTEMPTS`/`RETRY_BASE_SECONDS` são candidatos a runtime-configurável (retry real) — avaliando
-| `AGENT_MAX_AUTONOMY_DEPTH` | env, global apenas | **runtime configurable** (candidato principal — autonomy depth) |
-| `AGENT_MAX_RUNS_PER_AUTONOMY_CHAIN` | env, global apenas | **runtime configurable** (chain budget) |
-| `AGENT_JOB_AUTONOMY_RATE_LIMIT`/`_WINDOW_SECONDS` | env, **já tem override por Job** via colunas `agent_jobs.autonomyRateLimitOverride`/`autonomyRateWindowOverrideSeconds` | **env + DB override** (já existe parcialmente — vira o modelo de referência para os outros) |
-| `AGENT_AUTONOMY_CIRCUIT_FAILURE_THRESHOLD`/`_COOLDOWN_SECONDS` | env, global apenas | **runtime configurable** (prioridade explícita do correio.md) |
-| `MAX_ACTIONS_PER_PLAN` (constante, `planner/schemas.ts`) | hardcoded | constante de segurança — teto de validação do Action Plan, não editável pela UI (é o limite estrutural do planner) |
-| `MAX_REQUESTS` chat/execute/plan (`security/rate-limit.ts`) | hardcoded | fica hardcoded nesta versão — rate limit de API HTTP, não de autonomia; fora do escopo "autonomia" priorizado pelo correio.md |
-| `MAX_EVENTS_PER_TICK` (`events/worker.ts`) | hardcoded | fica hardcoded nesta versão — tuning de infraestrutura do worker, não visível/decidível por operador de negócio |
-| Job `maxRunsPerDay`/`maxActionsPerRun`/`maxOpenApprovals`/`timeoutSeconds` | já são colunas por-Job em `agent_jobs`, configuráveis via `PATCH /agents/jobs/:id` | já resolvido desde a v1.3 — fora do escopo (já é exatamente "configuração persistida por Job", só não passa pelo resolver novo por não ter hierarquia global/env)
-
-## Escopo decidido para os settings (prioridade do correio.md: autonomia)
-
-6 chaves, todas com escopo `global` + `job`:
-
-```
-circuit.failureThreshold
-circuit.cooldownSeconds
-autonomy.maxDepth
-chain.maxRunsPerAutonomyChain
-rate.autonomyLimit
-rate.autonomyWindowSeconds
-```
-
-`rate.autonomyLimit`/`rate.autonomyWindowSeconds` terão um resolver que,
-no escopo Job, verifica a nova tabela primeiro e cai para as colunas
-legadas `agent_jobs.autonomyRateLimitOverride`/`autonomyRateWindowOverrideSeconds`
-como ponte de compatibilidade antes do fallback global — decisão para não
-quebrar/duplicar o que já existia e já está testado, mantendo ainda assim
-uma única leitura centralizada (o resolver), como o correio.md exige.
-
-## Próximos passos (nesta mesma sessão)
-
-1. ✅ Migration + tabela `agent_operational_settings` (0013, dois índices
-   únicos parciais para `scope='global'`/`scope='job'`, aplicada no
-   Postgres de dev).
-2. ✅ Catálogo de settings (`agents/settings/catalog.ts`) +
-   `resolveSettingsSnapshot`/`resolveGlobalSetting`/`resolveJobSetting`
-   (`agents/settings/resolver.ts`).
-3. ✅ `guard.ts`, `circuit.ts` (finalização do circuit breaker) e o
-   Incident Center (`job_repeated_failure`, antes um "3" fixo) agora
-   consultam o resolver em vez de `config/env.ts` diretamente. Snapshot
-   resolvido uma vez no início de cada Run em `job-runner.ts` (mesmo lock
-   de linha do Job).
-4. ✅ Endpoints (`GET/PATCH/DELETE /agents/settings/:key`,
-   `GET/PATCH/DELETE /agents/jobs/:id/settings/:key`), 2 novas
-   permissions (`agents.settings.read`/`manage`), auditoria
-   (`agents.settings.updated`/`override_created`/`override_removed`).
-5. ⏳ Frontend `/agents/settings` — ainda não feito.
-6. ✅ Testes backend novos (22): `agents/settings/resolver.test.ts` (9,
-   hierarquia job>global>default, ponte com coluna legada, fail-safe) e
-   `routes/agents/settings.test.ts` (13: autorização, validação, CRUD,
-   auditoria, 1 teste de integração real — configurar
-   `circuit.failureThreshold=1` via API e confirmar que o circuito abre
-   na 1ª falha, não na 5ª default).
-7. ⏳ Relatório final no formato exato do correio.md §17 — ainda não
-   escrito (esta continua sendo uma nota de progresso).
-
-## Bugs reais encontrados e corrigidos durante a implementação (fluxo
-## exigido pelo correio.md v1.7 §"Processo obrigatório de execução")
-
-1. **Mojibake em `catalog.ts`**: o arquivo escrito ficou com encoding
-   corrompido (acentos double-encoded), quebrando o parser do
-   TypeScript com dezenas de erros aparentemente sem relação. Corrigido
-   reescrevendo o arquivo sem acentuação.
-2. **Comentário JSDoc fechando cedo demais**: `AGENT_JOBS_SCHEDULER_*/AGENT_EVENTS_...`
-   dentro de um bloco `/** */` continha um `*/` literal, fechando o
-   comentário no meio da frase — mesma classe de erro em cascata do item
-   1, causa raiz diferente.
-3. **`defaultValue` capturado uma única vez no import do módulo**: o
-   catálogo inicialmente guardava `env.AGENT_X` como valor estático, não
-   como getter. Como vários testes existentes da v1.5 mutam
-   `process.env.AGENT_AUTONOMY_CIRCUIT_FAILURE_THRESHOLD` em runtime por
-   teste, isso teria quebrado silenciosamente esses testes (o resolver
-   nunca veria a mudança). Corrigido antes de escrever qualquer teste,
-   trocando para `get defaultValue()`.
-4. **Vazamento de override global entre arquivos de teste**: o teste de
-   integração de runtime criava um override global de
-   `circuit.failureThreshold=1` via API e não limpava de forma confiável
-   (só via `afterEach` com ids rastreados, que não cobria override criado
-   por HTTP). Isso derrubou 6 testes de `job-runner.autonomy.test.ts` ao
-   rodar os dois arquivos numa mesma invocação manual — o circuito abria
-   na 1ª falha em todo Job autônomo do teste, não só no do teste que
-   configurou o override. Corrigido com limpeza imediata dentro do
-   próprio teste (não só no afterEach) e um afterEach mais amplo (limpa
-   por chave, não só por id capturado). **Confirmado que a suíte real
-   (`npm test`, via glob) nunca reproduziu esse vazamento** — só a
-   invocação manual com múltiplos arquivos como argumentos posicionais
-   parece intercalar execução entre arquivos de um jeito que o `npm test`
-   real não faz; mesmo assim a correção fica, por ser estruturalmente
-   mais correta (nunca deixar uma configuração global de teste sem
-   limpeza garantida).
-5. **Teste da v1.6 dessincronizado pela mudança pedida no próprio
-   correio.md**: `operations.test.ts` criava exatamente 3 Runs falhos
-   fixos para testar `job_repeated_failure`; ao trocar esse incidente
-   para respeitar o `circuit.failureThreshold` efetivo (item 3 da lista
-   de "próximos passos" acima, pedido explícito do correio.md v1.7), o
-   default real é 5, não 3 — o teste antigo parou de detectar o
-   incidente. Corrigido tornando o fixture dinâmico (resolve o threshold
-   real em vez de hardcoded).
-
-Suíte completa (`npm test`, real, via glob) rodando agora para confirmar
-tudo — resultado será adicionado a seguir.
-
-**Atualização: confirmado.** `npm test` real (via glob, `--test-concurrency=1`)
-rodou duas vezes após as correções acima: **308/308, 0 fail** em ambas.
-Frontend (`/agents/settings` + seção de overrides no detalhe do Job)
-implementado depois — typecheck, build e suíte de frontend também
-confirmados limpos (relatório final abaixo já reflete tudo).
-
----
-
-# Entrega — Agentes v1.7: Agent Management & Operational Configuration
-
-Nenhum commit foi feito (correio.md v1.7: "não fazer commit
-automaticamente até a revisão final") — tudo abaixo está no working tree,
-aguardando sua revisão.
+Nenhum commit foi feito (correio.md v1.8: "não fazer commit automático" /
+"aguardar revisão final do Diretor/CEO") — tudo abaixo está no working
+tree, aguardando sua revisão.
 
 ## 1. Resumo
 
-Camada centralizada, persistente e auditável de configuração operacional
-para as 6 chaves do Autonomy Guard que antes só existiam via `.env`,
-global e imutáveis em runtime: circuit breaker (failure threshold,
-cooldown), profundidade máxima de autonomia, orçamento de Runs por cadeia
-e rate limit autônomo. Hierarquia `job override → global (Postgres) →
-env/default → fallback seguro`, resolvida por um ponto único
-(`agents/settings/resolver.ts`), consumida de verdade pelo runtime (guard,
-circuit breaker, Incident Center) — não apenas uma tela salvando no banco
-sem efeito.
+Transformado o Diretor Virtual de infraestrutura genérica em uma camada
+operacional real: coleta determinística de sinais (Operational Signals)
+sobre os 4 módulos existentes + saúde da própria infraestrutura de
+agentes, um Daily Operations Brief estruturado, e uma API de "propor
+ação" que entra no pipeline **oficial** já existente (Planner → Policy
+Evaluator → Action Plan → Executor/Approval) — sem segundo executor,
+sem segunda forma de autorização, sem o LLM decidindo nada além de qual
+tool chamar dentro de um objetivo já determinístico.
 
-## 2. Inventário
+## 2. Inventário dos módulos
 
-Pesquisa completa em `config/env.ts` e no código (`AGENT_`, `AUTONOMY`,
-`CIRCUIT`, `BUDGET`, `LIMIT`, `TIMEOUT`, `MAX_`, `MIN_`, `THRESHOLD`,
-`CONFIDENCE`, `SHADOW`, `APPROVAL`, `SCHEDULE`, `RETRY`, `EVENT`,
-`DEPTH`, `RUN`, `JOB`):
+Exploração real de schemas/services antes de implementar (correio.md
+seção 22):
 
-| Configuração | Classificação | Motivo |
+| Módulo | Campos relevantes já existentes | Services/repositórios reaproveitados |
 |---|---|---|
-| `AGENT_LLM_ENABLED`/`SHADOW_MODE`/`PROVIDER`/`MODEL`/`API_KEY`/`TIMEOUT_MS`/`MIN_CONFIDENCE`/`CONTEXT_MESSAGES` | env-only | ativação deliberada de LLM/shadow mode — decisão de infraestrutura/custo, nunca automática (v1.1 seção 34), não é "limite operacional" |
-| `OPENAI_API_KEY` | constante de segurança | é credential — nunca editável pela UI |
-| `AGENT_JOBS_SCHEDULER_ENABLED`/`_INTERVAL_MS` | env-only | liga/desliga infraestrutura do próprio processo (setInterval em server.ts), não comportamento de negócio |
-| `AGENT_EVENTS_PROCESSOR_ENABLED`/`_POLL_INTERVAL_MS` | env-only | idem — infraestrutura do worker |
-| `AGENT_EVENTS_MAX_ATTEMPTS`/`_RETRY_BASE_SECONDS`/`_PROCESSING_TIMEOUT_SECONDS` | **avaliado e adiado** | candidatos reais a runtime-configurável (retry de verdade existente), mas fora da prioridade explícita do correio.md v1.7 ("priorizar configurações diretamente ligadas à autonomia já existente" — circuit/depth/budget/rate); não implementado nesta versão para não expandir escopo além do pedido — ver riscos |
-| **`AGENT_MAX_AUTONOMY_DEPTH`** | **runtime configurable** | implementado — `autonomy.maxDepth` |
-| **`AGENT_MAX_RUNS_PER_AUTONOMY_CHAIN`** | **runtime configurable** | implementado — `chain.maxRunsPerAutonomyChain` |
-| **`AGENT_JOB_AUTONOMY_RATE_LIMIT`/`_WINDOW_SECONDS`** | **env + DB override (já parcial)** | já tinha override por Job via colunas `agent_jobs.autonomy_rate_limit_override`/`autonomy_rate_window_override_seconds` — implementado como `rate.autonomyLimit`/`rate.autonomyWindowSeconds`, resolver usa a tabela nova com ponte de compatibilidade para as colunas legadas |
-| **`AGENT_AUTONOMY_CIRCUIT_FAILURE_THRESHOLD`/`_COOLDOWN_SECONDS`** | **runtime configurable** | implementado — `circuit.failureThreshold`/`circuit.cooldownSeconds` (prioridade explícita do correio.md) |
-| `MAX_ACTIONS_PER_PLAN` (`planner/schemas.ts`, valor 10) | constante de segurança | teto estrutural do planner — validado contra ele mesmo por `agent_jobs.maxActionsPerRun`; nunca editável pela UI |
-| `MAX_REQUESTS` chat/execute/plan (`security/rate-limit.ts`) | env-only/hardcoded | rate limit de API HTTP (por usuário, via Redis), não de autonomia — fora do escopo desta versão |
-| `MAX_EVENTS_PER_TICK` (`events/worker.ts`, valor 20) | hardcoded | tuning de infraestrutura do worker, não é decisão de operador de negócio |
-| Job `maxRunsPerDay`/`maxActionsPerRun`/`maxOpenApprovals`/`timeoutSeconds` | já resolvido (v1.3) | já são colunas por-Job configuráveis via `PATCH /agents/jobs/:id` — fora do escopo (não tem hierarquia global/env correspondente, é sempre por-Job) |
+| CRM | `leads.next_action_at`, `leads.created_at`, `leads.status` | `listOpenLeads()` (já existente, já usada por `director.get_business_overview`) — classificação feita em memória, **zero SQL novo** |
+| Projetos | `tasks.due_date`/`status`/`assignee_user_id`, `projects.due_date`/`status` | `getOverdueTasks()`, `getBlockedTasks()`, `getOverdueProjects()` (existentes) + `getTasksDueSoon()`, `getUnassignedTasks()` (novas, mesmo padrão/arquivo) |
+| Financeiro | `financial_entries.due_date`/`status`, `overdueEntryCondition()` | `getOverdueEntries('income'\|'expense')` (existente) |
+| Suporte/CS | `support_tickets.priority`/`sla_due_at`, `customer_success_accounts.status`/`next_contact_at` | `getCriticalTickets()`, `getOverdueTicketsList()`, `getAtRiskAccounts()`, `getDueFollowups()` (todas existentes) |
+| Agentes (saúde própria) | `agent_jobs.circuit_state`, `agent_approvals.status` | `listIncidents()` (v1.6, existente) + 2 queries diretas novas (job_circuit_open, approval_pending) — legítimo por estar dentro do próprio módulo de agentes, não cruzando para domínio de negócio |
 
-## 3. Arquitetura
+11 das 13 fontes de sinal reaproveitam funções **já existentes e já
+usadas** por `director.get_business_overview` (v1.6) — confirma que a
+arquitetura v1.0–v1.7 já estava pronta para isso, só faltava a camada de
+interpretação.
 
-`agents/settings/catalog.ts` — catálogo único (6 chaves), cada uma com
-`type`, `min`/`max`, `description`, `scopes` e um **getter** (não valor
-capturado) para o default, lendo `config/env.ts` ao vivo — necessário
-porque vários testes da v1.5 mutam essas env vars em runtime por teste
-(bug real encontrado e corrigido antes de qualquer teste rodar, seção
-15/débitos).
+## 3. Sinais implementados
 
-`agents/settings/resolver.ts` — `resolveSettingsSnapshot({ jobId, tx? })`
-é o único ponto de leitura runtime, sempre 2 queries (linhas globais +
-linhas do Job via `IN` nas 6 chaves, nunca uma query por chave), aplica a
-hierarquia **job → global → default** e fail-safe (qualquer valor
-persistido inválido/fora de faixa é ignorado, cai para o próximo escopo —
-nunca usa um valor corrompido). Para `rate.autonomyLimit`/
-`rate.autonomyWindowSeconds`, uma ponte documentada consulta as colunas
-legadas `agent_jobs.autonomy_rate_limit_override`/
-`autonomy_rate_window_override_seconds` quando a tabela nova não tem
-linha para aquele Job — a tabela nova sempre vence quando ambas existem.
+13 tipos, todos verificados contra dados reais (nenhum conceito
+inventado):
 
-Consistência temporal (correio.md): o snapshot é resolvido **uma única
-vez** por `job-runner.ts`, no início da avaliação autônoma, dentro da
-mesma transação que já trava a linha do Job — e passado como parâmetro
-para `evaluateAutonomousExecution` (guard.ts), que nunca mais lê
-`config/env.ts` nem a tabela de settings diretamente. A finalização do
-circuit breaker (`circuit.ts`, chamada de pontos diferentes do ciclo de
-vida do Run — inclusive após aprovação assíncrona, potencialmente muito
-depois do início) resolve seu próprio snapshot fresco no momento da
-decisão — decisão documentada no código: mais correto usar o valor atual
-ali do que carregar um snapshot potencialmente antigo por todo o ciclo de
-vida assíncrono de um Run.
+| Tipo | Domínio | Severidade | Fonte |
+|---|---|---|---|
+| `crm.lead_follow_up_overdue` | crm | warning | `listOpenLeads()` + `nextActionAt < now` |
+| `crm.lead_missing_follow_up` | crm | attention | `listOpenLeads()` + sem `nextActionAt` e `createdAt` > `leadStaleDays` |
+| `projects.task_overdue` | projects | warning | `getOverdueTasks()` |
+| `projects.task_due_soon` | projects | attention | `getTasksDueSoon()` (novo) |
+| `projects.task_blocked` | projects | warning | `getBlockedTasks()` |
+| `projects.task_unassigned` | projects | attention | `getUnassignedTasks()` (novo) |
+| `projects.project_overdue` | projects | warning | `getOverdueProjects()` |
+| `finance.receivable_overdue` | finance | warning | `getOverdueEntries('income')` |
+| `finance.payable_overdue` | finance | warning | `getOverdueEntries('expense')` |
+| `support.ticket_critical` | support | critical | `getCriticalTickets()` |
+| `support.ticket_overdue` | support | warning | `getOverdueTicketsList()` |
+| `support.account_at_risk` | support | critical | `getAtRiskAccounts()` |
+| `support.follow_up_due` | support | attention | `getDueFollowups()` |
+| `agents.incident.*` (7 subtipos) | agents | critical/warning/attention | `listIncidents()` (v1.6) |
+| `agents.job_circuit_open` | agents | critical | query direta em `agent_jobs` |
+| `agents.approval_pending` | agents | attention | query direta em `agent_approvals` |
 
-## 4. Arquivos criados
+Thresholds (`leadStaleDays=3`, `taskDueSoonDays=2`) em catálogo de código
+(`agents/director/thresholds.ts`), não no sistema de settings da v1.7 —
+decisão explícita do correio.md ("provar os workflows" primeiro).
+
+## 4. Sinais avaliados mas não implementados e motivo
+
+| Sinal sugerido | Motivo |
+|---|---|
+| "lead parado em uma etapa do pipeline" | Exigiria rastrear quando o lead entrou no estágio atual — não existe hoje (só `updated_at` do lead inteiro, que muda em qualquer edição, não só mudança de estágio) |
+| "cliente sem contato recente" (CRM) | Já coberto pelo domínio support via `customer_success_accounts.next_contact_at` (`support.follow_up_due`) — não duplicado |
+| "atividade CRM vencida" | `crm_activities` não tem due date, só `occurred_at` (log do que já aconteceu, não uma pendência futura) |
+| "projeto sem atividade recente" | `projects` não tem campo de última-atividade real; `updated_at` muda em qualquer edição administrativa, não só progresso |
+| "cobrança próxima" (due soon, financeiro) | Decisão de escopo, não limitação de dados — overdue já cobre o sinal de maior urgência; candidato natural de extensão futura (mesmo padrão de `getTasksDueSoon`) |
+| "tarefas sem responsável, caso esse conceito exista" | **Implementado** — `assigneeUserId` é nullable, confirmado e usado |
+
+## 5. Arquitetura
+
+```
+Dados reais (services/repositórios existentes)
+        ↓
+Collectors por domínio (agents/director/collectors/*.ts)
+        ↓
+collectOperationalSignals() — Promise.allSettled, falha isolada por domínio
+        ↓
+operations-service.ts — ordena por severidade, monta o Brief (status ok/partial)
+        ↓
+WORKFLOW_TEMPLATES (por domínio) — objetivo determinístico a partir do sinal
+        ↓
+planEvaluateAndPersistActionPlan() + executeActionPlan() — MESMA função de POST /agents/action-plans
+        ↓
+Policy Evaluator (autoridade real, inalterada) → Action Plan Items persistidos
+```
+
+`now` sempre parametrizável (nunca `Date.now()`/`new Date()` direto dentro
+dos collectors) — testes com relógio controlado, sem flakiness de data.
+
+## 6. Arquivos criados
 
 Backend:
 
 ```
-drizzle/0013_agent_operational_settings.sql
-drizzle/meta/0013_snapshot.json
-db/schema/agent-operational-settings.ts
-agents/settings/catalog.ts
-agents/settings/resolver.ts
-agents/settings/schemas.ts
-agents/settings/resolver.test.ts       — 9 testes
-routes/agents/settings.ts               — endpoints administrativos
-routes/agents/settings.test.ts          — 13 testes
+agents/director/types.ts
+agents/director/thresholds.ts
+agents/director/schemas.ts
+agents/director/operational-signals.ts
+agents/director/operations-service.ts
+agents/director/collectors/{crm,projects,finance,support,agents}.ts
+agents/director/workflows/catalog.ts
+agents/director/operational-signals.test.ts   — 5 testes
+agents/director/operations-service.test.ts    — 5 testes
+agents/jobs/director-brief-job.test.ts        — 1 teste (Job → Run real)
+routes/agents/director.ts
+routes/agents/director.test.ts                — 6 testes
 ```
 
 Frontend:
 
 ```
-app/api/agents/settings/route.ts
-app/api/agents/settings/[key]/route.ts
-app/api/agents/jobs/[id]/settings/route.ts
-app/api/agents/jobs/[id]/settings/[key]/route.ts
-app/(dashboard)/agents/settings/page.tsx
-components/agents/settings/setting-row.tsx
-components/agents/settings/settings-list.tsx
-components/agents/settings/job-settings-section.tsx
+app/api/agents/director/brief/route.ts
+app/api/agents/director/signals/route.ts
+app/api/agents/director/signals/[id]/route.ts
+app/api/agents/director/signals/[id]/propose/route.ts
+app/(dashboard)/agents/director/page.tsx
+components/agents/director/{director-dashboard,domain-section,propose-action-button}.tsx
+hooks/agents/use-director.ts
 ```
 
-## 5. Arquivos alterados
+## 7. Arquivos alterados
 
 ```
-backend/src/agents/autonomy/guard.ts        — consome SettingsSnapshot em vez de env.* direto
-backend/src/agents/autonomy/circuit.ts      — idem, resolve no momento da finalização
-backend/src/agents/incidents/service.ts     — job_repeated_failure usa circuit.failureThreshold efetivo (era "3" fixo)
-backend/src/agents/jobs/job-runner.ts       — resolve o snapshot 1x por Run, antes do guard
-backend/src/db/schema/index.ts              — export do schema novo
-backend/src/db/seed.ts                      — 2 novas permissions
-backend/src/routes/agents/index.ts          — registro das rotas novas
-backend/src/routes/agents/operations.test.ts — fixture de job_repeated_failure agora dinâmico
-frontend/types/agents.ts                    — SettingKey/ResolvedSetting/SettingSource
-frontend/services/agents.ts                 — 6 funções novas de serviço
-frontend/hooks/agents/use-operations.ts     — 6 hooks novos
-frontend/lib/agents/derived.ts              — labels, agrupamento por domínio, isCriticalSetting
-frontend/lib/agents/derived.test.ts         — 2 testes novos (isCriticalSetting)
-frontend/lib/query/keys.ts                  — chaves novas
-frontend/components/agents/agents-sub-nav.tsx — link "Configurações"
-frontend/components/agents/jobs/job-detail.tsx — seção de overrides do Job
+backend/src/agents/tools/director.ts       — nova tool director.generate_daily_brief
+backend/src/db/seed.ts                     — tool nova + vínculo agente↔tool (sem permission nova)
+backend/src/routes/agents/index.ts         — registro da rota
+backend/src/routes/agents/operations.ts    — export de getJobsSummary/getApprovalsSummary (reuso pelo Director)
+backend/src/routes/projects/projects.ts    — + getTasksDueSoon/getUnassignedTasks
+frontend/types/agents.ts                   — OperationalSignal/DailyOperationsBrief/...
+frontend/services/agents.ts                — 4 funções novas
+frontend/hooks/... (indireto via use-director.ts, novo)
+frontend/lib/agents/derived.ts             — labels + signalEntityHref
+frontend/lib/agents/derived.test.ts        — 5 testes novos (signalEntityHref)
+frontend/lib/query/keys.ts                 — chaves novas
+frontend/components/agents/status-badge.tsx — SignalSeverityBadge
+frontend/components/agents/agents-sub-nav.tsx — link "Mesa do Diretor"
 ```
-
-## 6. Migration
-
-`0013_agent_operational_settings.sql` — tabela nova, sem alterar
-nenhuma tabela existente:
-
-```sql
-CREATE TABLE agent_operational_settings (
-  id serial PRIMARY KEY,
-  key varchar(100) NOT NULL,
-  scope varchar(20) NOT NULL,              -- 'global' | 'job'
-  scope_id integer REFERENCES agent_jobs(id) ON DELETE CASCADE,
-  value jsonb NOT NULL,
-  value_type varchar(20) NOT NULL,
-  updated_by integer NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-  created_at timestamptz NOT NULL DEFAULT now(),
-  updated_at timestamptz NOT NULL DEFAULT now()
-);
--- unique constraint (key, scope, scope_id) da seção 2 do correio.md,
--- implementado como dois índices únicos PARCIAIS (Postgres trata NULL
--- como distinto em índices únicos comuns — um índice único direto não
--- impediria múltiplas linhas globais para a mesma key):
-CREATE UNIQUE INDEX agent_operational_settings_global_idx
-  ON agent_operational_settings (key) WHERE scope = 'global';
-CREATE UNIQUE INDEX agent_operational_settings_job_idx
-  ON agent_operational_settings (key, scope_id) WHERE scope = 'job';
-CREATE INDEX agent_operational_settings_scope_idx ON agent_operational_settings (scope, scope_id);
-```
-
-Aplicada e testada no Postgres de dev. Compatível com dados existentes
-(tabela nova, nenhuma linha órfã possível). Valores hoje só em `.env`
-nunca precisaram de migração de dados — o resolver os trata como
-`source: 'default'` automaticamente.
-
-## 7. Settings suportados
-
-| key | tipo | default (fonte anterior) | min/max | scopes |
-|---|---|---|---|---|
-| `circuit.failureThreshold` | number | 5 (`AGENT_AUTONOMY_CIRCUIT_FAILURE_THRESHOLD`) | 1–20 | global, job |
-| `circuit.cooldownSeconds` | number | 300 (`AGENT_AUTONOMY_CIRCUIT_COOLDOWN_SECONDS`) | 1–86400 | global, job |
-| `autonomy.maxDepth` | number | 8 (`AGENT_MAX_AUTONOMY_DEPTH`) | 0–20 | global, job |
-| `chain.maxRunsPerAutonomyChain` | number | 25 (`AGENT_MAX_RUNS_PER_AUTONOMY_CHAIN`) | 1–200 | global, job |
-| `rate.autonomyLimit` | number | 20 (`AGENT_JOB_AUTONOMY_RATE_LIMIT` + coluna legada) | 1–1000 | global, job |
-| `rate.autonomyWindowSeconds` | number | 300 (`AGENT_JOB_AUTONOMY_RATE_WINDOW_SECONDS` + coluna legada) | 1–86400 | global, job |
-
-Faixas derivadas do comportamento real do projeto (documentado em
-`catalog.ts`): `autonomy.maxDepth` usa teto 20 em vez dos "10" sugeridos
-como exemplo pelo correio.md porque o default de produção já é 8 — um
-teto de 10 deixaria pouquíssima margem acima do default real.
 
 ## 8. Endpoints
 
 ```
-GET    /agents/settings                    agents.settings.read
-GET    /agents/settings/:key                agents.settings.read
-PATCH  /agents/settings/:key                agents.settings.manage
-DELETE /agents/settings/:key                agents.settings.manage
-GET    /agents/jobs/:id/settings            agents.settings.read
-PATCH  /agents/jobs/:id/settings/:key       agents.settings.manage
-DELETE /agents/jobs/:id/settings/:key       agents.settings.manage
+GET  /agents/director/brief                agents.read
+GET  /agents/director/signals              agents.read
+GET  /agents/director/signals/:id          agents.read
+POST /agents/director/signals/:id/propose  agents.use + agents.plan
 ```
 
-`DELETE` remove o override persistido (e, para as duas chaves de rate
-limit, também limpa a coluna legada do Job) — nunca apaga o conceito da
-configuração, que vive no catálogo em código. Nenhuma key arbitrária é
-aceita (`isSettingKey` valida antes de qualquer query).
+Consolidado em relação à sugestão literal do correio.md: sem
+`/director/operations` separado de `/director/brief` (redundante — o
+brief já é a visão consolidada; seção 13 permite explicitamente "avaliar
+nomes finais").
 
 ## 9. Permissions
 
-```
-agents.settings.read    — visualizar configuração efetiva (global e por Job)
-agents.settings.manage  — criar/alterar/remover overrides
-```
+**Nenhuma permission nova criada** — decisão deliberada (correio.md
+seção 14: "antes verificar se permissions equivalentes já existem. Não
+duplicar"). Reaproveitadas:
 
-Ambas concedidas automaticamente ao CEO (mecanismo já existente no
-`db:seed`, loop sobre todas as permissions). Nenhuma outra role afetada.
-**Deploy requires**: `npm run db:seed` deve rodar em qualquer outro
-ambiente antes do uso das novas telas — já rodado no Postgres de dev
-desta sessão.
+- `agents.read` — já usada por `director.get_business_overview` (v1.6) para o mesmo tipo de dado cross-departamento; cobre os 3 endpoints de leitura.
+- `agents.use` + `agents.plan` — exatamente as mesmas exigidas por `POST /agents/action-plans` (v1.2); o endpoint `propose` literalmente chama a mesma função, então exige a mesma autorização, sem exceção.
 
-## 10. Segurança
+## 10. Workflow templates
 
-Nenhuma configuração consegue elevar privilégio ou ignorar controles de
-segurança, porque:
-
-- As 6 chaves só afetam **limites** do Autonomy Guard (quando bloquear),
-  nunca **decisões de policy/permission/approval** — o Policy Evaluator,
-  Approvals e permissions continuam sendo autoridade separada,
-  intocada por esta versão.
-- Nenhuma configuração pode reativar um Job/global switch desligado —
-  o guard checa `autonomyEnabled`/global switch **antes** de consultar
-  qualquer setting (ordem inalterada desde a v1.5).
-- Validação Zod + catálogo fechado rejeita chave desconhecida, tipo
-  errado, fora de faixa, não-inteiro — nunca aceita `Infinity`, string,
-  ou negativo fora do que a faixa permite.
-- Fail-safe: valor persistido corrompido/inválido nunca é usado — cai
-  para o próximo escopo, testado explicitamente (resolver.test.ts).
-- `agents.settings.manage` é a única permission que escreve; `read` é
-  puramente informativo. Frontend nunca é barreira — todas as rotas têm
-  `requirePermission` server-side.
-- Nenhum secret/API key/credential é gerenciável por este módulo (fora
-  do catálogo por construção — só as 6 chaves existem).
-
-## 11. Auditoria
-
-Ações registradas via o serviço de `audit()` já existente (nenhum
-sistema paralelo):
+4 templates por domínio (não por tipo de sinal — os nomes sugeridos pelo
+correio.md são de domínio) + 1 especial:
 
 ```
-agents.settings.updated           — override já existia, valor mudou
-agents.settings.override_created  — primeiro override naquele escopo
-agents.settings.override_removed  — DELETE (volta a herdar)
+crm.follow_up_stale_lead        — qualquer sinal domain='crm'
+projects.handle_overdue_task    — qualquer sinal domain='projects'
+finance.review_overdue_item     — qualquer sinal domain='finance'
+support.review_stale_ticket     — qualquer sinal domain='support'
+director.daily_operations_review — objetivo do Job recorrente (não é "propose" sobre um sinal)
 ```
 
-Metadata: `key`, `scope`, `scopeId`, `previousValue`, `newValue` (ou só
-`previousValue` no remove). Nunca secrets (não existem secrets neste
-módulo).
+Nenhum define autorização — só o texto do objetivo enviado ao Planner.
 
-## 12. Runtime integration
+## 11. Integração com Planner/Policy/Executor
 
-Consumidores reais do resolver, substituindo leitura direta de
-`config/env.ts`:
+Zero bypass: `POST /director/signals/:id/propose` chama exatamente
+`planEvaluateAndPersistActionPlan()` + `executeActionPlan()`, as mesmas
+duas funções de `POST /agents/action-plans` (v1.2), na mesma ordem. Prova
+por teste real (`routes/agents/director.test.ts`): a decisão do item
+retornado é sempre um dos 4 valores reais do Policy Evaluator
+(`execute`/`approval_required`/`blocked`/`shadow`), nunca hardcoded pelo
+endpoint do Diretor, e o item fica de fato persistido em
+`agent_action_plan_items`.
 
-- `agents/autonomy/guard.ts` — `circuit.cooldownSeconds`,
-  `autonomy.maxDepth`, `chain.maxRunsPerAutonomyChain`,
-  `rate.autonomyLimit`, `rate.autonomyWindowSeconds` (todos os 5 checks
-  não-triviais do guard).
-- `agents/autonomy/circuit.ts` — `circuit.failureThreshold` (decide se a
-  falha abre o circuito).
-- `agents/incidents/service.ts` — `circuit.failureThreshold` (janela do
-  incidente `job_repeated_failure`, antes um "3" fixo).
-- `agents/jobs/job-runner.ts` — ponto que resolve o snapshot e o repassa
-  ao guard.
+## 12. Integração Jobs/Events
 
-Provado com teste real (não só unitário do resolver):
-`routes/agents/settings.test.ts` → "configurar circuit.failureThreshold=1
-(override global) faz o circuito abrir na 1ª falha, não no default" —
-configura via API, roda um Run autônomo real (`runAgentJob`), confirma
-`circuitState='open'` após 1 única falha em vez das 5 do default.
+**Jobs**: nova tool `director.generate_daily_brief` (READ), registrada no
+agente `director`. Um `agent_jobs` comum (nenhuma tabela/coluna nova)
+com objetivo `"Gerar briefing operacional diário da agência e
+identificar situações que requerem atenção."` roda via `runAgentJob()`
+— o Scheduler v1.3 já consegue disparar isso sem mudança nenhuma.
+Provado com Run real, ponta a ponta: `agents/jobs/director-brief-job.test.ts`
+(e validado manualmente contra o LLM real desta sessão, não só mockado —
+briefing real de 22 sinais gerado a partir dos dados reais do Postgres de
+dev).
 
-## 13. Testes
+**Events**: nenhum evento novo publicado nesta versão — decisão
+documentada (correio.md seção 12: "não instrumentar dezenas de eventos
+apenas por antecipação"). O brief é uma agregação de leitura, não um fato
+transacional; se um workflow futuro precisar reagir a "task ficou
+overdue" em tempo real (não só quando alguém abre o brief), aí sim
+justificaria um evento novo — não implementado agora.
 
-**22 novos no backend** (286 → 308): `resolver.test.ts` (9 — hierarquia,
-ponte com coluna legada, fail-safe com valor fora de faixa e com tipo
-errado) e `settings.test.ts` (13 — autorização read-vs-manage, validação
-de chave/tipo/faixa/inteiro, CRUD global e por-Job, Job inexistente,
-auditoria dos 3 actions com metadata correta, integração real de
-runtime). Mais 1 teste de frontend (`isCriticalSetting`, 2 casos) e a
-correção do fixture desatualizado em `operations.test.ts` (v1.6).
+## 13. Segurança
+
+- LLM nunca decide autorização — só escolhe qual tool chamar dentro de um
+  objetivo já determinístico montado pelo backend.
+- `propose` nunca executa nada diretamente — sempre via
+  `planEvaluateAndPersistActionPlan`/`executeActionPlan` reais.
+- Nenhum Action Plan Item pode fazer o que o usuário criador (`requestedBy`)
+  não poderia fazer diretamente — mesma regra de permissions por tool já
+  existente, inalterada.
+- Sinais são 100% determinísticos (dados reais, comparações de data) —
+  o LLM nunca gera um sinal, só interpreta os que já existem.
+- Nenhuma tool nova mutante: `director.generate_daily_brief` é READ, sem
+  `mutatesData`, sem `requiresApproval`.
+
+## 14. Auditoria
+
+```
+agents.director.brief_generated   — a cada GET /director/brief
+agents.director.action_proposed   — a cada POST propose bem-sucedido
+```
+
+Metadata: `signalId`/`signalType`/`domain`/`entityType`/`entityId`/
+`resultingActionPlanId` (proposed) e `status`/`summary`/`errors` (brief).
+Mesmo serviço `audit()` existente, nenhum sistema paralelo.
+
+## 15. Frontend
+
+`/agents/director` — "mesa do diretor": card de resumo (críticos/avisos/
+atenção/info, com aviso visível quando o brief está `partial` e qual
+domínio falhou) + 5 seções por domínio (CRM/Projetos/Financeiro/Suporte/
+Agentes), cada sinal com severidade, descrição, link para a entidade
+quando existe rota real (`signalEntityHref` — nunca um link quebrado:
+`task` usa `metadata.projectId`, não o id da própria tarefa, já que não
+existe página de tarefa isolada) e botão "Propor ação". O resultado do
+propose mostra a decisão real (Executável automaticamente/Approval
+necessário/Bloqueado/Shadow) e linka para a tela de planos já existente —
+nenhuma confirmação paralela, nenhuma mutação direta na UI.
+
+## 16. Testes
+
+**17 novos no backend** (308 → 326... na verdade 18, ver nota): 5
+(detecção: positiva, falso positivo, threshold, isolamento de domínio,
+ordenação por severidade) + 5 (brief: consolidação, contadores, módulos
+vazios, falha isolada de fonte sem mascarar erro, `now` controlado) + 6
+(API: autorização read/propose separadas, GET signal existente/404,
+propose prova pipeline sem bypass) + 1 (Job real → Run → tool → briefing
+determinístico). **5 novos no frontend** (`signalEntityHref`: 5 casos).
 
 ```
 backend typecheck:   limpo, 0 erros
-backend tests:       308/308, 0 fail (--test-concurrency=1, confirmado 2x)
+backend tests:       326/326, 0 fail (--test-concurrency=1, confirmado 2x)
 frontend typecheck:  limpo, 0 erros
-frontend tests:      52/52, 0 fail
-frontend build:      limpo, 0 erros — /agents/settings + 4 rotas BFF novas compilam
+frontend tests:      56/56, 0 fail
+frontend build:      limpo, 0 erros — /agents/director + 4 rotas BFF compilam
 ```
 
-## 14. Compatibilidade
+## 17. Compatibilidade v1.0–v1.7
 
-v1.0–v1.6 confirmada: toda a suíte anterior (286 testes) continua
-passando dentro dos 308. Nenhuma rota/comportamento existente foi
-removido. O comportamento **observável muda só onde intencional**: o
-Incident Center `job_repeated_failure` agora usa o threshold real (5) em
-vez do "3" hardcoded anterior — mudança pedida explicitamente pelo
-correio.md v1.7, com o teste da v1.6 atualizado para refletir isso
-dinamicamente em vez de reafirmar o número antigo.
+Confirmada: suíte completa anterior (todos os 308 testes de v1.0–v1.7)
+continua passando dentro dos 326. Nenhuma rota/comportamento/permission
+existente foi alterado — só leitura nova e reuso do pipeline de Action
+Plan já existente.
 
-## 15. Riscos / débitos técnicos
+## 18. Bugs encontrados
 
-1. **Retry de eventos (`AGENT_EVENTS_MAX_ATTEMPTS`/`_RETRY_BASE_SECONDS`)
-   não migrado**: são candidatos reais a runtime-configurável (retry de
-   verdade existe), mas ficaram fora da prioridade explícita desta
-   versão (autonomia/circuit/budget/rate). Podem entrar numa versão
-   futura sem mudança arquitetural — o catálogo já está pronto para mais
-   chaves.
-2. **`autonomy.maxDepth`/`chain.maxRunsPerAutonomyChain` nunca tiveram
-   override por Job antes da v1.7** (só global/env) — diferente de
-   `rate.*`, não existe uma coluna legada equivalente para migrar/testar
-   contra, então a cobertura de teste desses dois no escopo `job` é
-   nova, sem um comportamento anterior de referência para comparar.
-3. **Sem cache Redis**: decisão deliberada (correio.md permite pular se
-   não houver necessidade real nesta escala) — cada resolução é 2
-   queries indexadas simples, chamadas no máximo 1x por Run. Se o volume
-   de Runs crescer a ponto de justificar, o resolver já está isolado o
-   suficiente para adicionar cache depois sem tocar nos consumidores.
-4. **3 bugs de encoding/parsing encontrados e corrigidos durante a
-   implementação** (mojibake em `catalog.ts`, `*/` literal fechando um
-   JSDoc cedo demais, `defaultValue` capturado estaticamente em vez de
-   getter) — nenhum chegou a ser commitado, mas registrados aqui porque
-   o processo de correio.md pede transparência sobre o que foi
-   encontrado, não só o resultado final.
-5. **Vazamento de estado de teste entre arquivos, encontrado e
-   corrigido**: um teste que criava um override global via API não tinha
-   limpeza garantida fora do próprio corpo do teste — quando dois
-   arquivos de teste rodaram numa mesma invocação manual (não o `npm
-   test` real), 6 testes de outro arquivo quebraram. A causa raiz foi
-   corrigida (limpeza imediata + `afterEach` mais amplo), mas a suíte
-   real via `npm test`/glob nunca reproduziu esse cenário — não ficou
-   totalmente claro por que a invocação manual com múltiplos arquivos
-   como argumentos intercala execução de um jeito que o glob não faz;
-   documentado para investigação futura se o padrão dos scripts npm
-   mudar.
-6. Segue pendente de sessões anteriores: os Jobs órfãos `1546`/`1547`
-   ainda `active` no Postgres de dev, aguardando cancelamento aprovado.
+1. **Tool nova sem vínculo agente↔tool no seed**: `director.generate_daily_brief`
+   foi registrada no código (`tool-registry`) mas esquecida no catálogo
+   de seed e em `defaultAgentToolPermissions['director']` — o Planner
+   validava o Action Plan mockado e rejeitava com `validation_error:
+   "Action Plan gerado é inválido"` porque a tool não estava associada ao
+   agente `director` em `agent_tool_permissions`. Diagnosticado com um
+   script isolado reproduzindo o Run fora da suíte de teste (para inspecionar
+   o erro real sem o `after()` do teste limpar os dados antes de eu
+   conseguir ler); corrigido adicionando a tool ao catálogo de seed e ao
+   vínculo do agente, `db:seed` re-rodado no Postgres de dev. Teste
+   voltou a passar sem alterar nenhuma expectativa.
 
-## 16. Deploy
+Nenhum outro bug real encontrado nesta versão (diferente da v1.5/v1.7,
+que tiveram mais achados) — a maior parte do trabalho reaproveitou
+funções já testadas em outros módulos.
+
+## 19. Riscos / débitos técnicos
+
+1. **`agents.job_circuit_open`/`agents.approval_pending` usam query
+   direta em `agent_jobs`/`agent_approvals`** dentro do collector — não é
+   uma violação da regra "nunca SQL no Diretor" (essa regra é sobre não
+   duplicar lógica de domínio de negócio; este collector vive dentro do
+   próprio módulo de agentes), mas documentado aqui para transparência
+   total sobre onde exatamente há uma exceção deliberada.
+2. **Paginação de `listIncidents` limitada a 20** dentro do collector de
+   agentes — um ambiente com muitos incidents simultâneos veria só os 20
+   mais recentes no brief. Aceitável para uma tela operacional (não uma
+   auditoria completa, que já existe em `/agents/incidents`), mas vale
+   registro.
+3. **Sinais "due soon" cobrem só tarefas**, não financeiro — decisão de
+   escopo documentada na seção 4, não limitação técnica.
+4. **`director.generate_daily_brief` foi testada com o LLM real desta
+   sessão** (não só mockada) — confirma que funciona em produção, mas
+   isso consumiu uma chamada real ao provider configurado (fora dos
+   testes automatizados, que usam mock).
+5. Segue pendente de sessões anteriores: os Jobs órfãos `1546`/`1547`
+   ainda `active` (dormentes) no Postgres de dev, aguardando
+   cancelamento aprovado.
+
+## 20. Deploy/migrations
+
+**Nenhuma migration nova** — v1.8 não criou tabela nem coluna.
 
 ```bash
-npm run db:migrate   # aplica 0013_agent_operational_settings.sql
-npm run db:seed      # concede agents.settings.read/manage ao CEO (idempotente)
+npm run db:seed   # cria a tool director.generate_daily_brief e o vínculo agente↔tool (idempotente)
 ```
 
-Sem isso, a tela `/agents/settings` fica inacessível (403) e as rotas
-administrativas também.
+Sem isso, um Job com objetivo de briefing diário rodando com LLM real não
+teria acesso à tool (mesmo bug da seção 18) — já corrigido e re-rodado
+nesta sessão, mas necessário em qualquer outro ambiente antes do deploy.
 
-## 17. Git
+## 21. Git status
 
 ```
-$ git status --short
+?? backend/src/agents/director/
+?? backend/src/agents/jobs/director-brief-job.test.ts
+?? backend/src/routes/agents/director.test.ts
+?? backend/src/routes/agents/director.ts
+?? frontend/app/api/agents/director/
+?? frontend/app/(dashboard)/agents/director/
+?? frontend/components/agents/director/
+?? frontend/hooks/agents/use-director.ts
+ M backend/src/agents/tools/director.ts
+ M backend/src/db/seed.ts
+ M backend/src/routes/agents/index.ts
+ M backend/src/routes/agents/operations.ts
+ M backend/src/routes/projects/projects.ts
+ M correio.md
+ M frontend/components/agents/agents-sub-nav.tsx
+ M frontend/components/agents/status-badge.tsx
+ M frontend/lib/agents/derived.test.ts
+ M frontend/lib/agents/derived.ts
+ M frontend/lib/query/keys.ts
+ M frontend/services/agents.ts
+ M frontend/types/agents.ts
 ```
 
-(saída completa na seção 4/5 acima — arquivos novos e alterados
-listados). Nenhum commit foi feito.
+Nenhum commit foi feito. Aguardando revisão final.

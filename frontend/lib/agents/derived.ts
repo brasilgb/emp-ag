@@ -21,6 +21,8 @@ import type {
   JobTriggerType,
   SettingKey,
   SettingSource,
+  SignalDomain,
+  SignalSeverity,
 } from "@/types/agents";
 
 /**
@@ -424,4 +426,62 @@ export const CRITICAL_SETTING_KEYS: readonly SettingKey[] = [
 
 export function isCriticalSetting(key: SettingKey): boolean {
   return (CRITICAL_SETTING_KEYS as readonly string[]).includes(key);
+}
+
+// Agentes v1.8 — Director Operations & Business Workflows (correio.md).
+export const SIGNAL_SEVERITY_LABELS: Record<SignalSeverity, string> = {
+  critical: "Crítico",
+  warning: "Aviso",
+  attention: "Atenção",
+  info: "Info",
+};
+
+export function signalSeverityLabel(severity: SignalSeverity): string {
+  return SIGNAL_SEVERITY_LABELS[severity] ?? severity;
+}
+
+export const SIGNAL_DOMAIN_LABELS: Record<SignalDomain, string> = {
+  crm: "CRM",
+  projects: "Projetos",
+  finance: "Financeiro",
+  support: "Suporte / CS",
+  agents: "Agentes",
+};
+
+export function signalDomainLabel(domain: SignalDomain): string {
+  return SIGNAL_DOMAIN_LABELS[domain] ?? domain;
+}
+
+// Rotas conhecidas para "abrir a entidade relacionada" (correio.md v1.8
+// seção 15) — só os entityType que já têm uma página de detalhe real;
+// os demais (ex.: agent_approval) ficam sem link, nunca um link quebrado.
+// "task" não tem página própria (só existe dentro do detalhe do
+// projeto) — usa metadata.projectId, nunca o id da própria tarefa.
+export function signalEntityHref(signal: {
+  entityType?: string;
+  entityId?: number;
+  metadata: Record<string, unknown>;
+}): string | null {
+  if (!signal.entityType) return null;
+
+  switch (signal.entityType) {
+    case "lead":
+      return signal.entityId ? `/leads/${signal.entityId}` : null;
+    case "task": {
+      const projectId = signal.metadata.projectId;
+      return typeof projectId === "number" ? `/projects/${projectId}` : null;
+    }
+    case "project":
+      return signal.entityId ? `/projects/${signal.entityId}` : null;
+    case "financial_entry":
+      return signal.entityId ? `/financial/${signal.entityId}` : null;
+    case "support_ticket":
+      return signal.entityId ? `/support/${signal.entityId}` : null;
+    case "customer_success_account":
+      return signal.entityId ? `/customer-success/${signal.entityId}` : null;
+    case "agent_job":
+      return signal.entityId ? `/agents/jobs/${signal.entityId}` : null;
+    default:
+      return null;
+  }
 }

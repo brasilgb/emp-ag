@@ -8,6 +8,7 @@ import {
   executionStatusLabel,
   formatChatResponse,
   isCriticalSetting,
+  signalEntityHref,
 } from "./derived";
 
 const NOW = new Date("2026-08-30T12:00:00.000Z");
@@ -95,5 +96,33 @@ describe("isCriticalSetting", () => {
     assert.equal(isCriticalSetting("chain.maxRunsPerAutonomyChain"), false);
     assert.equal(isCriticalSetting("rate.autonomyLimit"), false);
     assert.equal(isCriticalSetting("rate.autonomyWindowSeconds"), false);
+  });
+});
+
+// Agentes v1.8 — Director Operations & Business Workflows.
+describe("signalEntityHref", () => {
+  test("lead/project/financial_entry/support_ticket/customer_success_account/agent_job usam entityId direto", () => {
+    assert.equal(signalEntityHref({ entityType: "lead", entityId: 5, metadata: {} }), "/leads/5");
+    assert.equal(signalEntityHref({ entityType: "project", entityId: 7, metadata: {} }), "/projects/7");
+    assert.equal(signalEntityHref({ entityType: "financial_entry", entityId: 9, metadata: {} }), "/financial/9");
+    assert.equal(signalEntityHref({ entityType: "support_ticket", entityId: 3, metadata: {} }), "/support/3");
+    assert.equal(
+      signalEntityHref({ entityType: "customer_success_account", entityId: 2, metadata: {} }),
+      "/customer-success/2",
+    );
+    assert.equal(signalEntityHref({ entityType: "agent_job", entityId: 11, metadata: {} }), "/agents/jobs/11");
+  });
+
+  test("task usa metadata.projectId, nunca o id da própria tarefa (não existe página de tarefa isolada)", () => {
+    assert.equal(signalEntityHref({ entityType: "task", entityId: 42, metadata: { projectId: 8 } }), "/projects/8");
+  });
+
+  test("task sem metadata.projectId não gera link quebrado", () => {
+    assert.equal(signalEntityHref({ entityType: "task", entityId: 42, metadata: {} }), null);
+  });
+
+  test("entityType desconhecido ou ausente nunca gera link", () => {
+    assert.equal(signalEntityHref({ entityType: "agent_approval", entityId: 1, metadata: {} }), null);
+    assert.equal(signalEntityHref({ metadata: {} }), null);
   });
 });

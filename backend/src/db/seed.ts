@@ -615,6 +615,18 @@ const defaultAgentTools = [
     requiresApproval: false,
   },
   {
+    name: 'Briefing operacional diário',
+    slug: 'director-generate-daily-brief',
+    description:
+      'Gera o briefing operacional diário determinístico (Operational Signals de CRM/projetos/financeiro/suporte/agentes) — Agentes v1.8.',
+    department: 'director',
+    autonomyLevel: 'read',
+    handler: 'director.generate_daily_brief',
+    risk: 'read',
+    mutatesData: false,
+    requiresApproval: false,
+  },
+  {
     name: 'Resumo do funil de vendas',
     slug: 'sales-get-pipeline-summary',
     description: 'Contagem e valor estimado de leads por estágio do pipeline.',
@@ -841,7 +853,7 @@ const defaultAgentTools = [
 // agentSlug → handlers das tools que este agente pode usar (seção 37 —
 // associar apenas tools apropriadas a cada agente).
 const defaultAgentToolPermissions: Record<string, string[]> = {
-  director: ['director.get_business_overview'],
+  director: ['director.get_business_overview', 'director.generate_daily_brief'],
   sales: [
     'sales.get_pipeline_summary',
     'sales.list_open_leads',

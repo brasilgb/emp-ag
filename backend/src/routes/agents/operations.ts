@@ -30,7 +30,11 @@ import { operationsSummaryQuerySchema } from '../../agents/operations/schemas.js
  * pelo período (`from`/`to`, default últimos 7 dias) porque volume de
  * execução cresce sem limite ao longo do tempo.
  */
-async function getJobsSummary() {
+// Exportada para reuso pelo Director Operations Service (correio.md v1.8
+// seção 6 — "existem circuit breakers abertos?"/"Jobs com problema" no
+// domínio "agents" do briefing), mesmo racional de reuso das outras
+// funções já exportadas para director.get_business_overview (v1.6).
+export async function getJobsSummary() {
   const [row] = await db
     .select({
       total: sql<number>`count(*)`,
@@ -146,7 +150,8 @@ async function getEventsSummary(from: Date, to: Date) {
   };
 }
 
-async function getApprovalsSummary() {
+// Agentes v1.8 — mesmo racional de getJobsSummary acima.
+export async function getApprovalsSummary() {
   const [row] = await db
     .select({
       pending: sql<number>`count(*) filter (where ${agentApprovals.status} = 'pending')`,
