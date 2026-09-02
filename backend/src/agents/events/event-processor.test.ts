@@ -302,8 +302,16 @@ describe('Event Processor (Agentes v1.4 — correio.md seções 10/12/13/14/15)'
 
     await setAutonomousExecutionEnabled(false);
 
+    // maxIterations elevado (era 20): sob fila grande compartilhada entre
+    // arquivos de teste concorrentes, 20 chamadas a processNextEvent()
+    // podem se esgotar antes de alcançar o nosso evento específico
+    // (drenando só eventos alheios), deixando `delivery` undefined
+    // abaixo — mesmo com o pre-drain acima. O valor por padrão de
+    // drainUntil (2000) é seguro aqui pelo mesmo motivo do resto do
+    // arquivo; o pre-drain continua reduzindo a janela de corrida com o
+    // switch global, este número só evita falso-negativo sob fila cheia.
     const event = await publishLeadEvent({ ...LEAD_PAYLOAD, leadId: 111008 });
-    await drainUntil(event.id, 20);
+    await drainUntil(event.id, 500);
 
     const [delivery] = await db.select().from(agentEventDeliveries).where(eq(agentEventDeliveries.eventId, event.id));
     assert.equal(delivery.status, 'failed');
@@ -317,6 +325,15 @@ describe('Event Processor (Agentes v1.4 — correio.md seções 10/12/13/14/15)'
 
     const job = await createJob();
     await createRule(job.id, { filters: {} });
+
+    // Mesmo pre-drain do teste de global autonomy switch acima: esvazia a
+    // fila de eventos alheios de outros arquivos concorrentes antes de
+    // publicar o nosso, reduzindo a chance de outro arquivo processar
+    // (ou de processNextEvent() de outro loop concorrente competir por)
+    // linhas nossas entre as duas chamadas de drainUntil abaixo.
+    for (let i = 0; i < 50; i += 1) {
+      if ((await processNextEvent()) === 'no_event') break;
+    }
 
     const event = await publishLeadEvent({ ...LEAD_PAYLOAD, leadId: 111009 });
     await drainUntil(event.id);

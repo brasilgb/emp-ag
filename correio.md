@@ -1,502 +1,265 @@
-# PRIORIDADE MÁXIMA — Corrigir definitivamente a infraestrutura de testes
+# CORREÇÃO IMEDIATA — encerrar a flakiness da v1.5
 
-Pare de repetir a suíte contra o banco de desenvolvimento atual.
+Pare de repetir a suíte.
 
-Não quero mais reruns, diagnósticos repetidos ou tentativas de "ver se passa".
-
-A partir de agora, execute a correção definitiva da infraestrutura de testes.
+Já foram 13 rodadas e a causa está identificada. Agora quero CORREÇÃO, não nova tentativa.
 
 ## Objetivo
 
-Criar um ambiente backend de testes:
+Eliminar definitivamente as falhas intermitentes da suíte relacionadas a:
 
-* isolado;
-* descartável;
-* reproduzível;
-* seguro;
-* independente do PostgreSQL/Redis de desenvolvimento;
-* capaz de executar a suíte repetidamente sem acumular estado de execuções anteriores.
+1. `event-processor.test.ts`
+2. estado global de `settings`
+3. fila compartilhada `agent_events`
+4. Jobs órfãos `1546` e `1547`
 
-A aplicação de produção/dev não deve sofrer alterações funcionais por causa disso.
+Não altere a lógica funcional da v1.5 sem evidência de bug de produção.
 
 ---
 
-# 1. PostgreSQL dedicado para testes
+# 1. Primeiro: eliminar os Jobs órfãos
 
-Criar PostgreSQL exclusivo para testes.
+Cancelar imediatamente pelos mecanismos da aplicação:
 
-Preferência:
+* Job 1546
+* Job 1547
 
-* container `agencia-postgres-test`;
-* database `agencia_test`;
-* usuário próprio de teste, se apropriado;
-* volume descartável ou estratégia segura de reset.
+Confirmar:
 
-A suíte backend deve usar explicitamente algo como:
+* `status != active`
+* nenhuma Event Rule antiga desses smoke tests continua habilitada
+* nenhum container auxiliar de smoke test permanece rodando
+* nenhum novo Run desses Jobs aparece após o cancelamento
 
-`DATABASE_URL_TEST`
-
-Nunca utilizar silenciosamente `DATABASE_URL` de desenvolvimento durante `npm test`.
-
-Se `DATABASE_URL_TEST` estiver ausente:
-
-**falhar imediatamente.**
-
-Não fazer fallback.
+Se o sandbox impedir novamente, documentar exatamente o comando/API que precisa ser executado externamente, mas continuar com as correções dos testes.
 
 ---
 
-# 2. Proteção obrigatória contra destruição do banco errado
+# 2. Corrigir `event-processor.test.ts`
 
-Antes de qualquer:
+Este é o principal problema.
 
-* DROP;
-* TRUNCATE;
-* reset;
-* cleanup global;
-* recriação de schema;
+A fila global `agent_events` não pode mais ser utilizada pelos testes como se fosse exclusiva.
 
-implementar guard de segurança.
+Cada teste deve possuir e identificar explicitamente:
 
-O reset só pode ocorrer se:
+* seu `eventId`
+* seus `ruleIds`
+* seus `jobIds`
+* suas `deliveryIds`
+* seus `runIds`
 
-* `NODE_ENV === 'test'`;
-* a URL utilizada for a URL explicitamente de teste;
-* o nome do database for reconhecido como database de teste, por exemplo `agencia_test`.
+Todas as verificações devem ser filtradas pelos IDs da própria fixture.
 
-Se qualquer condição não for satisfeita:
+## Proibido nos testes
 
-**abortar com erro.**
+Não utilizar lógica baseada em:
 
-Nunca permitir que script de testes limpe automaticamente o banco `agencia` de desenvolvimento.
-
-Adicionar teste para esse guard.
-
----
-
-# 3. Redis separado
-
-Mapear os testes que utilizam Redis.
-
-Criar isolamento real para testes:
-
-* Redis de teste separado; OU
-* database Redis reservado exclusivamente aos testes; OU
-* prefixo forte por ambiente, se comprovadamente seguro.
-
-Preferência: ambiente dedicado.
-
-Cleanup/flush só pode atingir Redis identificado explicitamente como teste.
-
-Nunca executar `FLUSHALL` no Redis de desenvolvimento.
-
----
-
-# 4. Ciclo determinístico da suíte
-
-Criar um fluxo único para a suíte:
-
-1. verificar environment safety;
-2. preparar PostgreSQL de teste;
-3. aplicar migrations;
-4. resetar somente o banco de teste;
-5. preparar fixtures básicas;
-6. executar testes;
-7. finalizar de maneira previsível.
-
-Cada execução completa deve começar do mesmo estado inicial.
-
-Não carregar resíduos da execução anterior.
-
----
-
-# 5. Não depender apenas do banco limpo
-
-Mesmo com banco dedicado, corrigir o isolamento lógico dos testes.
-
-Cada teste deve identificar os objetos que criou.
-
-Exemplos:
-
-* Job;
-* Event Rule;
-* Event;
-* Delivery;
-* Run;
-* Approval;
-* Action Plan;
-* Audit entry.
-
-Usar IDs das próprias fixtures nas assertions.
-
-Evitar assertions baseadas em estado global quando existe forma de consultar somente os registros relacionados ao teste.
-
----
-
-# 6. Corrigir `event-processor.test.ts`
-
-Esse arquivo é atualmente o principal sintoma da contaminação.
-
-Revisar especialmente:
-
-`drainUntil(...)`
-
-e qualquer helper que processe a fila global.
-
-Precisamos garantir que um teste não dependa de:
-
-* fila global vazia;
-* ser o único produtor;
-* ser o único consumidor;
+* último evento global;
+* primeira delivery disponível;
 * quantidade global de Runs;
-* quantidade global de Deliveries.
+* fila global estar vazia;
+* consumir indiscriminadamente eventos pendentes;
+* esperar que outro arquivo não esteja usando o banco.
 
-Para idempotência:
+## Corrigir `drainUntil`
 
-não fazer apenas:
+`drainUntil` deve esperar somente pelo evento/delivery pertencente à fixture atual.
 
-"o Job possui 1 Run".
+Ele não deve considerar atividade de outros testes como progresso.
 
-Validar algo conceitualmente equivalente a:
+Se o Event Processor atual somente consegue consumir a fila global, crie no teste um mecanismo controlado para acompanhar exclusivamente o `eventId` criado pela fixture.
 
-* Event específico X;
-* Rule específica Y;
-* Delivery derivada de X/Y;
-* número de Runs causados por essa delivery/event.
-
-O teste precisa provar a relação causal, não a ausência de outros registros no banco.
+Não mudar o comportamento de produção apenas para facilitar o teste, salvo se a mudança representar melhoria arquitetural legítima.
 
 ---
 
-# 7. Global autonomy switch
+# 3. Corrigir o global autonomy switch
 
-O singleton global de produção continuará singleton.
+Encontrar todos os testes que chamam:
 
-Não alterar essa arquitetura.
+`setAutonomousExecutionEnabled(false)`
+`setAutonomousExecutionEnabled(true)`
 
-Mapear todos os testes que usam:
+Eles não podem competir pela mesma linha global de `settings`.
 
-`setAutonomousExecutionEnabled(...)`
+Quero isolamento real.
 
-Esses testes não podem competir em paralelo modificando o mesmo singleton.
+Ordem de preferência:
 
-Solução desejada:
+1. injeção/mock/stub da configuração global dentro dos testes;
+2. fixture isolada;
+3. mecanismo de exclusão mútua especificamente para os testes que alteram configuração global;
+4. serialização somente desse grupo de testes, se as opções anteriores forem desproporcionalmente complexas.
 
-* serializar somente o grupo que realmente altera o switch global; OU
-* separar teste de persistência real dos demais testes que apenas precisam controlar a dependência.
+Não serializar toda a suíte como primeira solução.
 
-Manter pelo menos um teste real contra PostgreSQL comprovando que o global switch funciona.
-
-Não mockar tudo.
-
----
-
-# 8. Mapear outras fontes globais
-
-Buscar na suíte inteira por potenciais recursos compartilhados:
-
-* `settings`;
-* `agent_events`;
-* `agent_event_deliveries`;
-* scheduler;
-* consumers;
-* global switches;
-* Redis keys;
-* filas;
-* jobs agendados;
-* cleanup de tabela inteira;
-* contadores globais;
-* `delete(...)` sem escopo de fixture;
-* helpers que drenam filas;
-* timers/workers que permanecem vivos após teste.
-
-Corrigir agora qualquer fonte equivalente encontrada.
-
-Não esperar uma nova flakiness aparecer daqui a algumas versões.
+Garantir restauração do estado em `finally`/`afterEach`.
 
 ---
 
-# 9. Concorrência
+# 4. Cleanup determinístico
 
-Depois do isolamento, manter paralelismo onde for seguro.
+Cada teste deverá remover exclusivamente os artefatos que criou.
 
-Não quero simplesmente colocar:
+Revisar cleanup de:
 
-`--test-concurrency=1`
+* `agent_events`
+* `agent_event_deliveries`
+* `agent_job_runs`
+* `agent_autonomy_blocks`
+* Event Rules
+* Jobs
+* alterações temporárias de `settings`
 
-na suíte inteira e considerar o problema resolvido.
+Usar prefixo/identificador único de fixture quando ajudar.
 
-Pode haver serialização localizada quando o recurso realmente for global.
-
-Exemplo válido:
-
-testes específicos do singleton global de autonomia.
-
-O restante deve continuar paralelizável quando tecnicamente possível.
-
----
-
-# 10. Não tocar no banco de desenvolvimento
-
-É proibido como solução deste problema executar no ambiente atual:
-
-`docker compose down -v`
-
-da stack de desenvolvimento;
-
-`DROP DATABASE agencia`;
-
-`TRUNCATE` generalizado no banco de dev;
-
-remoção dos milhares de Runs/Events/Blocks existentes.
-
-Esses dados não precisam ser usados pelos testes novos.
-
-A correção é isolamento, não destruição do ambiente existente.
+Não executar `TRUNCATE` global durante execução concorrente da suíte.
 
 ---
 
-# 11. Jobs antigos 1546/1547
+# 5. Banco de teste
 
-Tratar separadamente do ambiente de testes.
+A suíte de integração não deve continuar utilizando o mesmo banco de desenvolvimento poluído por smoke tests e execuções anteriores.
 
-Cancelar:
+Criar/configurar banco de teste dedicado se ainda não existir.
 
-* 1546;
-* 1547.
+Exemplo conceitual:
 
-Desabilitar Event Rules pertencentes exclusivamente ao antigo smoke test.
+`agencia_test`
 
-Usar mecanismos oficiais da aplicação.
+A suíte deve:
 
-Não apagar histórico.
+1. apontar explicitamente para o banco de teste;
+2. aplicar migrations;
+3. criar fixtures;
+4. executar;
+5. limpar somente seus artefatos.
 
-Preservar:
-
-* Runs;
-* Events;
-* Deliveries;
-* Autonomy Blocks;
-* Audit Logs.
-
-Confirmar que um Event Processor iniciado posteriormente não reativa essa cadeia.
+Não destruir o banco normal de desenvolvimento.
 
 ---
 
-# 12. Scripts npm
+# 6. Agora corrija o código
 
-Criar comandos claros, se necessário, por exemplo conceitualmente:
+Não quero novo relatório de diagnóstico antes da correção.
 
-`npm run test:setup`
-`npm test`
-`npm run test:reset`
+Faça as alterações necessárias nos testes/fixtures/helpers.
 
-ou um comando único:
-
-`npm run test:integration`
-
-Prefira que o comando oficial já faça o setup seguro necessário.
-
-O desenvolvedor não deve precisar lembrar manualmente de limpar banco antes de testar.
+Depois mostre os arquivos modificados e explique resumidamente a causa corrigida.
 
 ---
 
-# 13. Docker Compose
+# 7. Validação — limite rígido
 
-Se apropriado, adicionar serviços de teste separados.
+Depois da correção:
 
-Não prejudicar:
+## Rodada A — somente os arquivos problemáticos
 
-`docker compose up -d`
+Rodar:
 
-normal da aplicação.
+* `event-processor.test.ts`
+* `job-runner.autonomy.test.ts`
 
-O banco/Redis de testes podem usar:
+Resultado obrigatório: 100%.
 
-* profile específico;
-* compose override;
-* compose separado;
+Se falhar:
 
-escolha o que ficar mais simples e sustentável no repositório existente.
+PARE.
 
-Não introduzir complexidade desnecessária.
+Investigue e corrija.
 
----
-
-# 14. `.env.example`
-
-Documentar apenas valores de exemplo.
-
-Nunca commit:
-
-* API keys reais;
-* tokens;
-* passwords reais;
-* secrets do ambiente.
-
-A suíte de testes também não deve fazer chamadas LLM reais.
-
-Desabilitar provider externo durante testes, salvo testes explícitos e controlados para provider.
+Não rode de novo cegamente.
 
 ---
 
-# 15. Migrations
+## Rodada B — suíte completa
 
-O banco de teste deve usar as migrations reais do projeto.
+Somente quando A estiver verde:
 
-Não criar schema paralelo simplificado.
+rodar backend completo UMA VEZ.
 
-Precisamos continuar validando a aplicação sobre:
+Se falhar:
 
-* PostgreSQL real;
-* FKs reais;
-* constraints;
-* índices;
-* transactions;
-* `SELECT ... FOR UPDATE`;
-* locks;
-* Drizzle/migrations reais.
+PARE → investigar → corrigir.
+
+Não iniciar segunda tentativa sem mudança concreta.
 
 ---
 
-# 16. Validação final — apenas depois da correção
+## Rodadas C e D — estabilidade
 
-Não rode a suíte completa repetidamente durante a investigação.
+Quando a suíte completa passar:
 
-Primeiro implemente a infraestrutura.
+rodar mais DUAS vezes.
 
-Quando considerar corrigido:
+Portanto, após a correção, máximo de:
 
-## Backend
+**3 execuções completas verdes**
 
-Executar:
+Isso é suficiente para comprovar que removemos a flakiness.
 
-`npx tsc --noEmit`
-
-Depois executar a suíte completa 3 vezes.
-
-Cada execução deve começar de estado conhecido/limpo.
-
-Quero relatório separado:
-
-### Execução 1
-
-* total;
-* pass;
-* fail;
-* cancelled.
-
-### Execução 2
-
-* total;
-* pass;
-* fail;
-* cancelled.
-
-### Execução 3
-
-* total;
-* pass;
-* fail;
-* cancelled.
-
-Não fazer rerun isolado para transformar falha em sucesso.
-
-Se qualquer uma falhar, investigar antes de continuar.
+Não faça rodada 4, 5, 10 ou 20.
 
 ---
 
-# 17. Frontend
+# 8. Gates finais
 
-Quando backend estiver estabilizado:
+Executar uma única vez:
 
-`npm test`
+* backend `tsc --noEmit`
+* frontend `npm test`
+* frontend `next build`
 
-`npm run build`
-
----
-
-# 18. Critério para considerarmos resolvido
-
-Só declarar resolvido quando tivermos:
-
-* PostgreSQL de teste independente;
-* Redis isolado;
-* proteção contra cleanup do ambiente errado;
-* execução começando de estado conhecido;
-* `event-processor.test.ts` sem depender da fila global de outros testes;
-* global autonomy switch sem race cross-file;
-* três suítes completas consecutivas verdes;
-* nenhum rerun;
-* nenhum flaky conhecido;
-* typecheck limpo;
-* frontend verde.
+Todos verdes.
 
 ---
 
-# 19. Depois disso: Git
+# 9. Git
 
-Se tudo passar:
-
-revisar:
+Depois:
 
 `git status`
 
-`git diff --stat`
+Separar:
 
-`git diff`
+* alterações reais da v1.5;
+* correções de testes;
+* migrations;
+* arquivos temporários;
+* qualquer arquivo não relacionado.
 
-Verificar ausência de:
-
-* `.env`;
-* secrets;
-* API keys;
-* dumps;
-* logs;
-* `node_modules`;
-* `.next`;
-* artefatos temporários.
-
-Então criar o checkpoint:
-
-`feat(agents): complete autonomous agent architecture through v1.5`
-
-Não executar push.
-
-Não fazer deploy.
+Confirmar que nenhum secret será commitado.
 
 ---
 
-# 20. Relatório final
+# 10. Resultado esperado
 
-Quero somente um relatório consolidado ao final contendo:
+Sua próxima resposta deve conter SOMENTE:
 
-1. causa raiz;
-2. arquitetura do ambiente de testes criado;
-3. PostgreSQL de teste utilizado;
-4. Redis de teste utilizado;
-5. proteção contra banco errado;
-6. mudanças em `event-processor.test.ts`;
-7. mudanças relativas ao global autonomy switch;
-8. outras fontes globais encontradas;
-9. arquivos criados;
-10. arquivos alterados;
-11. estado dos Jobs 1546/1547;
-12. resultado da suíte #1;
-13. resultado da suíte #2;
-14. resultado da suíte #3;
-15. backend typecheck;
-16. frontend tests;
-17. frontend build;
-18. confirmação de que banco de dev não foi apagado/alterado destrutivamente;
-19. `git status`;
-20. hash do commit;
-21. débitos restantes.
+1. `ROOT CAUSE 1` — event processor
+2. `ROOT CAUSE 2` — global settings
+3. `CORREÇÃO IMPLEMENTADA`
+4. arquivos alterados
+5. status dos Jobs `1546/1547`
+6. testes isolados: X/X
+7. suíte completa rodada 1: X/X
+8. suíte completa rodada 2: X/X
+9. suíte completa rodada 3: X/X
+10. typecheck
+11. frontend tests
+12. frontend build
+13. git status resumido
+14. decisão final:
 
-Não iniciar v1.6.
+`APROVAR v1.5 PARA COMMIT`
 
-Não continuar repetindo testes antes de corrigir a infraestrutura.
+ou
 
-A prioridade agora é:
+`NÃO APROVAR v1.5 PARA COMMIT`
 
-**resolver definitivamente o isolamento da suíte e encerrar a v1.5.**
+Não faça mais análise repetitiva.
+
+Não rode novamente esperando que o acaso faça o teste passar.
+
+**Falhou = corrigir. Passou após correção = validar estabilidade e encerrar.**
