@@ -877,3 +877,27 @@ export interface MetricCatalogEntry {
   description: string;
   defaultDirection: MetricDirection;
 }
+
+// Agentes v2.1 — Initiative Execution & Progress Tracking (correio.md).
+export const INITIATIVE_EXECUTION_STATES = ["not_started", "waiting_approval", "running", "blocked", "failed", "completed"] as const;
+export type InitiativeExecutionState = (typeof INITIATIVE_EXECUTION_STATES)[number];
+
+export interface InitiativeExecutionView {
+  actionPlanId: number | null;
+  state: InitiativeExecutionState;
+  progressPercent: number;
+  totalItems: number;
+  completedItems: number;
+  failedItems: number;
+  blockedItems: number;
+  pendingApprovalItems: number;
+  /** Agentes v2.1 — saneamento: itens `skipped` (decisão `shadow` — baixa confiança ou Shadow Mode), nunca contados como `blockedItems`. */
+  shadowedItems: number;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface InitiativeExecutionDetail {
+  initiative: DirectorInitiative;
+  execution: InitiativeExecutionView;
+}

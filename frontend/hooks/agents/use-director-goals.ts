@@ -17,6 +17,7 @@ import {
   getDirectorGoalsOverview,
   getDirectorInitiative,
   getGoalMetricCatalog,
+  getInitiativeExecution,
   listDirectorGoals,
   listDirectorInitiatives,
   pauseDirectorGoal,
@@ -157,6 +158,19 @@ export function useDirectorInitiative(id: number | null) {
     queryKey: queryKeys.agents.directorInitiative(id ?? -1),
     queryFn: () => getDirectorInitiative(id as number),
     enabled: id !== null,
+  });
+}
+
+// Agentes v2.1 — Initiative Execution & Progress Tracking (correio.md).
+// Visão derivada em tempo real (sincroniza status no backend a cada
+// leitura, seção 8/9) — refetch periódico enquanto a tela estiver
+// aberta é o "check-on-read" acontecendo do lado do usuário, sem job novo.
+export function useInitiativeExecution(id: number | null) {
+  return useQuery({
+    queryKey: queryKeys.agents.directorInitiativeExecution(id ?? -1),
+    queryFn: () => getInitiativeExecution(id as number),
+    enabled: id !== null,
+    refetchInterval: (query) => (query.state.data?.data.execution.state === "running" || query.state.data?.data.execution.state === "waiting_approval" ? 10000 : false),
   });
 }
 

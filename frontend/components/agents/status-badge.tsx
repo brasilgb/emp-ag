@@ -18,6 +18,7 @@ import {
   goalStatusLabel,
   humanVerdictLabel,
   incidentTypeLabel,
+  initiativeExecutionStateLabel,
   initiativeStatusLabel,
   interpretationCategoryLabel,
   interpretationErrorTypeLabel,
@@ -42,6 +43,7 @@ import type {
   GoalStatus,
   HumanVerdict,
   IncidentType,
+  InitiativeExecutionState,
   InitiativeStatus,
   InterpretationCategory,
   InterpretationError,
@@ -418,6 +420,24 @@ export function InitiativeStatusBadge({ status }: { status: InitiativeStatus }) 
   return (
     <Badge variant="secondary" className={cn("border-transparent", INITIATIVE_STATUS_STYLES[status])}>
       {initiativeStatusLabel(status)}
+    </Badge>
+  );
+}
+
+// Agentes v2.1 — Initiative Execution & Progress Tracking (correio.md).
+const INITIATIVE_EXECUTION_STATE_STYLES: Record<InitiativeExecutionState, string> = {
+  not_started: "bg-muted text-muted-foreground",
+  waiting_approval: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  running: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  blocked: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  failed: "bg-red-500/10 text-red-700 dark:text-red-400",
+  completed: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+};
+
+export function InitiativeExecutionStateBadge({ state }: { state: InitiativeExecutionState }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", INITIATIVE_EXECUTION_STATE_STYLES[state])}>
+      {initiativeExecutionStateLabel(state)}
     </Badge>
   );
 }

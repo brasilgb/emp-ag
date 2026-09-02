@@ -3,12 +3,11 @@ import { and, asc, count, desc, eq, inArray, SQL } from 'drizzle-orm';
 import { db } from '../../../db/index.js';
 import { agentActionPlanItems, agentApprovals, agentDirectorInitiatives, users } from '../../../db/schema/index.js';
 import { AgentError } from '../../errors.js';
-import { executeActionPlan } from '../../executor/action-plan-executor.js';
-import { planEvaluateAndPersistActionPlan } from '../../orchestration/create-action-plan.js';
 import { audit } from '../../../services/audit.js';
 import type { SignalDomain } from '../types.js';
 
 import type { GoalRow } from './goals-service.js';
+import { assertInitiativeTransition } from './initiatives-lifecycle.js';
 import type { InitiativeStatus } from './types.js';
 
 export type InitiativeRow = typeof agentDirectorInitiatives.$inferSelect;
@@ -150,9 +149,7 @@ export async function updateInitiative(initiative: InitiativeRow, input: UpdateI
 
 /** proposed -> approved. */
 export async function approveInitiative(initiative: InitiativeRow, actorUserId: number): Promise<InitiativeRow> {
-  if (initiative.status !== 'proposed') {
-    throw new AgentError('conflict', `Initiative está "${initiative.status}" — só pode ser aprovada a partir de "proposed".`);
-  }
+  assertInitiativeTransition(initiative.status, 'approved');
 
   const [updated] = await db
     .update(agentDirectorInitiatives)
@@ -173,11 +170,9 @@ export async function approveInitiative(initiative: InitiativeRow, actorUserId: 
   return updated!;
 }
 
-/** Qualquer estado não-terminal -> cancelled. Reason obrigatório, soft state. */
+/** proposed|approved|active|blocked -> cancelled. Reason obrigatório, soft state. */
 export async function cancelInitiative(initiative: InitiativeRow, reason: string, actorUserId: number): Promise<InitiativeRow> {
-  if (initiative.status === 'completed' || initiative.status === 'cancelled') {
-    throw new AgentError('conflict', `Initiative já está "${initiative.status}" — não pode ser cancelada.`);
-  }
+  assertInitiativeTransition(initiative.status, 'cancelled');
 
   const now = new Date();
   const [updated] = await db
@@ -199,82 +194,19 @@ export async function cancelInitiative(initiative: InitiativeRow, reason: string
   return updated!;
 }
 
-/** approved|active -> completed. */
-export async function completeInitiative(initiative: InitiativeRow, actorUserId: number): Promise<InitiativeRow> {
-  if (initiative.status !== 'approved' && initiative.status !== 'active') {
-    throw new AgentError('conflict', `Initiative está "${initiative.status}" — só pode ser concluída a partir de "approved" ou "active".`);
-  }
+// Conclusão manual (`POST .../complete`) mudou-se para
+// `initiatives-execution-service.ts` na v2.1 — saneamento seção 2:
+// "active → completed" só é permitido quando a MESMA evidência
+// determinística da conclusão automática já existe
+// (`executionState==='completed'`), nunca antes disso — por isso o
+// método (`completeInitiativeManually`) precisa da visão de execução
+// (`getInitiativeExecutionView`), que vive no serviço de execução, não
+// aqui. Este arquivo continua dono só do CRUD/lifecycle simples da
+// Initiative que NÃO depende de evidência de execução (approve/cancel).
 
-  const now = new Date();
-  const [updated] = await db
-    .update(agentDirectorInitiatives)
-    .set({ status: 'completed', completedAt: now, updatedAt: now })
-    .where(eq(agentDirectorInitiatives.id, initiative.id))
-    .returning();
-
-  await audit({
-    userId: actorUserId,
-    actorType: 'user',
-    actorId: String(actorUserId),
-    action: 'agents.director.initiative.completed',
-    entityType: 'agent_director_initiative',
-    entityId: String(initiative.id),
-    metadata: { goalId: initiative.goalId, previousStatus: initiative.status },
-  });
-
-  return updated!;
-}
-
-function buildObjectiveForInitiative(initiative: InitiativeRow): string {
-  return `${initiative.title}. ${initiative.description} Racional: ${initiative.rationale}. Proponha e prepare as ações necessárias para executar esta iniciativa.`;
-}
-
-/**
- * Agentes v2.0 (correio.md seção 16) — reutiliza EXATAMENTE o pipeline
- * oficial (mesmas duas funções que `POST /agents/action-plans` v1.2 e
- * `POST /director/decisions/:id/propose` v1.9). Só é permitido a partir
- * de "approved" (nunca "proposed" — uma recomendação/proposta sem
- * aprovação humana explícita nunca gera Action Plan, correio.md seção
- * 10: "Sugestão NÃO significa execução").
- */
-export async function proposeActionForInitiative(initiative: InitiativeRow, userId: number) {
-  if (initiative.status !== 'approved') {
-    throw new AgentError(
-      'conflict',
-      `Initiative está "${initiative.status}" — só é possível propor ação a partir de "approved" (já existe Action Plan em ${initiative.actionPlanId ? `#${initiative.actionPlanId}` : 'andamento'}).`,
-    );
-  }
-
-  const objective = buildObjectiveForInitiative(initiative);
-  const created = await planEvaluateAndPersistActionPlan({ requestedBy: userId, objective });
-
-  if (!created.ok) {
-    throw new AgentError(created.code, created.message, 'details' in created ? created.details : undefined);
-  }
-
-  const finalPlan = await executeActionPlan(created.plan.id, userId);
-  const finalItems = await db
-    .select()
-    .from(agentActionPlanItems)
-    .where(eq(agentActionPlanItems.planId, created.plan.id))
-    .orderBy(agentActionPlanItems.sequence);
-
-  const now = new Date();
-  const [updatedInitiative] = await db
-    .update(agentDirectorInitiatives)
-    .set({ status: 'active', actionPlanId: finalPlan.id, startedAt: initiative.startedAt ?? now, updatedAt: now })
-    .where(eq(agentDirectorInitiatives.id, initiative.id))
-    .returning();
-
-  await audit({
-    userId,
-    actorType: 'user',
-    actorId: String(userId),
-    action: 'agents.director.initiative.action_proposed',
-    entityType: 'agent_director_initiative',
-    entityId: String(initiative.id),
-    metadata: { goalId: initiative.goalId, resultingActionPlanId: finalPlan.id },
-  });
-
-  return { initiative: updatedInitiative!, plan: finalPlan, items: finalItems };
-}
+// A criação/execução do Action Plan (antigo `proposeActionForInitiative`)
+// mudou-se para `initiatives-execution-service.ts` na v2.1 — agora
+// `startInitiativeExecution()`, com claim atômico (idempotência real,
+// correio.md v2.1 seção 3) e sincronização de progresso/conclusão
+// automática (seções 6-9). Este arquivo continua dono só do CRUD/
+// lifecycle simples da Initiative.

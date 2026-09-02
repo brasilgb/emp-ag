@@ -112,5 +112,6 @@ export const queryKeys = {
     goalMetricCatalog: ["agents", "director", "goals", "metrics", "catalog"] as const,
     directorInitiatives: (params?: unknown) => ["agents", "director", "initiatives", params ?? {}] as const,
     directorInitiative: (id: number) => ["agents", "director", "initiatives", id] as const,
+    directorInitiativeExecution: (id: number) => ["agents", "director", "initiatives", id, "execution"] as const,
   },
 };

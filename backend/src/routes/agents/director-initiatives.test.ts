@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import { buildApp } from '../../app.js';
 import { db } from '../../db/index.js';
-import { agentDirectorGoals, agentDirectorInitiatives, users } from '../../db/schema/index.js';
+import { agentDirectorGoals, agentDirectorInitiatives, agentToolPermissions, agentTools, agents, users } from '../../db/schema/index.js';
 import { database } from '../../services/database.js';
 import { redis } from '../../services/redis.js';
 import { setLLMProviderOverrideForTests } from '../../agents/llm/factory.js';
@@ -13,10 +13,12 @@ import { registerAllTools } from '../../agents/tools/index.js';
 import type { LLMProvider, LLMResponse } from '../../agents/llm/types.js';
 
 /*
- * Agentes v2.0 (correio.md seção 23/24) — Director Initiatives API:
- * ciclo de vida (proposed -> approved -> active -> completed), cancel,
- * e `propose` provando o pipeline OFICIAL de Action Plan — nunca a
- * partir de "proposed" (só depois de "approved").
+ * Agentes v2.0/v2.1 (correio.md v2.1 seção 19) — Director Initiatives
+ * API: ciclo de vida (proposed -> approved -> active -> blocked/
+ * completed), cancel, e `propose` (agora `startInitiativeExecution` por
+ * trás — mesma rota, nome mantido, correio.md v2.1 seção 12) provando o
+ * pipeline OFICIAL de Action Plan e a conclusão automática por
+ * evidência real (seção 8).
  */
 function mockProvider(rawResponse: unknown): LLMProvider {
   return {
@@ -27,7 +29,24 @@ function mockProvider(rawResponse: unknown): LLMProvider {
   };
 }
 
-describe('Agentes v2.0 - Director Initiatives API', () => {
+function pipelineSummaryObjective() {
+  return mockProvider({
+    objective: 'Executar iniciativa estratégica',
+    summary: 'Preparar campanha',
+    actions: [
+      {
+        id: 'action-1',
+        agent: 'sales',
+        tool: 'sales.get_pipeline_summary',
+        arguments: {},
+        reason: 'Levantar situação atual do funil para a iniciativa.',
+        confidence: 0.9,
+      },
+    ],
+  });
+}
+
+describe('Agentes v2.1 - Director Initiatives API', () => {
   const app = buildApp();
   registerAllTools();
   const runId = Date.now() % 1_000_000;
@@ -46,6 +65,17 @@ describe('Agentes v2.0 - Director Initiatives API', () => {
     return { authorization: `Bearer ${token}` };
   }
 
+  async function createInitiative(title: string) {
+    const response = await app.inject({
+      method: 'POST',
+      url: `/agents/director/goals/${goalId}/initiatives`,
+      headers: authHeader(ceoToken),
+      payload: { title, description: 'desc', domain: 'crm', rationale: 'racional' },
+    });
+    assert.equal(response.statusCode, 201, response.body);
+    return response.json().data.id as number;
+  }
+
   before(async () => {
     await app.ready();
 
@@ -56,6 +86,10 @@ describe('Agentes v2.0 - Director Initiatives API', () => {
     const [ceoUser] = await db.select().from(users).where(eq(users.email, ceoEmail.toLowerCase())).limit(1);
     assert.ok(ceoUser);
     ceoUserId = ceoUser.id;
+    // Agentes v2.1 — saneamento: `agentRateLimit('plan')` é compartilhado
+    // no Redis por TODOS os testes que chamam "propose" como CEO — evita
+    // 429 por acúmulo entre arquivos (mesmo guard de action-plans.test.ts).
+    await redis.del(`agents:ratelimit:plan:${ceoUserId}`);
 
     const [goal] = await db
       .insert(agentDirectorGoals)
@@ -104,86 +138,162 @@ describe('Agentes v2.0 - Director Initiatives API', () => {
   });
 
   test('propose a partir de "proposed" (sem aprovação) é rejeitado — 409', async () => {
-    const created = await app.inject({
-      method: 'POST',
-      url: `/agents/director/goals/${goalId}/initiatives`,
-      headers: authHeader(ceoToken),
-      payload: { title: 'x', description: 'x', domain: 'crm', rationale: 'x' },
-    });
-    const initiativeId = created.json().data.id;
+    const initiativeId = await createInitiative('x');
 
     const propose = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/propose`, headers: authHeader(ceoToken) });
     assert.equal(propose.statusCode, 409, propose.body);
   });
 
-  test('ciclo completo: approve -> propose (pipeline oficial) -> Action Plan vinculado -> complete', async () => {
-    process.env.AGENT_LLM_ENABLED = 'true';
-    process.env.AGENT_LLM_SHADOW_MODE = 'false';
-    setLLMProviderOverrideForTests(
-      mockProvider({
-        objective: 'Executar iniciativa estratégica',
-        summary: 'Preparar campanha',
-        actions: [
-          {
-            id: 'action-1',
-            agent: 'sales',
-            tool: 'sales.get_pipeline_summary',
-            arguments: {},
-            reason: 'Levantar situação atual do funil para a iniciativa.',
-            confidence: 0.9,
-          },
-        ],
-      }),
-    );
+  test('GET /director/initiatives/:id/execution sem Action Plan → not_started', async () => {
+    const initiativeId = await createInitiative('sem execução ainda');
 
-    const created = await app.inject({
-      method: 'POST',
-      url: `/agents/director/goals/${goalId}/initiatives`,
-      headers: authHeader(ceoToken),
-      payload: {
-        title: `Iniciativa Completa ${runId}`,
-        description: 'desc',
-        domain: 'crm',
-        rationale: 'racional',
-      },
+    const response = await app.inject({ method: 'GET', url: `/agents/director/initiatives/${initiativeId}/execution`, headers: authHeader(ceoToken) });
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(response.json().data.execution.state, 'not_started');
+    assert.equal(response.json().data.execution.actionPlanId, null);
+  });
+
+  describe('ciclo completo — auto-completado por evidência real (correio.md seção 8)', () => {
+    test('approve -> propose (201, pipeline oficial) -> item execute completa na hora -> Initiative auto-completed', async () => {
+      process.env.AGENT_LLM_ENABLED = 'true';
+      process.env.AGENT_LLM_SHADOW_MODE = 'false';
+      setLLMProviderOverrideForTests(pipelineSummaryObjective());
+
+      const initiativeId = await createInitiative(`Iniciativa Completa ${runId}`);
+
+      const approve = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/approve`, headers: authHeader(ceoToken) });
+      assert.equal(approve.statusCode, 200, approve.body);
+      assert.equal(approve.json().data.status, 'approved');
+
+      // approve de novo -> 409 (já aprovada).
+      const approveAgain = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/approve`, headers: authHeader(ceoToken) });
+      assert.equal(approveAgain.statusCode, 409);
+
+      const propose = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/propose`, headers: authHeader(ceoToken) });
+      assert.equal(propose.statusCode, 201, propose.body);
+      const { initiative, plan, items, created } = propose.json().data;
+      assert.equal(created, true);
+      assert.ok(plan.id);
+      assert.equal(items.length, 1);
+      assert.equal(items[0].decision, 'execute');
+      assert.equal(initiative.actionPlanId, plan.id);
+      // CEO tem permissão real para a tool (risco "read") — executa na
+      // hora, sem approval pendente — a Initiative conclui sozinha
+      // (correio.md seção 8: evidência determinística, não o LLM dizendo
+      // que terminou).
+      assert.equal(initiative.status, 'completed');
+      assert.ok(initiative.completedAt);
+
+      // propor de novo -> 409 (já terminal), nunca cria um segundo plano.
+      const proposeAgain = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/propose`, headers: authHeader(ceoToken) });
+      assert.equal(proposeAgain.statusCode, 409);
+
+      // complete manual sobre uma Initiative já completed -> 409 (transição inválida).
+      const completeAgain = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/complete`, headers: authHeader(ceoToken) });
+      assert.equal(completeAgain.statusCode, 409);
+
+      const execution = await app.inject({ method: 'GET', url: `/agents/director/initiatives/${initiativeId}/execution`, headers: authHeader(ceoToken) });
+      assert.equal(execution.statusCode, 200, execution.body);
+      assert.equal(execution.json().data.execution.state, 'completed');
+      assert.equal(execution.json().data.execution.progressPercent, 100);
+      assert.equal(execution.json().data.initiative.status, 'completed');
     });
-    const initiativeId = created.json().data.id;
+  });
 
-    const approve = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/approve`, headers: authHeader(ceoToken) });
-    assert.equal(approve.statusCode, 200, approve.body);
-    assert.equal(approve.json().data.status, 'approved');
+  describe('conclusão manual — quando a execução fica em aberto (approval pendente)', () => {
+    let salesToolPermissionId: number;
 
-    // approve de novo -> 409 (já aprovada).
-    const approveAgain = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/approve`, headers: authHeader(ceoToken) });
-    assert.equal(approveAgain.statusCode, 409);
+    before(async () => {
+      process.env.AGENT_LLM_ENABLED = 'true';
+      process.env.AGENT_LLM_SHADOW_MODE = 'false';
 
-    const propose = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/propose`, headers: authHeader(ceoToken) });
-    assert.equal(propose.statusCode, 201, propose.body);
-    const { initiative, plan, items } = propose.json().data;
-    assert.ok(plan.id);
-    assert.equal(items.length, 1);
-    assert.ok(['execute', 'approval_required', 'blocked', 'shadow'].includes(items[0].decision));
-    assert.equal(initiative.actionPlanId, plan.id);
-    assert.equal(initiative.status, 'active');
+      const [salesAgent] = await db.select({ id: agents.id }).from(agents).where(eq(agents.slug, 'sales')).limit(1);
+      const [salesTool] = await db.select({ id: agentTools.id }).from(agentTools).where(eq(agentTools.handler, 'sales.get_pipeline_summary')).limit(1);
+      assert.ok(salesAgent && salesTool);
+      const [toolPermission] = await db
+        .select()
+        .from(agentToolPermissions)
+        .where(and(eq(agentToolPermissions.agentId, salesAgent.id), eq(agentToolPermissions.toolId, salesTool.id)));
+      assert.ok(toolPermission);
+      salesToolPermissionId = toolPermission.id;
+      await db.update(agentToolPermissions).set({ requiresApprovalOverride: true }).where(eq(agentToolPermissions.id, salesToolPermissionId));
+    });
 
-    // propor de novo -> 409, nunca cria um segundo plano.
-    const proposeAgain = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/propose`, headers: authHeader(ceoToken) });
-    assert.equal(proposeAgain.statusCode, 409);
+    after(async () => {
+      await db.update(agentToolPermissions).set({ requiresApprovalOverride: false }).where(eq(agentToolPermissions.id, salesToolPermissionId));
+    });
 
-    const complete = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/complete`, headers: authHeader(ceoToken) });
-    assert.equal(complete.statusCode, 200, complete.body);
-    assert.equal(complete.json().data.status, 'completed');
-    assert.ok(complete.json().data.completedAt);
+    test('saneamento seção 2: complete manual é REJEITADO (409) enquanto a execução não terminou — só permitido depois que TODA evidência existir', async () => {
+      setLLMProviderOverrideForTests(pipelineSummaryObjective());
+      const initiativeId = await createInitiative(`Iniciativa Manual Complete ${runId}`);
+
+      await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/approve`, headers: authHeader(ceoToken) });
+      const propose = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/propose`, headers: authHeader(ceoToken) });
+      assert.equal(propose.statusCode, 201, propose.body);
+      assert.equal(propose.json().data.initiative.status, 'active');
+      assert.equal(propose.json().data.items[0].executionStatus, 'waiting_approval');
+
+      const execution = await app.inject({ method: 'GET', url: `/agents/director/initiatives/${initiativeId}/execution`, headers: authHeader(ceoToken) });
+      assert.equal(execution.json().data.execution.state, 'waiting_approval');
+      assert.equal(execution.json().data.initiative.status, 'active', 'GET /execution não conclui sozinho quando ainda há approval pendente');
+
+      // Complete manual enquanto ainda há approval pendente → 409, nunca permite "forçar" a conclusão.
+      const completeTooEarly = await app.inject({
+        method: 'POST',
+        url: `/agents/director/initiatives/${initiativeId}/complete`,
+        headers: authHeader(ceoToken),
+      });
+      assert.equal(completeTooEarly.statusCode, 409, completeTooEarly.body);
+
+      // Aprova a ação real (mesmo mecanismo oficial de approval, v1.2) —
+      // só ISSO faz a evidência existir de verdade.
+      const detail = await app.inject({ method: 'GET', url: `/agents/director/initiatives/${initiativeId}`, headers: authHeader(ceoToken) });
+      const pendingApprovalId = detail.json().data.pendingApproval.id;
+      const approveAction = await app.inject({
+        method: 'POST',
+        url: `/agents/approvals/${pendingApprovalId}/approve`,
+        headers: authHeader(ceoToken),
+      });
+      assert.equal(approveAction.statusCode, 200, approveAction.body);
+
+      const executionAfter = await app.inject({ method: 'GET', url: `/agents/director/initiatives/${initiativeId}/execution`, headers: authHeader(ceoToken) });
+      assert.equal(executionAfter.json().data.execution.state, 'completed');
+      // GET /execution já sincroniza sozinho (seção 8) — a Initiative já devia estar completed aqui.
+      assert.equal(executionAfter.json().data.initiative.status, 'completed');
+
+      // Complete manual sobre uma Initiative que JÁ é completed -> 409 (transição inválida, não evidência insuficiente).
+      const completeAfter = await app.inject({
+        method: 'POST',
+        url: `/agents/director/initiatives/${initiativeId}/complete`,
+        headers: authHeader(ceoToken),
+      });
+      assert.equal(completeAfter.statusCode, 409, completeAfter.body);
+    });
+
+    test('saneamento seção 2: complete manual funciona quando chamado ANTES do GET /execution já ter sincronizado — mesma regra de evidência, só que via o endpoint manual', async () => {
+      setLLMProviderOverrideForTests(pipelineSummaryObjective());
+      const initiativeId = await createInitiative(`Iniciativa Manual Complete Direto ${runId}`);
+
+      await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/approve`, headers: authHeader(ceoToken) });
+      await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/propose`, headers: authHeader(ceoToken) });
+
+      const detail = await app.inject({ method: 'GET', url: `/agents/director/initiatives/${initiativeId}`, headers: authHeader(ceoToken) });
+      const pendingApprovalId = detail.json().data.pendingApproval.id;
+      await app.inject({ method: 'POST', url: `/agents/approvals/${pendingApprovalId}/approve`, headers: authHeader(ceoToken) });
+
+      // Neste ponto o item já executou e completou de verdade (o approve
+      // da ação já chama executeActionPlan por trás), mas ninguém leu
+      // GET /execution ainda — o endpoint manual precisa calcular a
+      // evidência sozinho, não depender de uma leitura prévia.
+      const complete = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/complete`, headers: authHeader(ceoToken) });
+      assert.equal(complete.statusCode, 200, complete.body);
+      assert.equal(complete.json().data.status, 'completed');
+      assert.ok(complete.json().data.completedAt);
+    });
   });
 
   test('cancel exige reason; initiative completed/cancelled não pode ser cancelada de novo', async () => {
-    const created = await app.inject({
-      method: 'POST',
-      url: `/agents/director/goals/${goalId}/initiatives`,
-      headers: authHeader(ceoToken),
-      payload: { title: 'a cancelar', description: 'x', domain: 'crm', rationale: 'x' },
-    });
-    const initiativeId = created.json().data.id;
+    const initiativeId = await createInitiative('a cancelar');
 
     const noReason = await app.inject({
       method: 'POST',

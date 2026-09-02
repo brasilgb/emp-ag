@@ -7,14 +7,18 @@ import { agentRateLimit } from '../../agents/security/rate-limit.js';
 import {
   approveInitiative,
   cancelInitiative,
-  completeInitiative,
   createInitiative,
   getInitiativeById,
   getPendingApprovalForInitiative,
   listInitiatives,
-  proposeActionForInitiative,
   updateInitiative,
 } from '../../agents/director/goals/initiatives-service.js';
+import {
+  completeInitiativeManually,
+  getInitiativeExecutionView,
+  startInitiativeExecution,
+  syncInitiativeExecutionState,
+} from '../../agents/director/goals/initiatives-execution-service.js';
 import { getGoalById } from '../../agents/director/goals/goals-service.js';
 import {
   cancelInitiativeSchema,
@@ -28,11 +32,17 @@ import {
 import { badRequest, currentUserId, notFound, paginationMeta } from './helpers.js';
 
 /**
- * Agentes v2.0 (correio.md seção 16) — Director Initiatives API. `propose`
- * exige `agents.use` + `agents.plan` (mesma exigência de
- * `POST /agents/action-plans` v1.2 e `POST /director/decisions/:id/propose`
- * v1.9) — nunca reaproveita `agents.director.initiatives.manage` para
- * isso, que cobre só o ciclo de vida (create/approve/cancel/complete).
+ * Agentes v2.0/v2.1 (correio.md v2.1 seção 4/12) — Director Initiatives
+ * API. `propose` (nome de rota mantido da v2.0 — v2.1 seção 12: "evitar
+ * endpoints duplicados; aproveitar existentes sempre que possível" —
+ * nenhuma rota `/start` nova, esta MESMA rota agora chama
+ * `startInitiativeExecution`) exige `agents.use` + `agents.plan` (mesma
+ * exigência de `POST /agents/action-plans` v1.2 / `.../decisions/:id/propose`
+ * v1.9) — nunca reaproveita `agents.director.initiatives.manage`, que
+ * cobre só o ciclo de vida administrativo (create/approve/cancel/
+ * complete). v2.1 seção 4: catálogo de permissions já cobre
+ * read/approve-cancel-complete/execute com essas duas permissions
+ * existentes — nenhuma permission nova precisou ser criada.
  */
 export async function directorInitiativesRoutes(app: FastifyInstance) {
   app.get(
@@ -110,7 +120,7 @@ export async function directorInitiativesRoutes(app: FastifyInstance) {
 
   for (const [action, handler] of [
     ['approve', approveInitiative],
-    ['complete', completeInitiative],
+    ['complete', completeInitiativeManually],
   ] as const) {
     app.post(
       `/director/initiatives/:id/${action}`,
@@ -174,14 +184,39 @@ export async function directorInitiativesRoutes(app: FastifyInstance) {
       if (!initiative) return notFound(reply, 'Initiative não encontrada.');
 
       try {
-        const result = await proposeActionForInitiative(initiative, currentUserId(request));
-        return reply.code(201).send({ data: result });
+        const result = await startInitiativeExecution(initiative, currentUserId(request));
+        // 201 só quando um Action Plan novo foi de fato criado (seção 3:
+        // chamada idempotente devolvendo o plano existente é 200, nunca
+        // um segundo "created").
+        return reply.code(result.created ? 201 : 200).send({ data: result });
       } catch (error) {
         if (error instanceof AgentError) {
           return reply.code(error.status).send({ error: error.code, message: error.message, details: error.details });
         }
         throw error;
       }
+    },
+  );
+
+  // Agentes v2.1 (correio.md seção 12/13) — visão operacional de
+  // execução, derivada em tempo real do Action Plan real (nunca
+  // persistida como estado próprio). Sincroniza `Initiative.status`
+  // (conclusão/bloqueio automáticos, seção 8/9) a cada leitura — é o
+  // único lugar de "check-on-read", sem job novo.
+  app.get(
+    '/director/initiatives/:id/execution',
+    { preHandler: [authenticate, requirePermission('agents.read')] },
+    async (request, reply) => {
+      const params = initiativeIdParamSchema.safeParse(request.params);
+      if (!params.success) return badRequest(reply, params.error);
+
+      const initiative = await getInitiativeById(params.data.id);
+      if (!initiative) return notFound(reply, 'Initiative não encontrada.');
+
+      const view = await getInitiativeExecutionView(initiative);
+      const synced = await syncInitiativeExecutionState(initiative, view, null);
+
+      return { data: { initiative: synced, execution: view } };
     },
   );
 }

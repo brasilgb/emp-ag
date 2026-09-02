@@ -14,13 +14,15 @@ import {
   useApproveInitiative,
   useCompleteInitiative,
   useDirectorInitiative,
+  useInitiativeExecution,
   useProposeInitiativeAction,
 } from "@/hooks/agents/use-director-goals";
-import { approvalState, canProposeActionForInitiative, goalPriorityLabel, isInitiativeClosed, signalDomainLabel } from "@/lib/agents/derived";
+import { approvalState, canProposeActionForInitiative, goalPriorityLabel, signalDomainLabel } from "@/lib/agents/derived";
 import { formatDateTime } from "@/lib/agents/format";
 import { toErrorMessage } from "@/services/http";
+import type { InitiativeExecutionState, InitiativeExecutionView } from "@/types/agents";
 
-import { ApprovalStateBadge, InitiativeStatusBadge } from "../../status-badge";
+import { ApprovalStateBadge, InitiativeExecutionStateBadge, InitiativeStatusBadge } from "../../status-badge";
 
 /**
  * Agentes v2.0 (correio.md seção 16/21) — nunca executa nada
@@ -30,6 +32,7 @@ import { ApprovalStateBadge, InitiativeStatusBadge } from "../../status-badge";
  */
 export function InitiativeDetail({ initiativeId }: { initiativeId: number }) {
   const { data, isLoading, isError, refetch } = useDirectorInitiative(initiativeId);
+  const executionQuery = useInitiativeExecution(initiativeId);
   const usersQuery = useUsersDirectory();
   const approve = useApproveInitiative();
   const complete = useCompleteInitiative();
@@ -63,7 +66,7 @@ export function InitiativeDetail({ initiativeId }: { initiativeId: number }) {
   async function handlePropose() {
     try {
       const { data: result } = await propose.mutateAsync(initiativeId);
-      toast.success(`Plano #${result.plan.id} criado a partir da iniciativa.`);
+      toast.success(result.created ? `Plano #${result.plan.id} criado a partir da iniciativa.` : `Execução já em andamento — plano #${result.plan.id}.`);
     } catch (error) {
       toast.error(toErrorMessage(error, "Erro ao propor ação."));
     }
@@ -96,7 +99,7 @@ export function InitiativeDetail({ initiativeId }: { initiativeId: number }) {
                   Propor ação
                 </Button>
               ) : null}
-              {(initiative.status === "approved" || initiative.status === "active") && !isInitiativeClosed(initiative.status) ? (
+              {initiative.status === "active" ? (
                 <Button size="sm" variant="outline" disabled={complete.isPending} onClick={handleComplete}>
                   Concluir
                 </Button>
@@ -124,6 +127,8 @@ export function InitiativeDetail({ initiativeId }: { initiativeId: number }) {
           ) : null}
         </CardContent>
       </Card>
+
+      {executionQuery.data ? <ExecutionCard view={executionQuery.data.data.execution} /> : null}
 
       <div className="grid gap-4 md:grid-cols-2">
         <Card>
@@ -172,5 +177,65 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="text-muted-foreground">{label}</span>
       <span className="text-right">{value}</span>
     </div>
+  );
+}
+
+const EXECUTION_BAR_COLORS: Record<InitiativeExecutionState, string> = {
+  not_started: "bg-muted-foreground/40",
+  waiting_approval: "bg-amber-500",
+  running: "bg-blue-500",
+  blocked: "bg-amber-500",
+  failed: "bg-red-500",
+  completed: "bg-emerald-500",
+};
+
+/**
+ * Agentes v2.1 (correio.md seção 14) — visão operacional da execução:
+ * progresso real (não texto do LLM), itens concluídos/total, approvals
+ * pendentes, bloqueios. Reaproveita o mesmo padrão visual da barra de
+ * progresso de Goal (`GoalProgressBar`) — cores diferentes porque o
+ * domínio é outro (execução, não saúde de Goal), mesma linguagem visual.
+ */
+function ExecutionCard({ view }: { view: InitiativeExecutionView }) {
+  if (view.state === "not_started") {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <h3 className="text-sm font-medium text-muted-foreground">Execução</h3>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">Ainda não iniciada — nenhum Action Plan gerado.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between pb-2">
+        <h3 className="text-sm font-medium text-muted-foreground">Execução</h3>
+        <InitiativeExecutionStateBadge state={view.state} />
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            className={`h-full rounded-full transition-all ${EXECUTION_BAR_COLORS[view.state]}`}
+            style={{ width: `${Math.max(0, Math.min(100, view.progressPercent))}%` }}
+          />
+        </div>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+          <span>
+            {view.completedItems} / {view.totalItems} ações concluídas
+          </span>
+          <span className="text-muted-foreground">{view.progressPercent}%</span>
+        </div>
+        <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+          {view.pendingApprovalItems > 0 ? <span>{view.pendingApprovalItems} aguardando aprovação</span> : null}
+          {view.blockedItems > 0 ? <span>{view.blockedItems} bloqueada(s)</span> : null}
+          {view.failedItems > 0 ? <span>{view.failedItems} com falha</span> : null}
+          {view.shadowedItems > 0 ? <span>{view.shadowedItems} não executada(s) (shadow)</span> : null}
+        </div>
+      </CardContent>
+    </Card>
   );
 }

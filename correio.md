@@ -1,172 +1,279 @@
-# Saneamento final — Agentes v2.0
+# Saneamento final — Agentes v2.1
 
-A arquitetura e implementação da v2.0 foram aprovadas conceitualmente pelo Diretor.
+A implementação da v2.1 está funcional, mas antes da aprovação final precisamos resolver três pontos arquiteturais/semânticos.
 
-NÃO redesenhar a versão e NÃO adicionar novas funcionalidades.
+**NÃO adicionar novas funcionalidades.**
 
-Antes do commit, sane somente os pontos abaixo.
+**NÃO redesenhar a v2.1.**
 
-## 1. Reconciliar números de testes
+**NÃO fazer commit.**
 
-O relatório afirma:
-
-* v1.9 backend: 363 testes
-* v2.0: 60 testes novos
-* resultado v2.0: 403/403
-
-Esses números não são compatíveis.
-
-Além disso, a enumeração dos novos testes apresentada no relatório soma 47, não 60.
-
-No frontend:
-
-* v1.9: 22 testes
-* v2.0: 15 novos
-* resultado: 29/29
-
-Também é incompatível.
-
-Levantar os números reais diretamente do runner e corrigir o relatório.
-
-Não estimar.
-
-Informar:
-
-* testes backend existentes antes da v2.0;
-* testes backend adicionados pela v2.0;
-* total real;
-* testes frontend existentes;
-* novos;
-* total real.
-
-Executar novamente as suítes completas.
+Corrigir ou comprovar somente os itens abaixo e executar novamente todas as validações.
 
 ---
 
-## 2. Validar migration chain
+## 1. Não manter transação/row lock durante Planner ou LLM
 
-Investigar por que migrations 0013/0014 estavam fisicamente aplicadas mas ausentes de `drizzle.__drizzle_migrations`.
+O relatório informa que `startInitiativeExecution()` mantém:
 
-Não tratar simples inserção manual de hashes como solução operacional padrão.
+```text
+SELECT ... FOR UPDATE
++
+transação
+```
 
-Validar dois cenários:
+desde o claim da Initiative até o término de:
 
-### A — banco limpo
+```text
+planEvaluateAndPersistActionPlan()
+executeActionPlan()
+```
 
-Criar banco/schema limpo e executar exclusivamente:
+Precisamos corrigir isso.
 
-npm run db:migrate
+Não manter uma transação PostgreSQL aberta enquanto houver:
 
-Confirmar aplicação correta de toda cadeia até 0015.
+* chamada ao LLM;
+* Planner;
+* provider externo;
+* operação potencialmente demorada;
+* execução de Action Plan.
 
-### B — banco legado atual
+Isso pode produzir lock prolongado, contenção no pool e degradação operacional.
 
-Confirmar que o tracking reconciliado representa exatamente as migrations realmente aplicadas.
+### Objetivo
 
-Verificar:
+Preservar simultaneamente:
 
-* hashes;
-* ordem;
-* timestamps/metadata usados pelo Drizzle;
-* schema resultante.
+```text
+duas chamadas concorrentes
+→ apenas um início efetivo
+→ apenas um Action Plan associado
+```
 
-Documentar procedimento seguro de reconciliação caso outro ambiente tenha o mesmo drift.
+SEM manter row lock durante chamadas externas.
 
-Não executar migration destrutiva.
+### Investigar a melhor solução usando a arquitetura existente
+
+Preferir mecanismo de claim curto e atômico.
+
+Exemplos conceituais possíveis:
+
+```text
+CAS de estado/token
+```
+
+ou mecanismo equivalente.
+
+A ideia é:
+
+```text
+transação curta:
+    validar
+    adquirir direito exclusivo de iniciar
+commit
+
+fora da transação:
+    planner / policy / persist plan / executor
+
+transação curta:
+    vincular resultado
+```
+
+Mas não implementar esse pseudofluxo cegamente.
+
+Primeiro analisar schema e serviços existentes e encontrar a solução mais simples que:
+
+* seja concorrente;
+* seja idempotente;
+* não exija migration se desnecessário;
+* não permita Action Plan duplicado;
+* permita recuperação limpa se planejamento falhar;
+* não deixe Initiative eternamente em estado intermediário;
+* não mantenha lock durante LLM.
+
+Se for impossível garantir isso com o schema atual sem uma alteração mínima, documentar claramente antes de introduzir nova coluna/constraint.
+
+Não criar arquitetura complexa desnecessariamente.
+
+### Teste obrigatório
+
+Criar/manter teste real:
+
+```text
+Promise.all([
+  startInitiativeExecution(...),
+  startInitiativeExecution(...)
+])
+```
+
+Resultado:
+
+```text
+1 execução efetiva
+1 Action Plan
+mesmo actionPlanId retornado ou estado idempotente equivalente
+0 duplicações
+```
+
+E provar que a transação que faz o claim NÃO envolve Planner/LLM.
 
 ---
 
-## 3. Explicar e testar ON CONFLICT
+## 2. Verificar semântica de conclusão manual
 
-Revisar a descrição do bug envolvendo:
+Investigar exatamente o comportamento atual de:
 
-onConflictDoNothing
-índice parcial
-where / targetWhere
+```text
+POST .../complete
+completeInitiative()
+```
 
-O relatório atual diz simultaneamente que o INSERT não conflitava e que também não duplicava.
+Responder objetivamente:
 
-Isso precisa ficar tecnicamente inequívoco.
+### Caso
 
-Adicionar ao relatório:
+Initiative:
 
-* SQL relevante gerado;
-* comportamento antes da correção;
-* comportamento depois da correção;
-* constraint/index responsável;
-* resultado do teste concorrente.
+```text
+status = active
+```
 
-Manter teste com chamadas simultâneas.
+Action Plan:
+
+```text
+7 itens
+5 completed
+1 waiting_approval
+1 pending
+```
+
+O endpoint manual permite:
+
+```text
+active → completed
+```
+
+?
+
+Se SIM, isso permite declarar concluída uma Initiative cuja execução objetivamente ainda não terminou.
+
+Nesse caso, corrigir.
+
+A v2.1 definiu conclusão operacional baseada em evidência determinística:
+
+```text
+Action Plan concluído
+AND
+todos os Action Plan Items concluídos com sucesso
+```
+
+Portanto o caminho normal de conclusão deve respeitar essa regra.
+
+Se existir uma razão legítima para manter conclusão humana independente da execução, ela precisa ter semântica distinta e explicitamente documentada; não presumir isso.
+
+Para esta v2.1, preferir não criar conceito novo.
+
+### Testes obrigatórios
+
+Cobrir:
+
+```text
+active + itens pendentes → não pode completed
+active + waiting approval → não pode completed
+active + blocked/failed → não pode completed
+active + todos completed → completed permitido
+```
+
+Verificar tanto sincronização automática quanto endpoint manual, se ele continuar existindo.
 
 ---
 
-## 4. Validar semântica de crm.clients_won
+## 3. Verificar significado real de `skipped`
 
-Confirmar se:
+Hoje:
 
-crm.clients_won
+```text
+blockedItems = blocked | skipped
+```
 
-realmente representa clientes conquistados no modelo atual.
+e:
 
-O evaluator informado atualmente conta:
+```text
+blocked/skipped + nada em voo
+→ Initiative.status = blocked
+```
 
-clients.createdAt >= goal.startDate
+Não assumir que isso é correto apenas pelo nome.
 
-Se isso significa "novo cliente conquistado" no domínio atual, documentar.
+Investigar no executor existente todos os locais onde:
 
-Se `won` possuir outro significado de negócio, corrigir o nome da métrica ou seu evaluator.
+```text
+execution_status = 'skipped'
+```
 
-Não criar novo módulo CRM nesta tarefa.
+é produzido.
+
+Documentar as causas reais.
+
+### Decisão
+
+Se `skipped` significar necessariamente:
+
+```text
+não executado por impedimento/dependência bloqueada
+```
+
+a classificação atual pode permanecer.
+
+Se houver casos onde `skipped` represente uma conclusão terminal não problemática, não tratá-lo automaticamente como `blocked`.
+
+Não mudar sem antes provar a semântica no código existente.
+
+Adicionar teste representando cada causa real de `skipped` encontrada.
 
 ---
 
-## 5. Definir reincidência de recommendations
+# Validação final
 
-Para:
+Depois das correções:
 
-recommendationKey = goal-health:<goalId>:<health>
+```text
+backend typecheck
+backend tests completos
 
-definir explicitamente o comportamento:
+frontend typecheck
+frontend tests completos
+frontend build
+```
 
-at_risk
-→ on_track
-→ at_risk novamente.
+Se o projeto realmente não possui lint configurado, apenas registrar isso novamente.
 
-Decidir e documentar se:
+Não estimar números.
 
-* reutiliza a Initiative anterior; ou
-* permite uma nova recomendação após recuperação/reincidência.
-
-Adicionar pelo menos um teste cobrindo essa regra.
-
-Não criar mecanismo complexo de escalation.
+Usar números reais do runner.
 
 ---
 
-## 6. Validação final
+# Relatório final
 
-Depois dos ajustes:
+Entregar somente:
 
-* backend typecheck;
-* backend suíte completa;
-* frontend typecheck;
-* frontend testes completos;
-* frontend build;
-* migration em banco limpo;
-* teste de concorrência/deduplicação.
+1. causa raiz dos três pontos;
+2. solução aplicada;
+3. como a concorrência funciona agora;
+4. prova de que não existe transação/lock durante LLM;
+5. regra definitiva de conclusão;
+6. semântica real de `skipped`;
+7. arquivos alterados;
+8. testes adicionados/modificados;
+9. números exatos da suíte;
+10. typecheck/build;
+11. `git diff --stat`;
+12. `git status`.
 
-Entregar somente o relatório de saneamento com:
+Se algum dos três pontos já estiver correto, provar com código/teste em vez de modificá-lo.
 
-1. causa de cada inconsistência;
-2. alterações realizadas;
-3. resultado real dos testes;
-4. validação das migrations;
-5. SQL/comportamento do ON CONFLICT;
-6. decisão sobre crm.clients_won;
-7. regra de reincidência;
-8. git diff --stat;
-9. git status.
-
-NÃO fazer commit.
+**NÃO FAZER COMMIT.**
 
 Aguardar autorização final do Diretor/CEO.

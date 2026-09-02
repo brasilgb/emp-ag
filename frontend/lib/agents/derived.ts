@@ -20,6 +20,7 @@ import type {
   GoalStatus,
   HumanVerdict,
   IncidentType,
+  InitiativeExecutionState,
   InitiativeStatus,
   InterpretationCategory,
   InterpretationErrorType,
@@ -616,4 +617,18 @@ export function canProposeActionForInitiative(status: InitiativeStatus): boolean
 export function daysRemaining(targetDate: string, now: Date = new Date()): number {
   const target = new Date(targetDate);
   return Math.ceil((target.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
+}
+
+// Agentes v2.1 — Initiative Execution & Progress Tracking (correio.md).
+export const INITIATIVE_EXECUTION_STATE_LABELS: Record<InitiativeExecutionState, string> = {
+  not_started: "Não iniciada",
+  waiting_approval: "Aguardando aprovação",
+  running: "Em execução",
+  blocked: "Bloqueada",
+  failed: "Com falha",
+  completed: "Concluída",
+};
+
+export function initiativeExecutionStateLabel(state: InitiativeExecutionState): string {
+  return INITIATIVE_EXECUTION_STATE_LABELS[state] ?? state;
 }

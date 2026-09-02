@@ -60,6 +60,10 @@ describe('Agentes v1.9 - Cenário integrado obrigatório (correio.md seção 34)
     const { users } = await import('../../../db/schema/index.js');
     const [ceoUser] = await dbModule.select().from(users).where(eq(users.email, ceoEmail.toLowerCase())).limit(1);
     ceoUserId = ceoUser.id;
+    // Agentes v2.1 — saneamento: `agentRateLimit('plan')` é compartilhado
+    // no Redis por TODOS os testes que chamam "propose" como CEO — evita
+    // 429 por acúmulo entre arquivos (mesmo guard de action-plans.test.ts).
+    await redis.del(`agents:ratelimit:plan:${ceoUserId}`);
   });
 
   after(async () => {

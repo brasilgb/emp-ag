@@ -17,6 +17,7 @@ import {
   goalHealthLabel,
   goalPriorityLabel,
   goalStatusLabel,
+  initiativeExecutionStateLabel,
   initiativeStatusLabel,
   isCriticalSetting,
   isDecisionClosed,
@@ -237,5 +238,22 @@ describe("daysRemaining", () => {
 
   test("prazo já vencido retorna negativo (dias de atraso)", () => {
     assert.equal(daysRemaining("2026-08-20T12:00:00.000Z", NOW), -10);
+  });
+});
+
+// Agentes v2.1 — Initiative Execution & Progress Tracking.
+describe("initiativeExecutionStateLabel", () => {
+  test("todo estado conhecido tem rótulo em pt-BR", () => {
+    assert.equal(initiativeExecutionStateLabel("not_started"), "Não iniciada");
+    assert.equal(initiativeExecutionStateLabel("waiting_approval"), "Aguardando aprovação");
+    assert.equal(initiativeExecutionStateLabel("running"), "Em execução");
+    assert.equal(initiativeExecutionStateLabel("blocked"), "Bloqueada");
+    assert.equal(initiativeExecutionStateLabel("failed"), "Com falha");
+    assert.equal(initiativeExecutionStateLabel("completed"), "Concluída");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(initiativeExecutionStateLabel("nunca_existiu"), "nunca_existiu");
   });
 });

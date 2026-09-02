@@ -66,6 +66,17 @@ describe('Agentes v1.8 - Director Operations API', () => {
     assert.ok(ceoUser);
     ceoUserId = ceoUser.id;
 
+    // Agentes v2.1 — saneamento (flakiness real encontrada rodando a
+    // suíte completa): `agentRateLimit('plan')` é um contador real no
+    // Redis, compartilhado por TODOS os testes que chamam qualquer rota
+    // de "propose" como CEO (director-decisions, director-initiatives,
+    // action-plans...) — dentro da mesma janela de 60s da suíte inteira
+    // rodando rápido, o total cumulativo pode passar de 15 antes deste
+    // arquivo chegar sua vez, gerando 429 aqui sem nenhuma relação com
+    // o propose deste teste. Mesmo guard já usado em
+    // action-plans.test.ts.
+    await redis.del(`agents:ratelimit:plan:${ceoUserId}`);
+
     const [role] = await db
       .insert(roles)
       .values({ name: `Teste Director Sem Permissão ${runId}`, slug: `test-director-noperm-${runId}`, description: 'sem permissions', isSystem: false })

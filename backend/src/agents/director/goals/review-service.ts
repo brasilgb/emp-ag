@@ -48,7 +48,12 @@ export interface GoalReviewSummary {
  * apenas 1 linha por (goal, health) para sempre, controlada
  * inteiramente pelo estado real da própria Initiative.
  */
-const REOPENABLE_INITIATIVE_STATUSES = ['completed', 'cancelled'] as const;
+// Exportado para o teste de consistência em initiatives-lifecycle.test.ts
+// — este conjunto precisa ser EXATAMENTE igual aos estados de origem de
+// `completed → proposed`/`cancelled → proposed` em
+// initiatives-lifecycle.ts (única fonte de verdade de lifecycle,
+// correio.md v2.1 seção 1).
+export const REOPENABLE_INITIATIVE_STATUSES = ['completed', 'cancelled'] as const;
 
 const RECOMMENDATION_TEMPLATES: Record<'at_risk' | 'critical', (title: string) => { title: string; rationale: string }> = {
   at_risk: (title) => ({

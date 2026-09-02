@@ -40,6 +40,7 @@ import type {
   HumanVerdict,
   Incident,
   IncidentType,
+  InitiativeExecutionDetail,
   InitiativeStatus,
   InterpreterStats,
   JobRunLineage,
@@ -585,6 +586,11 @@ export function getDirectorInitiative(id: number): Promise<{ data: DirectorIniti
   return apiFetch(`/api/agents/director/initiatives/${id}`);
 }
 
+// Agentes v2.1 — Initiative Execution & Progress Tracking (correio.md).
+export function getInitiativeExecution(id: number): Promise<{ data: InitiativeExecutionDetail }> {
+  return apiFetch(`/api/agents/director/initiatives/${id}/execution`);
+}
+
 export interface CreateInitiativeInput {
   title: string;
   description: string;
@@ -614,6 +620,6 @@ export function completeDirectorInitiative(id: number): Promise<{ data: Director
 
 export function proposeInitiativeAction(
   id: number,
-): Promise<{ data: { initiative: DirectorInitiative; plan: ActionPlan; items: ActionPlanItem[] } }> {
+): Promise<{ data: { initiative: DirectorInitiative; plan: ActionPlan; items: ActionPlanItem[]; created: boolean } }> {
   return apiFetch(`/api/agents/director/initiatives/${id}/propose`, { method: "POST", body: JSON.stringify({}) });
 }
