@@ -21,6 +21,8 @@ import type {
   HumanVerdict,
   IncidentType,
   InitiativeExecutionState,
+  RecommendationType,
+  ReviewOutcome,
   InitiativeStatus,
   InterpretationCategory,
   InterpretationErrorType,
@@ -631,4 +633,29 @@ export const INITIATIVE_EXECUTION_STATE_LABELS: Record<InitiativeExecutionState,
 
 export function initiativeExecutionStateLabel(state: InitiativeExecutionState): string {
   return INITIATIVE_EXECUTION_STATE_LABELS[state] ?? state;
+}
+
+// Agentes v2.2 — Executive Review & Strategic Feedback Loop (correio.md seção 20).
+export const REVIEW_OUTCOME_LABELS: Record<ReviewOutcome, string> = {
+  successful: "Bem-sucedido",
+  partially_successful: "Parcialmente bem-sucedido",
+  unsuccessful: "Sem sucesso",
+  inconclusive: "Inconclusivo",
+  blocked: "Bloqueado",
+};
+
+export function reviewOutcomeLabel(outcome: ReviewOutcome): string {
+  return REVIEW_OUTCOME_LABELS[outcome] ?? outcome;
+}
+
+export const RECOMMENDATION_TYPE_LABELS: Record<RecommendationType, string> = {
+  none: "Nenhuma ação necessária",
+  continue: "Continuar estratégia atual",
+  adjust: "Ajustar estratégia",
+  new_initiative: "Propor nova iniciativa",
+  escalate: "Escalar para decisão do CEO",
+};
+
+export function recommendationTypeLabel(type: RecommendationType): string {
+  return RECOMMENDATION_TYPE_LABELS[type] ?? type;
 }

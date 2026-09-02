@@ -40,7 +40,13 @@ export type AgentErrorCode =
   | 'autonomous_cycle_detected'
   | 'autonomy_chain_budget_exceeded'
   | 'autonomous_rate_limit_exceeded'
-  | 'autonomy_circuit_open';
+  | 'autonomy_circuit_open'
+  // Agentes v2.2 — Executive Review (correio.md seção 24 "Falha do
+  // provider"): o Executive Reviewer (LLM) não produziu uma avaliação
+  // estruturalmente válida (timeout, erro de provider, saída inválida) —
+  // mesmo racional de 'planning_failed', para o domínio de review em vez
+  // de planejamento.
+  | 'review_failed';
 
 const STATUS_BY_CODE: Record<AgentErrorCode, number> = {
   validation_error: 400,
@@ -72,6 +78,7 @@ const STATUS_BY_CODE: Record<AgentErrorCode, number> = {
   autonomy_chain_budget_exceeded: 429,
   autonomous_rate_limit_exceeded: 429,
   autonomy_circuit_open: 503,
+  review_failed: 422,
 };
 
 export class AgentError extends Error {

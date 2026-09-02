@@ -14,15 +14,17 @@ import {
   useApproveInitiative,
   useCompleteInitiative,
   useDirectorInitiative,
+  useGenerateInitiativeReview,
   useInitiativeExecution,
+  useInitiativeReview,
   useProposeInitiativeAction,
 } from "@/hooks/agents/use-director-goals";
-import { approvalState, canProposeActionForInitiative, goalPriorityLabel, signalDomainLabel } from "@/lib/agents/derived";
+import { approvalState, canProposeActionForInitiative, goalPriorityLabel, reviewOutcomeLabel, signalDomainLabel } from "@/lib/agents/derived";
 import { formatDateTime } from "@/lib/agents/format";
 import { toErrorMessage } from "@/services/http";
-import type { InitiativeExecutionState, InitiativeExecutionView } from "@/types/agents";
+import type { ExecutiveReview, InitiativeExecutionState, InitiativeExecutionView } from "@/types/agents";
 
-import { ApprovalStateBadge, InitiativeExecutionStateBadge, InitiativeStatusBadge } from "../../status-badge";
+import { ApprovalStateBadge, InitiativeExecutionStateBadge, InitiativeStatusBadge, RecommendationTypeBadge, ReviewOutcomeBadge } from "../../status-badge";
 
 /**
  * Agentes v2.0 (correio.md seção 16/21) — nunca executa nada
@@ -33,10 +35,12 @@ import { ApprovalStateBadge, InitiativeExecutionStateBadge, InitiativeStatusBadg
 export function InitiativeDetail({ initiativeId }: { initiativeId: number }) {
   const { data, isLoading, isError, refetch } = useDirectorInitiative(initiativeId);
   const executionQuery = useInitiativeExecution(initiativeId);
+  const reviewQuery = useInitiativeReview(initiativeId);
   const usersQuery = useUsersDirectory();
   const approve = useApproveInitiative();
   const complete = useCompleteInitiative();
   const propose = useProposeInitiativeAction();
+  const generateReview = useGenerateInitiativeReview();
 
   if (isLoading) return <LoadingState label="Carregando Initiative..." />;
   if (isError || !data) return <ErrorState onRetry={() => refetch()} />;
@@ -69,6 +73,15 @@ export function InitiativeDetail({ initiativeId }: { initiativeId: number }) {
       toast.success(result.created ? `Plano #${result.plan.id} criado a partir da iniciativa.` : `Execução já em andamento — plano #${result.plan.id}.`);
     } catch (error) {
       toast.error(toErrorMessage(error, "Erro ao propor ação."));
+    }
+  }
+
+  async function handleGenerateReview() {
+    try {
+      await generateReview.mutateAsync(initiativeId);
+      toast.success("Executive Review gerada.");
+    } catch (error) {
+      toast.error(toErrorMessage(error, "Erro ao gerar Executive Review."));
     }
   }
 
@@ -129,6 +142,14 @@ export function InitiativeDetail({ initiativeId }: { initiativeId: number }) {
       </Card>
 
       {executionQuery.data ? <ExecutionCard view={executionQuery.data.data.execution} /> : null}
+
+      {executionQuery.data && REVIEWABLE_EXECUTION_STATES.has(executionQuery.data.data.execution.state) ? (
+        <ExecutiveReviewCard
+          review={reviewQuery.data?.data ?? null}
+          isPending={generateReview.isPending}
+          onGenerate={handleGenerateReview}
+        />
+      ) : null}
 
       <div className="grid gap-4 md:grid-cols-2">
         <Card>
@@ -235,6 +256,122 @@ function ExecutionCard({ view }: { view: InitiativeExecutionView }) {
           {view.failedItems > 0 ? <span>{view.failedItems} com falha</span> : null}
           {view.shadowedItems > 0 ? <span>{view.shadowedItems} não executada(s) (shadow)</span> : null}
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// Agentes v2.2 (correio.md seção 13) — só estados TERMINAIS da execução
+// real são elegíveis para gerar/mostrar a Executive Review — mesmo
+// conjunto usado pelo backend (`REVIEWABLE_EXECUTION_STATES`,
+// reviews/types.ts), nunca "running"/"waiting_approval"/"not_started".
+const REVIEWABLE_EXECUTION_STATES = new Set<InitiativeExecutionState>(["completed", "blocked", "failed"]);
+
+/**
+ * Agentes v2.2 (correio.md seções 19-22) — nunca sugere que a
+ * recomendação é decisão automática: "Gerar Executive Review" é uma ação
+ * explícita do usuário (pipeline oficial por trás, `POST .../review`),
+ * e cada recomendação é mostrada como TEXTO interpretativo do Diretor —
+ * "new_initiative" nunca tem botão de "executar imediatamente" (o link
+ * leva para a tela da nova Initiative, que ainda precisa passar por todo
+ * o ciclo de aprovação oficial); "escalate" mostra claramente que a
+ * decisão é do CEO, nunca do sistema.
+ */
+function ExecutiveReviewCard({
+  review,
+  isPending,
+  onGenerate,
+}: {
+  review: ExecutiveReview | null;
+  isPending: boolean;
+  onGenerate: () => void;
+}) {
+  return (
+    <Card>
+      <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 pb-2">
+        <h3 className="text-sm font-medium text-muted-foreground">Executive Review</h3>
+        <div className="flex items-center gap-2">
+          {review ? <ReviewOutcomeBadge outcome={review.outcome!} /> : null}
+          <PermissionGate permission="agents.director.initiatives.manage">
+            <Button size="sm" variant="outline" disabled={isPending} onClick={onGenerate}>
+              {review ? "Atualizar Executive Review" : "Gerar Executive Review"}
+            </Button>
+          </PermissionGate>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3 text-sm">
+        {!review ? (
+          <p className="text-muted-foreground">Nenhuma Executive Review gerada ainda para esta execução.</p>
+        ) : (
+          <>
+            <div>
+              <p className="text-xs text-muted-foreground">Resultado estratégico</p>
+              <p className="font-medium">{review.outcome ? reviewOutcomeLabel(review.outcome) : "--"}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Resumo executivo</p>
+              <p>{review.summary}</p>
+            </div>
+            <div>
+              <p className="text-xs text-muted-foreground">Avaliação</p>
+              <p className="whitespace-pre-wrap text-muted-foreground">{review.assessment}</p>
+            </div>
+            {review.evidence && "execution" in review.evidence ? (
+              <div>
+                <p className="text-xs text-muted-foreground">Evidências</p>
+                <p className="text-muted-foreground">
+                  {(review.evidence as { execution: { completedItems: number; totalItems: number; shadowedItems: number } }).execution.completedItems}/
+                  {(review.evidence as { execution: { completedItems: number; totalItems: number } }).execution.totalItems} ações concluídas
+                  {(review.evidence as { execution: { shadowedItems: number } }).execution.shadowedItems > 0
+                    ? `, ${(review.evidence as { execution: { shadowedItems: number } }).execution.shadowedItems} não executada(s) (shadow)`
+                    : ""}
+                </p>
+              </div>
+            ) : null}
+            {review.confidence ? (
+              <div>
+                <p className="text-xs text-muted-foreground">Confiança da avaliação</p>
+                <p>{Math.round(Number(review.confidence) * 100)}%</p>
+              </div>
+            ) : null}
+            {review.recommendation ? (
+              <div className="space-y-2 rounded-md border border-border p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs text-muted-foreground">Recomendação do Diretor</p>
+                  <RecommendationTypeBadge type={review.recommendationType!} />
+                </div>
+                <p>{review.recommendation.reason}</p>
+
+                {review.recommendationType === "new_initiative" && review.resultingInitiativeId ? (
+                  <div className="rounded-md bg-violet-500/10 p-2 text-xs">
+                    <p className="font-medium text-violet-700 dark:text-violet-400">Diretor recomenda uma nova iniciativa</p>
+                    {review.recommendation.proposedGoal ? <p className="mt-1">{review.recommendation.proposedGoal}</p> : null}
+                    <Link
+                      href={`/agents/director/initiatives/${review.resultingInitiativeId}`}
+                      className="mt-1 inline-block text-primary underline underline-offset-2"
+                    >
+                      Ver proposta #{review.resultingInitiativeId} (aguardando aprovação)
+                    </Link>
+                  </div>
+                ) : null}
+
+                {review.recommendationType === "escalate" ? (
+                  <div className="rounded-md bg-amber-500/10 p-2 text-xs">
+                    <p className="font-medium text-amber-700 dark:text-amber-400">Decisão do CEO necessária</p>
+                    {review.resultingDecisionId ? (
+                      <Link
+                        href={`/agents/director/decisions/${review.resultingDecisionId}`}
+                        className="mt-1 inline-block text-primary underline underline-offset-2"
+                      >
+                        Ver item na Decision Queue #{review.resultingDecisionId}
+                      </Link>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </>
+        )}
       </CardContent>
     </Card>
   );

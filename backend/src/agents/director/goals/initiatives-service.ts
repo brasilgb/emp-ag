@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, inArray, SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull, SQL } from 'drizzle-orm';
 
 import { db } from '../../../db/index.js';
 import { agentActionPlanItems, agentApprovals, agentDirectorInitiatives, users } from '../../../db/schema/index.js';
@@ -203,6 +203,73 @@ export async function cancelInitiative(initiative: InitiativeRow, reason: string
 // (`getInitiativeExecutionView`), que vive no serviço de execução, não
 // aqui. Este arquivo continua dono só do CRUD/lifecycle simples da
 // Initiative que NÃO depende de evidência de execução (approve/cancel).
+
+/**
+ * Agentes v2.2 (correio.md seção 10) — adaptador que reutiliza o MESMO
+ * pipeline oficial de criação de Initiative (nenhum mecanismo alternativo,
+ * seção 10: "não criar um mecanismo alternativo"). Recomendação
+ * `new_initiative` de uma Executive Review vira uma Initiative real
+ * `origin='director_recommendation'`, `status='proposed'` — precisa do
+ * MESMO ciclo de vida oficial (aprovação humana → `startInitiativeExecution`
+ * → Action Plan oficial, seção 10: fluxo esperado) antes de qualquer
+ * execução. Nunca cria Action Plan, nunca executa tool, nunca pula
+ * aprovação (correio.md seção 24 "Nova Initiative").
+ *
+ * `recommendationKey = executive-review:<reviewId>` — reaproveita o MESMO
+ * índice único parcial (goalId, recommendationKey) já usado por
+ * `reviewDirectorGoals()` para deduplicação; `onConflictDoNothing` é
+ * defesa em profundidade (uma Executive Review só é gerada uma vez —
+ * unicidade em `action_plan_id` — então esta função roda no máximo uma
+ * vez por review em circunstâncias normais).
+ */
+export async function createInitiativeFromExecutiveReview(params: {
+  goal: GoalRow;
+  reviewId: number;
+  proposedGoal: string | undefined;
+  reason: string;
+  sourceInitiativeTitle: string;
+}): Promise<InitiativeRow> {
+  const now = new Date();
+  const title = `Nova iniciativa recomendada: ${(params.proposedGoal ?? params.sourceInitiativeTitle).slice(0, 200)}`;
+  const recommendationKey = `executive-review:${params.reviewId}`;
+
+  const inserted = await db
+    .insert(agentDirectorInitiatives)
+    .values({
+      goalId: params.goal.id,
+      title: title.slice(0, 255),
+      description: params.proposedGoal ?? params.reason,
+      domain: params.goal.domain,
+      status: 'proposed',
+      priority: 'high',
+      rationale: params.reason,
+      origin: 'director_recommendation',
+      recommendationKey,
+      createdAt: now,
+      updatedAt: now,
+    })
+    // `where` (não `targetWhere`, exclusivo de onConflictDoUpdate) repete
+    // o predicado do índice parcial (agent-director-initiatives.ts) —
+    // exigência do Postgres para inferir um índice PARCIAL como arbiter
+    // (mesmo bug já documentado/corrigido na saneamento v2.0: sem isso,
+    // "there is no unique or exclusion constraint matching the ON
+    // CONFLICT specification").
+    .onConflictDoNothing({
+      target: [agentDirectorInitiatives.goalId, agentDirectorInitiatives.recommendationKey],
+      where: isNotNull(agentDirectorInitiatives.recommendationKey),
+    })
+    .returning();
+
+  if (inserted.length > 0) return inserted[0]!;
+
+  const [existing] = await db
+    .select()
+    .from(agentDirectorInitiatives)
+    .where(and(eq(agentDirectorInitiatives.goalId, params.goal.id), eq(agentDirectorInitiatives.recommendationKey, recommendationKey)))
+    .limit(1);
+  if (!existing) throw new AgentError('conflict', 'Falha ao localizar Initiative recomendada após conflito de criação.');
+  return existing;
+}
 
 // A criação/execução do Action Plan (antigo `proposeActionForInitiative`)
 // mudou-se para `initiatives-execution-service.ts` na v2.1 — agora

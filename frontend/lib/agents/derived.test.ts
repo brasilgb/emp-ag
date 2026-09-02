@@ -18,6 +18,8 @@ import {
   goalPriorityLabel,
   goalStatusLabel,
   initiativeExecutionStateLabel,
+  recommendationTypeLabel,
+  reviewOutcomeLabel,
   initiativeStatusLabel,
   isCriticalSetting,
   isDecisionClosed,
@@ -255,5 +257,36 @@ describe("initiativeExecutionStateLabel", () => {
   test("valor desconhecido faz fallback para o próprio valor", () => {
     // @ts-expect-error — testando o fallback de valor não mapeado.
     assert.equal(initiativeExecutionStateLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+// Agentes v2.2 — Executive Review & Strategic Feedback Loop.
+describe("reviewOutcomeLabel", () => {
+  test("todo outcome conhecido tem rótulo em pt-BR", () => {
+    assert.equal(reviewOutcomeLabel("successful"), "Bem-sucedido");
+    assert.equal(reviewOutcomeLabel("partially_successful"), "Parcialmente bem-sucedido");
+    assert.equal(reviewOutcomeLabel("unsuccessful"), "Sem sucesso");
+    assert.equal(reviewOutcomeLabel("inconclusive"), "Inconclusivo");
+    assert.equal(reviewOutcomeLabel("blocked"), "Bloqueado");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(reviewOutcomeLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+describe("recommendationTypeLabel", () => {
+  test("todo tipo conhecido tem rótulo em pt-BR, nunca sugerindo decisão automática", () => {
+    assert.equal(recommendationTypeLabel("none"), "Nenhuma ação necessária");
+    assert.equal(recommendationTypeLabel("continue"), "Continuar estratégia atual");
+    assert.equal(recommendationTypeLabel("adjust"), "Ajustar estratégia");
+    assert.equal(recommendationTypeLabel("new_initiative"), "Propor nova iniciativa");
+    assert.equal(recommendationTypeLabel("escalate"), "Escalar para decisão do CEO");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(recommendationTypeLabel("nunca_existiu"), "nunca_existiu");
   });
 });

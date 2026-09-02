@@ -13,11 +13,13 @@ import {
   createDirectorGoal,
   createDirectorInitiative,
   evaluateDirectorGoal,
+  generateInitiativeReview,
   getDirectorGoal,
   getDirectorGoalsOverview,
   getDirectorInitiative,
   getGoalMetricCatalog,
   getInitiativeExecution,
+  getInitiativeReview,
   listDirectorGoals,
   listDirectorInitiatives,
   pauseDirectorGoal,
@@ -227,6 +229,32 @@ export function useProposeInitiativeAction() {
       invalidate(id);
       queryClient.invalidateQueries({ queryKey: ["agents", "action-plans"] });
       queryClient.invalidateQueries({ queryKey: ["agents", "approvals"] });
+    },
+  });
+}
+
+// Agentes v2.2 — Executive Review & Strategic Feedback Loop (correio.md).
+// `data: null` é um estado válido (ainda não há review) — nunca tratado
+// como erro.
+export function useInitiativeReview(id: number | null) {
+  return useQuery({
+    queryKey: queryKeys.agents.directorInitiativeReview(id ?? -1),
+    queryFn: () => getInitiativeReview(id as number),
+    enabled: id !== null,
+  });
+}
+
+export function useGenerateInitiativeReview() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => generateInitiativeReview(id),
+    onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.directorInitiativeReview(id) });
+      // Uma recomendação new_initiative/escalate pode ter criado uma nova
+      // Initiative ou um novo Decision Item — invalida as listas afetadas
+      // (nunca escreve otimisticamente algo que a review em si não devolveu).
+      queryClient.invalidateQueries({ queryKey: ["agents", "director", "initiatives"] });
+      queryClient.invalidateQueries({ queryKey: ["agents", "director", "decisions"] });
     },
   });
 }

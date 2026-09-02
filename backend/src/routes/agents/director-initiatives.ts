@@ -20,6 +20,7 @@ import {
   syncInitiativeExecutionState,
 } from '../../agents/director/goals/initiatives-execution-service.js';
 import { getGoalById } from '../../agents/director/goals/goals-service.js';
+import { generateExecutiveReview, getExecutiveReviewForInitiative } from '../../agents/director/reviews/review-service.js';
 import {
   cancelInitiativeSchema,
   createInitiativeSchema,
@@ -217,6 +218,56 @@ export async function directorInitiativesRoutes(app: FastifyInstance) {
       const synced = await syncInitiativeExecutionState(initiative, view, null);
 
       return { data: { initiative: synced, execution: view } };
+    },
+  );
+
+  // Agentes v2.2 (correio.md seção 14) — gera (ou recupera, se já
+  // existir/estiver em geração concorrente) a Executive Review canônica
+  // desta Initiative. Mesma permission de `.../complete`/`.../approve`
+  // (`agents.director.initiatives.manage`) — ação administrativa sobre o
+  // ciclo de vida da Initiative, não uma leitura (seção 23: nenhuma
+  // permission nova precisou ser criada).
+  app.post(
+    '/director/initiatives/:id/review',
+    { preHandler: [authenticate, requirePermission('agents.director.initiatives.manage')] },
+    async (request, reply) => {
+      const params = initiativeIdParamSchema.safeParse(request.params);
+      if (!params.success) return badRequest(reply, params.error);
+
+      const initiative = await getInitiativeById(params.data.id);
+      if (!initiative) return notFound(reply, 'Initiative não encontrada.');
+
+      try {
+        const result = await generateExecutiveReview(initiative, currentUserId(request));
+        // 201 só quando uma review nova foi de fato gerada (mesmo padrão
+        // de `.../propose`: chamada idempotente devolvendo a review
+        // existente é 200, nunca um segundo "created").
+        return reply.code(result.created ? 201 : 200).send({ data: result.review });
+      } catch (error) {
+        if (error instanceof AgentError) {
+          return reply.code(error.status).send({ error: error.code, message: error.message, details: error.details });
+        }
+        throw error;
+      }
+    },
+  );
+
+  // Agentes v2.2 (correio.md seção 15) — leitura da Executive Review
+  // canônica desta Initiative. `agents.read`, mesma permission de
+  // `.../execution`. `data: null` quando ainda não existe review
+  // completada (nunca 404 — "não ter review ainda" é um estado válido).
+  app.get(
+    '/director/initiatives/:id/review',
+    { preHandler: [authenticate, requirePermission('agents.read')] },
+    async (request, reply) => {
+      const params = initiativeIdParamSchema.safeParse(request.params);
+      if (!params.success) return badRequest(reply, params.error);
+
+      const initiative = await getInitiativeById(params.data.id);
+      if (!initiative) return notFound(reply, 'Initiative não encontrada.');
+
+      const review = await getExecutiveReviewForInitiative(initiative);
+      return { data: review };
     },
   );
 }

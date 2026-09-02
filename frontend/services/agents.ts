@@ -29,6 +29,7 @@ import type {
   EventFilters,
   EventStatus,
   ExecutionStatus,
+  ExecutiveReview,
   GlobalAutonomyState,
   GoalDetail,
   GoalHealth,
@@ -622,4 +623,14 @@ export function proposeInitiativeAction(
   id: number,
 ): Promise<{ data: { initiative: DirectorInitiative; plan: ActionPlan; items: ActionPlanItem[]; created: boolean } }> {
   return apiFetch(`/api/agents/director/initiatives/${id}/propose`, { method: "POST", body: JSON.stringify({}) });
+}
+
+// Agentes v2.2 — Executive Review & Strategic Feedback Loop (correio.md).
+// `data: null` quando ainda não existe review completada — nunca 404.
+export function getInitiativeReview(id: number): Promise<{ data: ExecutiveReview | null }> {
+  return apiFetch(`/api/agents/director/initiatives/${id}/review`);
+}
+
+export function generateInitiativeReview(id: number): Promise<{ data: ExecutiveReview }> {
+  return apiFetch(`/api/agents/director/initiatives/${id}/review`, { method: "POST", body: JSON.stringify({}) });
 }

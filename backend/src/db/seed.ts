@@ -384,7 +384,7 @@ const defaultPermissions = [
     name: 'Gerenciar Initiatives do Diretor',
     slug: 'agents.director.initiatives.manage',
     description:
-      'Permite criar/editar, aprovar, cancelar e concluir Initiatives (Agentes v2.0). Leitura segue em agents.read; propor Action Plan segue em agents.use + agents.plan.',
+      'Permite criar/editar, aprovar, cancelar, concluir e gerar Executive Review de Initiatives (Agentes v2.0/v2.2). Leitura segue em agents.read; propor Action Plan segue em agents.use + agents.plan.',
   },
 
   {

@@ -901,3 +901,57 @@ export interface InitiativeExecutionDetail {
   initiative: DirectorInitiative;
   execution: InitiativeExecutionView;
 }
+
+// Agentes v2.2 — Executive Review & Strategic Feedback Loop (correio.md).
+export const REVIEW_STATUSES = ["draft", "completed", "superseded"] as const;
+export type ReviewStatus = (typeof REVIEW_STATUSES)[number];
+
+export const REVIEW_OUTCOMES = ["successful", "partially_successful", "unsuccessful", "inconclusive", "blocked"] as const;
+export type ReviewOutcome = (typeof REVIEW_OUTCOMES)[number];
+
+export const RECOMMENDATION_TYPES = ["none", "continue", "adjust", "new_initiative", "escalate"] as const;
+export type RecommendationType = (typeof RECOMMENDATION_TYPES)[number];
+
+export interface ExecutiveReviewRecommendation {
+  type: RecommendationType;
+  reason: string;
+  proposedGoal?: string;
+}
+
+/** Evidência determinística mostrada na tela — mesmo DTO enviado ao LLM (nunca invenção da UI). */
+export interface ExecutiveReviewEvidence {
+  execution: {
+    state: InitiativeExecutionState;
+    progressPercent: number;
+    totalItems: number;
+    completedItems: number;
+    failedItems: number;
+    blockedItems: number;
+    pendingApprovalItems: number;
+    shadowedItems: number;
+  };
+  actionPlan: { id: number; objective: string; summary: string; status: string };
+}
+
+export interface ExecutiveReview {
+  id: number;
+  goalId: number;
+  initiativeId: number;
+  actionPlanId: number;
+  createdBy: number | null;
+  reviewType: string;
+  status: ReviewStatus;
+  outcome: ReviewOutcome | null;
+  summary: string | null;
+  expectedResult: string | null;
+  actualResult: string | null;
+  evidence: ExecutiveReviewEvidence | Record<string, unknown>;
+  assessment: string | null;
+  confidence: string | null;
+  recommendationType: RecommendationType | null;
+  recommendation: ExecutiveReviewRecommendation | null;
+  resultingInitiativeId: number | null;
+  resultingDecisionId: number | null;
+  createdAt: string;
+  updatedAt: string;
+}

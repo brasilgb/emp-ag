@@ -5,7 +5,21 @@ import { and, eq } from 'drizzle-orm';
 
 import { buildApp } from '../../app.js';
 import { db } from '../../db/index.js';
-import { agentDirectorGoals, agentDirectorInitiatives, agentToolPermissions, agentTools, agents, users } from '../../db/schema/index.js';
+import bcrypt from 'bcryptjs';
+
+import {
+  agentDirectorDecisions,
+  agentDirectorGoals,
+  agentDirectorInitiatives,
+  agentExecutiveReviews,
+  agentToolPermissions,
+  agentTools,
+  agents,
+  permissions,
+  rolePermissions,
+  roles,
+  users,
+} from '../../db/schema/index.js';
 import { database } from '../../services/database.js';
 import { redis } from '../../services/redis.js';
 import { setLLMProviderOverrideForTests } from '../../agents/llm/factory.js';
@@ -319,6 +333,165 @@ describe('Agentes v2.1 - Director Initiatives API', () => {
       payload: { reason: 'de novo' },
     });
     assert.equal(cancelAgain.statusCode, 409);
+  });
+
+  describe('POST/GET /director/initiatives/:id/review (correio.md v2.2 seção 14/15)', () => {
+    let noPermToken: string;
+    let noPermRoleId: number;
+    let noPermUserId: number;
+
+    before(async () => {
+      const [role] = await db
+        .insert(roles)
+        .values({ name: `Teste Review Sem Permissão ${runId}`, slug: `test-review-noperm-${runId}`, description: 'sem permissions', isSystem: false })
+        .returning();
+      noPermRoleId = role!.id;
+
+      const [dummyPerm] = await db.select().from(permissions).where(eq(permissions.slug, 'agents.jobs.read')).limit(1);
+      await db.insert(rolePermissions).values({ roleId: role!.id, permissionId: dummyPerm!.id });
+
+      const passwordHash = await bcrypt.hash('senha-teste-12345', 4);
+      const email = `test-review-noperm-${runId}@example.com`;
+      const [user] = await db.insert(users).values({ name: 'Sem Permissão Review', email, passwordHash, roleId: role!.id, isActive: true }).returning();
+      noPermUserId = user!.id;
+      noPermToken = await login(email, 'senha-teste-12345');
+    });
+
+    after(async () => {
+      await db.delete(users).where(eq(users.id, noPermUserId));
+      await db.delete(roles).where(eq(roles.id, noPermRoleId));
+    });
+
+    test('sem agents.director.initiatives.manage → POST .../review 403, nenhuma review criada', async () => {
+      const initiativeId = await createInitiative(`Iniciativa Review SemPerm ${runId}`);
+
+      const response = await app.inject({
+        method: 'POST',
+        url: `/agents/director/initiatives/${initiativeId}/review`,
+        headers: authHeader(noPermToken),
+      });
+      assert.equal(response.statusCode, 403);
+
+      const rows = await db.select().from(agentExecutiveReviews).where(eq(agentExecutiveReviews.initiativeId, initiativeId));
+      assert.equal(rows.length, 0, 'nenhuma review deveria ter sido criada — bloqueado antes do handler.');
+    });
+
+    test('GET .../review sem review ainda → data: null (nunca 404)', async () => {
+      const initiativeId = await createInitiative(`Iniciativa Review Vazia ${runId}`);
+      const response = await app.inject({ method: 'GET', url: `/agents/director/initiatives/${initiativeId}/review`, headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 200, response.body);
+      assert.equal(response.json().data, null);
+    });
+
+    test('execução ainda não terminou → POST .../review é 409, nenhuma review criada', async () => {
+      process.env.AGENT_LLM_ENABLED = 'true';
+      process.env.AGENT_LLM_SHADOW_MODE = 'false';
+
+      const [salesAgent] = await db.select({ id: agents.id }).from(agents).where(eq(agents.slug, 'sales')).limit(1);
+      const [salesTool] = await db.select({ id: agentTools.id }).from(agentTools).where(eq(agentTools.handler, 'sales.get_pipeline_summary')).limit(1);
+      const [toolPermission] = await db
+        .select()
+        .from(agentToolPermissions)
+        .where(and(eq(agentToolPermissions.agentId, salesAgent!.id), eq(agentToolPermissions.toolId, salesTool!.id)));
+      await db.update(agentToolPermissions).set({ requiresApprovalOverride: true }).where(eq(agentToolPermissions.id, toolPermission!.id));
+
+      try {
+        setLLMProviderOverrideForTests(pipelineSummaryObjective());
+        const initiativeId = await createInitiative(`Iniciativa Review Prematura ${runId}`);
+        await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/approve`, headers: authHeader(ceoToken) });
+        const propose = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/propose`, headers: authHeader(ceoToken) });
+        assert.equal(propose.json().data.items[0].executionStatus, 'waiting_approval');
+
+        const review = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/review`, headers: authHeader(ceoToken) });
+        assert.equal(review.statusCode, 409, review.body);
+      } finally {
+        await db.update(agentToolPermissions).set({ requiresApprovalOverride: false }).where(eq(agentToolPermissions.id, toolPermission!.id));
+      }
+    });
+
+    test('fluxo completo via HTTP: propose → auto-completed → POST review (201) → GET review devolve a mesma; segunda POST é idempotente (200)', async () => {
+      process.env.AGENT_LLM_ENABLED = 'true';
+      process.env.AGENT_LLM_SHADOW_MODE = 'false';
+      setLLMProviderOverrideForTests(pipelineSummaryObjective());
+
+      const initiativeId = await createInitiative(`Iniciativa Review Completa ${runId}`);
+      await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/approve`, headers: authHeader(ceoToken) });
+      const propose = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/propose`, headers: authHeader(ceoToken) });
+      assert.equal(propose.json().data.initiative.status, 'completed', 'CEO tem permissão real — executa e completa na hora.');
+
+      // Troca o provider para a saída estruturada da Executive Review
+      // (formato diferente do Action Planner — o mesmo provider mockado
+      // não serve para os dois papéis na mesma chamada).
+      setLLMProviderOverrideForTests({
+        name: 'mock-review',
+        async complete() {
+          return {
+            raw: {
+              outcome: 'successful',
+              summary: 'Resumo executivo via HTTP.',
+              assessment: 'Avaliação via HTTP, baseada na evidência real da execução.',
+              confidence: 0.85,
+              recommendation: { type: 'none', reason: 'Nenhuma ação adicional necessária.' },
+            },
+          };
+        },
+      });
+
+      const review = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/review`, headers: authHeader(ceoToken) });
+      assert.equal(review.statusCode, 201, review.body);
+      assert.equal(review.json().data.outcome, 'successful');
+      assert.equal(review.json().data.status, 'completed');
+      const reviewId = review.json().data.id;
+
+      const getReview = await app.inject({ method: 'GET', url: `/agents/director/initiatives/${initiativeId}/review`, headers: authHeader(ceoToken) });
+      assert.equal(getReview.statusCode, 200, getReview.body);
+      assert.equal(getReview.json().data.id, reviewId);
+
+      const reviewAgain = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/review`, headers: authHeader(ceoToken) });
+      assert.equal(reviewAgain.statusCode, 200, 'chamada idempotente devolve a mesma review, nunca 201 de novo');
+      assert.equal(reviewAgain.json().data.id, reviewId);
+
+      await db.delete(agentExecutiveReviews).where(eq(agentExecutiveReviews.id, reviewId));
+    });
+
+    test('recomendação escalate via HTTP: gera Decision Item real, visível na Director Decision Queue', async () => {
+      process.env.AGENT_LLM_ENABLED = 'true';
+      process.env.AGENT_LLM_SHADOW_MODE = 'false';
+      setLLMProviderOverrideForTests(pipelineSummaryObjective());
+
+      const initiativeId = await createInitiative(`Iniciativa Review Escalate ${runId}`);
+      await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/approve`, headers: authHeader(ceoToken) });
+      await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/propose`, headers: authHeader(ceoToken) });
+
+      setLLMProviderOverrideForTests({
+        name: 'mock-review-escalate',
+        async complete() {
+          return {
+            raw: {
+              outcome: 'blocked',
+              summary: 'Bloqueio real detectado.',
+              assessment: 'Impedimento estrutural real requer decisão do CEO.',
+              confidence: 0.8,
+              recommendation: { type: 'escalate', reason: 'Decisão do CEO necessária para prosseguir.' },
+            },
+          };
+        },
+      });
+
+      const review = await app.inject({ method: 'POST', url: `/agents/director/initiatives/${initiativeId}/review`, headers: authHeader(ceoToken) });
+      assert.equal(review.statusCode, 201, review.body);
+      assert.equal(review.json().data.recommendationType, 'escalate');
+      const decisionId = review.json().data.resultingDecisionId;
+      assert.ok(decisionId);
+
+      const [decision] = await db.select().from(agentDirectorDecisions).where(eq(agentDirectorDecisions.id, decisionId));
+      assert.ok(decision);
+      assert.equal(decision.status, 'open');
+      assert.equal(decision.requiresHumanAttention, true);
+
+      await db.delete(agentExecutiveReviews).where(eq(agentExecutiveReviews.id, review.json().data.id));
+      await db.delete(agentDirectorDecisions).where(eq(agentDirectorDecisions.id, decisionId));
+    });
   });
 
   test('GET /director/initiatives?goalId= filtra por Goal', async () => {

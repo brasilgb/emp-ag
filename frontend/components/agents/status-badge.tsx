@@ -24,6 +24,8 @@ import {
   interpretationErrorTypeLabel,
   jobRunStatusLabel,
   jobStatusLabel,
+  recommendationTypeLabel,
+  reviewOutcomeLabel,
   signalSeverityLabel,
   type DerivedApprovalState,
 } from "@/lib/agents/derived";
@@ -49,6 +51,8 @@ import type {
   InterpretationError,
   JobRunStatus,
   JobStatus,
+  RecommendationType,
+  ReviewOutcome,
   SignalSeverity,
 } from "@/types/agents";
 
@@ -438,6 +442,44 @@ export function InitiativeExecutionStateBadge({ state }: { state: InitiativeExec
   return (
     <Badge variant="secondary" className={cn("border-transparent", INITIATIVE_EXECUTION_STATE_STYLES[state])}>
       {initiativeExecutionStateLabel(state)}
+    </Badge>
+  );
+}
+
+// Agentes v2.2 — Executive Review & Strategic Feedback Loop (correio.md
+// seção 20) — nunca depender só de cor: cada badge sempre mostra o texto
+// completo do outcome/recomendação, cor é reforço visual, não o único sinal.
+const REVIEW_OUTCOME_STYLES: Record<ReviewOutcome, string> = {
+  successful: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  partially_successful: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  unsuccessful: "bg-red-500/10 text-red-700 dark:text-red-400",
+  inconclusive: "bg-muted text-muted-foreground",
+  blocked: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+};
+
+export function ReviewOutcomeBadge({ outcome }: { outcome: ReviewOutcome }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", REVIEW_OUTCOME_STYLES[outcome])}>
+      {reviewOutcomeLabel(outcome)}
+    </Badge>
+  );
+}
+
+// escalate é sempre o mais destacado (âmbar) — mesmo princípio de
+// ACTION_DECISION_STYLES.approval_required: decisão do CEO nunca deve
+// passar despercebida.
+const RECOMMENDATION_TYPE_STYLES: Record<RecommendationType, string> = {
+  none: "bg-muted text-muted-foreground",
+  continue: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  adjust: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  new_initiative: "bg-violet-500/10 text-violet-700 dark:text-violet-400",
+  escalate: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+};
+
+export function RecommendationTypeBadge({ type }: { type: RecommendationType }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", RECOMMENDATION_TYPE_STYLES[type])}>
+      {recommendationTypeLabel(type)}
     </Badge>
   );
 }
