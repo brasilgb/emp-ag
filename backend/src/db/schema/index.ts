@@ -44,3 +44,7 @@ export * from './agent-interpretations.js';
 export * from './agent-autonomy-blocks.js';
 export * from './agent-operational-settings.js';
 export * from './agent-director-decisions.js';
+export * from './agent-director-goals.js';
+export * from './agent-director-goal-metrics.js';
+export * from './agent-director-goal-evaluations.js';
+export * from './agent-director-initiatives.js';

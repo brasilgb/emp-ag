@@ -15,8 +15,12 @@ import type {
   EventStatus,
   ExecutionStatus,
   FilterOperator,
+  GoalHealth,
+  GoalPriority,
+  GoalStatus,
   HumanVerdict,
   IncidentType,
+  InitiativeStatus,
   InterpretationCategory,
   InterpretationErrorType,
   JobRunStatus,
@@ -542,4 +546,74 @@ export function daysOpen(firstDetectedAt: string, now: Date = new Date()): numbe
   const detected = new Date(firstDetectedAt);
   const diffMs = now.getTime() - detected.getTime();
   return Math.max(0, Math.floor(diffMs / (24 * 60 * 60 * 1000)));
+}
+
+// Agentes v2.0 — Director Goals, Initiatives & Executive Planning (correio.md).
+export const GOAL_STATUS_LABELS: Record<GoalStatus, string> = {
+  draft: "Rascunho",
+  active: "Ativo",
+  paused: "Pausado",
+  achieved: "Alcançado",
+  missed: "Não alcançado",
+  cancelled: "Cancelado",
+};
+
+export function goalStatusLabel(status: GoalStatus): string {
+  return GOAL_STATUS_LABELS[status] ?? status;
+}
+
+export const GOAL_HEALTH_LABELS: Record<GoalHealth, string> = {
+  on_track: "No caminho certo",
+  attention: "Atenção",
+  at_risk: "Em risco",
+  critical: "Crítico",
+  unknown: "Sem avaliação",
+};
+
+export function goalHealthLabel(health: GoalHealth): string {
+  return GOAL_HEALTH_LABELS[health] ?? health;
+}
+
+export const GOAL_PRIORITY_LABELS: Record<GoalPriority, string> = {
+  low: "Baixa",
+  medium: "Média",
+  high: "Alta",
+  critical: "Crítica",
+};
+
+export function goalPriorityLabel(priority: GoalPriority): string {
+  return GOAL_PRIORITY_LABELS[priority] ?? priority;
+}
+
+export const INITIATIVE_STATUS_LABELS: Record<InitiativeStatus, string> = {
+  proposed: "Proposta",
+  approved: "Aprovada",
+  active: "Ativa",
+  blocked: "Bloqueada",
+  completed: "Concluída",
+  cancelled: "Cancelada",
+};
+
+export function initiativeStatusLabel(status: InitiativeStatus): string {
+  return INITIATIVE_STATUS_LABELS[status] ?? status;
+}
+
+export const OPEN_GOAL_STATUSES: readonly GoalStatus[] = ["draft", "active", "paused"];
+export function isGoalClosed(status: GoalStatus): boolean {
+  return !OPEN_GOAL_STATUSES.includes(status);
+}
+
+export const OPEN_INITIATIVE_STATUSES: readonly InitiativeStatus[] = ["proposed", "approved", "active", "blocked"];
+export function isInitiativeClosed(status: InitiativeStatus): boolean {
+  return !OPEN_INITIATIVE_STATUSES.includes(status);
+}
+
+// Mesma regra do backend (initiatives-service.ts) — só a partir de "approved".
+export function canProposeActionForInitiative(status: InitiativeStatus): boolean {
+  return status === "approved";
+}
+
+export function daysRemaining(targetDate: string, now: Date = new Date()): number {
+  const target = new Date(targetDate);
+  return Math.ceil((target.getTime() - now.getTime()) / (24 * 60 * 60 * 1000));
 }

@@ -106,5 +106,11 @@ export const queryKeys = {
     directorDecisions: (params?: unknown) => ["agents", "director", "decisions", params ?? {}] as const,
     directorDecisionsOverview: ["agents", "director", "decisions", "overview"] as const,
     directorDecision: (id: number) => ["agents", "director", "decisions", id] as const,
+    directorGoals: (params?: unknown) => ["agents", "director", "goals", params ?? {}] as const,
+    directorGoalsOverview: ["agents", "director", "goals", "overview"] as const,
+    directorGoal: (id: number) => ["agents", "director", "goals", id] as const,
+    goalMetricCatalog: ["agents", "director", "goals", "metrics", "catalog"] as const,
+    directorInitiatives: (params?: unknown) => ["agents", "director", "initiatives", params ?? {}] as const,
+    directorInitiative: (id: number) => ["agents", "director", "initiatives", id] as const,
   },
 };

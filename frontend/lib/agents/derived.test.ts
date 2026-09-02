@@ -6,14 +6,22 @@ import {
   autonomyLevelBadgeVariant,
   autonomyLevelLabel,
   canProposeActionForDecision,
+  canProposeActionForInitiative,
   daysOpen,
+  daysRemaining,
   decisionImpactLabel,
   decisionStatusLabel,
   decisionUrgencyLabel,
   executionStatusLabel,
   formatChatResponse,
+  goalHealthLabel,
+  goalPriorityLabel,
+  goalStatusLabel,
+  initiativeStatusLabel,
   isCriticalSetting,
   isDecisionClosed,
+  isGoalClosed,
+  isInitiativeClosed,
   signalEntityHref,
 } from "./derived";
 
@@ -177,5 +185,57 @@ describe("daysOpen", () => {
 
   test("menos de 24h ainda conta como 0 dias (arredonda para baixo)", () => {
     assert.equal(daysOpen("2026-08-30T01:00:00.000Z", NOW), 0);
+  });
+});
+
+// Agentes v2.0 — Director Goals, Initiatives & Executive Planning.
+describe("goalStatusLabel / goalHealthLabel / goalPriorityLabel / initiativeStatusLabel", () => {
+  test("todo valor conhecido tem rótulo em pt-BR", () => {
+    assert.equal(goalStatusLabel("active"), "Ativo");
+    assert.equal(goalHealthLabel("at_risk"), "Em risco");
+    assert.equal(goalPriorityLabel("critical"), "Crítica");
+    assert.equal(initiativeStatusLabel("proposed"), "Proposta");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(goalStatusLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+describe("isGoalClosed / isInitiativeClosed / canProposeActionForInitiative", () => {
+  test("achieved/missed/cancelled são os únicos estados terminais de Goal", () => {
+    assert.equal(isGoalClosed("achieved"), true);
+    assert.equal(isGoalClosed("missed"), true);
+    assert.equal(isGoalClosed("cancelled"), true);
+    assert.equal(isGoalClosed("draft"), false);
+    assert.equal(isGoalClosed("active"), false);
+    assert.equal(isGoalClosed("paused"), false);
+  });
+
+  test("completed/cancelled são os únicos estados terminais de Initiative", () => {
+    assert.equal(isInitiativeClosed("completed"), true);
+    assert.equal(isInitiativeClosed("cancelled"), true);
+    assert.equal(isInitiativeClosed("proposed"), false);
+    assert.equal(isInitiativeClosed("approved"), false);
+    assert.equal(isInitiativeClosed("active"), false);
+    assert.equal(isInitiativeClosed("blocked"), false);
+  });
+
+  test("só é possível propor ação a partir de approved (mesma regra do backend)", () => {
+    assert.equal(canProposeActionForInitiative("approved"), true);
+    assert.equal(canProposeActionForInitiative("proposed"), false);
+    assert.equal(canProposeActionForInitiative("active"), false);
+    assert.equal(canProposeActionForInitiative("completed"), false);
+  });
+});
+
+describe("daysRemaining", () => {
+  test("now controlado, nunca Date.now() implícito", () => {
+    assert.equal(daysRemaining("2026-09-10T12:00:00.000Z", NOW), 11);
+  });
+
+  test("prazo já vencido retorna negativo (dias de atraso)", () => {
+    assert.equal(daysRemaining("2026-08-20T12:00:00.000Z", NOW), -10);
   });
 });

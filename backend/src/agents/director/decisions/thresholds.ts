@@ -53,6 +53,14 @@ export const IMPACT_BY_SIGNAL_TYPE: Record<string, 'high' | 'medium' | 'low'> = 
   'crm.lead_missing_follow_up': 'low',
   'projects.task_due_soon': 'low',
   'projects.task_unassigned': 'low',
+
+  // Agentes v2.0 (correio.md "12. Integração com Director Decision
+  // Queue") — Goals estratégicos em risco têm impacto alto por natureza
+  // (afetam objetivo do CEO, não uma entidade isolada).
+  'goal.critical': 'high',
+  'goal.at_risk': 'medium',
+  'goal.deadline_near': 'medium',
+  'goal.no_progress': 'low',
 };
 
 /** Limiares reais de valor financeiro (correio.md seção 9 — "se esse valor estiver realmente disponível no sinal", já está: collectFinanceSignals grava `metadata.amount`). */
@@ -104,6 +112,11 @@ export const URGENCY_BY_SIGNAL_TYPE: Record<string, 'immediate' | 'soon' | 'norm
 
   'crm.lead_missing_follow_up': 'normal',
   'projects.task_unassigned': 'normal',
+
+  'goal.critical': 'immediate',
+  'goal.deadline_near': 'soon',
+  'goal.at_risk': 'soon',
+  'goal.no_progress': 'normal',
 };
 
 export const INCIDENT_REASON_URGENCY: Record<string, 'immediate' | 'soon' | 'normal'> = {

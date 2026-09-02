@@ -9,14 +9,17 @@ import { signalDomainLabel } from "@/lib/agents/derived";
 
 import { DecisionQueue } from "./decision-queue";
 import { DomainSection } from "./domain-section";
+import { GoalsOverviewSection } from "./goals/goals-overview";
+import { RecentInitiativesSection } from "./goals/recent-initiatives";
 
 const DOMAIN_ORDER = ["crm", "projects", "finance", "support", "agents"] as const;
 
 /**
- * Agentes v1.8 (correio.md seção 15) — "mesa do diretor": resumo +
- * seções por domínio, nunca outro dashboard genérico de métricas. Um
- * único fetch (GET /agents/director/brief), já agregado e classificado
- * no backend.
+ * Agentes v1.8/v1.9/v2.0 (correio.md v2.0 seção 19) — "mesa do diretor",
+ * organizada em 5 blocos: Executive Summary (resumo abaixo), Strategic
+ * Goals, Operational Domains (seções por domínio), Priority Decision
+ * Queue (v1.9) e Recent/Relevant Initiatives. Prioridade visual para
+ * exceções — nenhum painel genérico de métricas.
  */
 export function DirectorDashboard() {
   const { data, isLoading, isError, refetch } = useDirectorBrief();
@@ -47,6 +50,8 @@ export function DirectorDashboard() {
         ) : null}
       </Card>
 
+      <GoalsOverviewSection />
+
       <div className="grid gap-4 md:grid-cols-2">
         {DOMAIN_ORDER.map((domain) => (
           <DomainSection key={domain} domain={domain} signals={brief.domains[domain]} />
@@ -54,6 +59,8 @@ export function DirectorDashboard() {
       </div>
 
       <DecisionQueue />
+
+      <RecentInitiativesSection />
     </div>
   );
 }

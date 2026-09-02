@@ -374,6 +374,18 @@ const defaultPermissions = [
     description:
       'Permite reconhecer, atribuir, dispensar e sincronizar itens da Director Decision Queue. Leitura segue em agents.read; propor ação segue em agents.use + agents.plan.',
   },
+  {
+    name: 'Gerenciar Goals estratégicos do Diretor',
+    slug: 'agents.director.goals.manage',
+    description:
+      'Permite criar/editar Goals, adicionar métricas, ativar/pausar/cancelar e disparar avaliação (Agentes v2.0). Leitura segue em agents.read.',
+  },
+  {
+    name: 'Gerenciar Initiatives do Diretor',
+    slug: 'agents.director.initiatives.manage',
+    description:
+      'Permite criar/editar, aprovar, cancelar e concluir Initiatives (Agentes v2.0). Leitura segue em agents.read; propor Action Plan segue em agents.use + agents.plan.',
+  },
 
   {
     name: 'Visualizar usuários',
@@ -645,6 +657,18 @@ const defaultAgentTools = [
     requiresApproval: false,
   },
   {
+    name: 'Avaliar Goals estratégicos do Diretor',
+    slug: 'director-review-goals',
+    description:
+      'Avalia Goals ativos (progresso, health) e gera recomendações de Initiative quando aplicável, de forma determinística e deduplicada (Agentes v2.0).',
+    department: 'director',
+    autonomyLevel: 'execute',
+    handler: 'director.review_goals',
+    risk: 'low',
+    mutatesData: true,
+    requiresApproval: false,
+  },
+  {
     name: 'Resumo do funil de vendas',
     slug: 'sales-get-pipeline-summary',
     description: 'Contagem e valor estimado de leads por estágio do pipeline.',
@@ -871,7 +895,12 @@ const defaultAgentTools = [
 // agentSlug → handlers das tools que este agente pode usar (seção 37 —
 // associar apenas tools apropriadas a cada agente).
 const defaultAgentToolPermissions: Record<string, string[]> = {
-  director: ['director.get_business_overview', 'director.generate_daily_brief', 'director.sync_decision_queue'],
+  director: [
+    'director.get_business_overview',
+    'director.generate_daily_brief',
+    'director.sync_decision_queue',
+    'director.review_goals',
+  ],
   sales: [
     'sales.get_pipeline_summary',
     'sales.list_open_leads',

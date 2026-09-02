@@ -14,8 +14,11 @@ import {
   eventDeliveryStatusLabel,
   eventStatusLabel,
   executionStatusLabel,
+  goalHealthLabel,
+  goalStatusLabel,
   humanVerdictLabel,
   incidentTypeLabel,
+  initiativeStatusLabel,
   interpretationCategoryLabel,
   interpretationErrorTypeLabel,
   jobRunStatusLabel,
@@ -35,8 +38,11 @@ import type {
   EventDeliveryStatus,
   EventStatus,
   ExecutionStatus,
+  GoalHealth,
+  GoalStatus,
   HumanVerdict,
   IncidentType,
+  InitiativeStatus,
   InterpretationCategory,
   InterpretationError,
   JobRunStatus,
@@ -361,6 +367,57 @@ export function DecisionStatusBadge({ status }: { status: DecisionStatus }) {
   return (
     <Badge variant="secondary" className={cn("border-transparent", DECISION_STATUS_STYLES[status])}>
       {decisionStatusLabel(status)}
+    </Badge>
+  );
+}
+
+// Agentes v2.0 — Director Goals, Initiatives & Executive Planning (correio.md).
+const GOAL_HEALTH_STYLES: Record<GoalHealth, string> = {
+  on_track: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  attention: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  at_risk: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  critical: "bg-red-500/10 text-red-700 dark:text-red-400",
+  unknown: "bg-muted text-muted-foreground",
+};
+
+export function GoalHealthBadge({ health }: { health: GoalHealth }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", GOAL_HEALTH_STYLES[health])}>
+      {goalHealthLabel(health)}
+    </Badge>
+  );
+}
+
+const GOAL_STATUS_STYLES: Record<GoalStatus, string> = {
+  draft: "bg-muted text-muted-foreground",
+  active: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  paused: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  achieved: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  missed: "bg-red-500/10 text-red-700 dark:text-red-400",
+  cancelled: "bg-muted text-muted-foreground line-through",
+};
+
+export function GoalStatusBadge({ status }: { status: GoalStatus }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", GOAL_STATUS_STYLES[status])}>
+      {goalStatusLabel(status)}
+    </Badge>
+  );
+}
+
+const INITIATIVE_STATUS_STYLES: Record<InitiativeStatus, string> = {
+  proposed: "bg-muted text-muted-foreground",
+  approved: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  active: "bg-violet-500/10 text-violet-700 dark:text-violet-400",
+  blocked: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  completed: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  cancelled: "bg-muted text-muted-foreground line-through",
+};
+
+export function InitiativeStatusBadge({ status }: { status: InitiativeStatus }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", INITIATIVE_STATUS_STYLES[status])}>
+      {initiativeStatusLabel(status)}
     </Badge>
   );
 }

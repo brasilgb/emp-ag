@@ -1,6 +1,7 @@
 import { collectAgentsSignals } from './collectors/agents.js';
 import { collectCrmSignals } from './collectors/crm.js';
 import { collectFinanceSignals } from './collectors/finance.js';
+import { collectGoalsSignals } from './collectors/goals.js';
 import { collectProjectsSignals } from './collectors/projects.js';
 import { collectSupportSignals } from './collectors/support.js';
 import type { OperationalSignal, SignalDomain } from './types.js';
@@ -16,12 +17,25 @@ export interface CollectSignalsResult {
   errors: SignalSourceError[];
 }
 
+/**
+ * Agentes v2.0 (correio.md seção 12) — sinais de saúde de Goals somam-se
+ * aos sinais de infraestrutura de agentes sob o MESMO domínio `agents`
+ * (uma única entrada em COLLECTORS, não duas): assim, qualquer falha na
+ * consulta de Goals ou de incidentes/jobs marca o domínio inteiro como
+ * "falhou nesta coleta" e preserva TODOS os itens `agents` existentes na
+ * fila (correio.md v1.9 seção 7), em vez de dois erros redundantes.
+ */
+async function collectAgentsDomainSignals(now: Date): Promise<OperationalSignal[]> {
+  const [agentsSignals, goalsSignals] = await Promise.all([collectAgentsSignals(now), collectGoalsSignals(now)]);
+  return [...agentsSignals, ...goalsSignals];
+}
+
 const COLLECTORS: { domain: SignalDomain; collect: (now: Date) => Promise<OperationalSignal[]> }[] = [
   { domain: 'crm', collect: collectCrmSignals },
   { domain: 'projects', collect: collectProjectsSignals },
   { domain: 'finance', collect: collectFinanceSignals },
   { domain: 'support', collect: collectSupportSignals },
-  { domain: 'agents', collect: collectAgentsSignals },
+  { domain: 'agents', collect: collectAgentsDomainSignals },
 ];
 
 /**

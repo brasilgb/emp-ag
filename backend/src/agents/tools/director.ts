@@ -7,6 +7,7 @@ import { getProjectsOverviewCounts } from '../../routes/projects/projects.js';
 import { getSupportOverviewCounts } from '../../routes/support/stats.js';
 import { getDailyOperationsBrief } from '../director/operations-service.js';
 import { syncDirectorDecisionQueue } from '../director/decisions/sync-service.js';
+import { reviewDirectorGoals } from '../director/goals/review-service.js';
 import { registerTool } from '../tool-registry.js';
 import type { ToolDefinition } from '../types.js';
 
@@ -114,8 +115,35 @@ export const directorSyncDecisionQueue: ToolDefinition<Record<string, never>> = 
   },
 };
 
+// director.review_goals (WRITE) — Agentes v2.0 (correio.md seção 13):
+// mesma decisão arquitetural da seção 21/v1.9 — avaliar Goals e gerar
+// recomendações de Initiative é uma escrita real (atualiza
+// agent_director_goals/agent_director_goal_evaluations, pode inserir
+// agent_director_initiatives), então nunca modifica silenciosamente uma
+// tool READ existente. Tool nova, mutatesData=true, risk='low' (mesmo
+// racional de director.sync_decision_queue — bookkeeping determinístico
+// interno do próprio módulo). NÃO sincroniza a Decision Queue aqui —
+// isso continua exclusivo de director.sync_decision_queue; o
+// collectGoalsSignals (seção 12) lê o health já persistido por esta
+// tool na PRÓXIMA sincronização, sem acoplamento direto entre as duas.
+export const directorReviewGoals: ToolDefinition<Record<string, never>> = {
+  handler: 'director.review_goals',
+  requiredPermission: 'agents.director.goals.manage',
+  inputSchema: emptyInput,
+  async run() {
+    const summary = await reviewDirectorGoals();
+
+    return {
+      success: true,
+      summary: `Goals avaliados: ${summary.evaluated} · ${summary.recommendationsCreated} nova(s) recomendação(ões) de iniciativa.`,
+      data: summary,
+    };
+  },
+};
+
 export function registerDirectorTools() {
   registerTool(directorGetBusinessOverview);
   registerTool(directorGenerateDailyBrief);
   registerTool(directorSyncDecisionQueue);
+  registerTool(directorReviewGoals);
 }

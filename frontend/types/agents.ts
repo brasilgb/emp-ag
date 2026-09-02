@@ -738,3 +738,142 @@ export interface DecisionSyncSummary {
   unchanged: number;
   errors: { domain: SignalDomain; code: string; message: string }[];
 }
+
+// Agentes v2.0 — Director Goals, Initiatives & Executive Planning (correio.md).
+export const GOAL_STATUSES = ["draft", "active", "paused", "achieved", "missed", "cancelled"] as const;
+export type GoalStatus = (typeof GOAL_STATUSES)[number];
+
+export const GOAL_HEALTHS = ["on_track", "attention", "at_risk", "critical", "unknown"] as const;
+export type GoalHealth = (typeof GOAL_HEALTHS)[number];
+
+export const GOAL_TARGET_TYPES = ["metric", "milestone"] as const;
+export type GoalTargetType = (typeof GOAL_TARGET_TYPES)[number];
+
+export const METRIC_DIRECTIONS = ["increase", "decrease", "maintain"] as const;
+export type MetricDirection = (typeof METRIC_DIRECTIONS)[number];
+
+export const INITIATIVE_STATUSES = ["proposed", "approved", "active", "blocked", "completed", "cancelled"] as const;
+export type InitiativeStatus = (typeof INITIATIVE_STATUSES)[number];
+
+export type InitiativeOrigin = "manual" | "director_recommendation";
+export type GoalPriority = "low" | "medium" | "high" | "critical";
+
+export interface GoalHealthFactors {
+  progressPercent: number;
+  timeElapsedPercent: number;
+  deviation: number;
+  daysRemaining: number;
+  isOverdue: boolean;
+}
+
+export interface DirectorGoal {
+  id: number;
+  title: string;
+  description: string;
+  domain: SignalDomain;
+  status: GoalStatus;
+  priority: GoalPriority;
+  ownerUserId: number | null;
+  createdBy: number;
+  startDate: string;
+  targetDate: string;
+  completedAt: string | null;
+  cancelledAt: string | null;
+  cancellationReason: string | null;
+  targetType: GoalTargetType;
+  targetValue: string | null;
+  currentValue: string | null;
+  unit: string | null;
+  progressPercent: number;
+  health: GoalHealth;
+  lastEvaluatedAt: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GoalMetric {
+  id: number;
+  goalId: number;
+  metricKey: string;
+  label: string;
+  sourceDomain: SignalDomain;
+  targetValue: string;
+  currentValue: string | null;
+  unit: string | null;
+  direction: MetricDirection;
+  weight: number;
+  lastEvaluatedAt: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GoalEvaluation {
+  id: number;
+  goalId: number;
+  evaluatedAt: string;
+  progressPercent: number;
+  health: GoalHealth;
+  metricSnapshot: {
+    metricKey: string;
+    currentValue: number;
+    targetValue: number;
+    direction: MetricDirection;
+    weight: number;
+    progressPercent: number;
+  }[];
+  factors: GoalHealthFactors;
+  createdAt: string;
+}
+
+export interface DirectorInitiative {
+  id: number;
+  goalId: number;
+  title: string;
+  description: string;
+  domain: SignalDomain;
+  status: InitiativeStatus;
+  priority: GoalPriority;
+  rationale: string;
+  expectedImpact: string | null;
+  origin: InitiativeOrigin;
+  recommendationKey: string | null;
+  ownerUserId: number | null;
+  createdBy: number | null;
+  actionPlanId: number | null;
+  startedAt: string | null;
+  targetDate: string | null;
+  completedAt: string | null;
+  cancelledAt: string | null;
+  cancellationReason: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface GoalDetail {
+  goal: DirectorGoal;
+  metrics: GoalMetric[];
+  evaluations: GoalEvaluation[];
+  initiatives: DirectorInitiative[];
+}
+
+export interface GoalsOverview {
+  generatedAt: string;
+  activeTotal: number;
+  critical: DirectorGoal[];
+  atRisk: DirectorGoal[];
+  attention: DirectorGoal[];
+  deadlineNear: DirectorGoal[];
+  withoutOwner: DirectorGoal[];
+}
+
+export interface MetricCatalogEntry {
+  key: string;
+  domain: SignalDomain;
+  label: string;
+  unit: string;
+  description: string;
+  defaultDirection: MetricDirection;
+}

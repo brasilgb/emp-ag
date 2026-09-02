@@ -23,14 +23,24 @@ import type {
   DecisionStatus,
   DecisionSyncSummary,
   DirectorDecision,
+  DirectorGoal,
+  DirectorInitiative,
   EventCatalogEntry,
   EventFilters,
   EventStatus,
   ExecutionStatus,
   GlobalAutonomyState,
+  GoalDetail,
+  GoalHealth,
+  GoalMetric,
+  GoalPriority,
+  GoalStatus,
+  GoalsOverview,
+  GoalTargetType,
   HumanVerdict,
   Incident,
   IncidentType,
+  InitiativeStatus,
   InterpreterStats,
   JobRunLineage,
   JobRunStatus,
@@ -38,6 +48,8 @@ import type {
   JobStatus,
   DailyOperationsBrief,
   JobTriggerType,
+  MetricCatalogEntry,
+  MetricDirection,
   OperationalSignal,
   OperationsSummary,
   ProposeActionResult,
@@ -470,4 +482,138 @@ export function proposeDecisionAction(
   id: number,
 ): Promise<{ data: { decision: DirectorDecision; plan: ActionPlan; items: ActionPlanItem[] } }> {
   return apiFetch(`/api/agents/director/decisions/${id}/propose`, { method: "POST", body: JSON.stringify({}) });
+}
+
+// Agentes v2.0 — Director Goals, Initiatives & Executive Planning (correio.md).
+export interface ListGoalsParams {
+  page?: number;
+  limit?: number;
+  status?: GoalStatus;
+  domain?: SignalDomain;
+  health?: GoalHealth;
+  ownerUserId?: number;
+}
+
+export function listDirectorGoals(params: ListGoalsParams = {}): Promise<Paginated<DirectorGoal>> {
+  return apiFetch(`/api/agents/director/goals${toQueryString({ ...params })}`);
+}
+
+export function getDirectorGoalsOverview(): Promise<{ data: GoalsOverview }> {
+  return apiFetch("/api/agents/director/goals/overview");
+}
+
+export function getGoalMetricCatalog(): Promise<{ data: MetricCatalogEntry[] }> {
+  return apiFetch("/api/agents/director/goals/metrics/catalog");
+}
+
+export interface CreateGoalInput {
+  title: string;
+  description: string;
+  domain: SignalDomain;
+  priority?: GoalPriority;
+  ownerUserId?: number;
+  startDate: string;
+  targetDate: string;
+  targetType?: GoalTargetType;
+  targetValue?: number;
+  unit?: string;
+}
+
+export function createDirectorGoal(input: CreateGoalInput): Promise<{ data: DirectorGoal }> {
+  return apiFetch("/api/agents/director/goals", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function getDirectorGoal(id: number): Promise<{ data: GoalDetail }> {
+  return apiFetch(`/api/agents/director/goals/${id}`);
+}
+
+export interface UpdateGoalInput {
+  title?: string;
+  description?: string;
+  priority?: GoalPriority;
+  ownerUserId?: number | null;
+  targetDate?: string;
+  targetValue?: number | null;
+  currentValue?: number | null;
+  unit?: string | null;
+}
+
+export function updateDirectorGoal(id: number, input: UpdateGoalInput): Promise<{ data: DirectorGoal }> {
+  return apiFetch(`/api/agents/director/goals/${id}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function activateDirectorGoal(id: number): Promise<{ data: DirectorGoal }> {
+  return apiFetch(`/api/agents/director/goals/${id}/activate`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function pauseDirectorGoal(id: number): Promise<{ data: DirectorGoal }> {
+  return apiFetch(`/api/agents/director/goals/${id}/pause`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function cancelDirectorGoal(id: number, reason: string): Promise<{ data: DirectorGoal }> {
+  return apiFetch(`/api/agents/director/goals/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
+}
+
+export function evaluateDirectorGoal(id: number): Promise<{ data: { goal: DirectorGoal; evaluation: unknown } }> {
+  return apiFetch(`/api/agents/director/goals/${id}/evaluate`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function addGoalMetric(
+  goalId: number,
+  input: { metricKey: string; targetValue: number; weight?: number; direction?: MetricDirection },
+): Promise<{ data: GoalMetric }> {
+  return apiFetch(`/api/agents/director/goals/${goalId}/metrics`, { method: "POST", body: JSON.stringify(input) });
+}
+
+export interface ListInitiativesParams {
+  page?: number;
+  limit?: number;
+  goalId?: number;
+  status?: InitiativeStatus;
+}
+
+export function listDirectorInitiatives(params: ListInitiativesParams = {}): Promise<Paginated<DirectorInitiative>> {
+  return apiFetch(`/api/agents/director/initiatives${toQueryString({ ...params })}`);
+}
+
+export interface DirectorInitiativeDetail {
+  initiative: DirectorInitiative;
+  pendingApproval: AgentApproval | null;
+}
+
+export function getDirectorInitiative(id: number): Promise<{ data: DirectorInitiativeDetail }> {
+  return apiFetch(`/api/agents/director/initiatives/${id}`);
+}
+
+export interface CreateInitiativeInput {
+  title: string;
+  description: string;
+  domain: SignalDomain;
+  priority?: GoalPriority;
+  rationale: string;
+  expectedImpact?: string;
+  ownerUserId?: number;
+  targetDate?: string;
+}
+
+export function createDirectorInitiative(goalId: number, input: CreateInitiativeInput): Promise<{ data: DirectorInitiative }> {
+  return apiFetch(`/api/agents/director/goals/${goalId}/initiatives`, { method: "POST", body: JSON.stringify(input) });
+}
+
+export function approveDirectorInitiative(id: number): Promise<{ data: DirectorInitiative }> {
+  return apiFetch(`/api/agents/director/initiatives/${id}/approve`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function cancelDirectorInitiative(id: number, reason: string): Promise<{ data: DirectorInitiative }> {
+  return apiFetch(`/api/agents/director/initiatives/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
+}
+
+export function completeDirectorInitiative(id: number): Promise<{ data: DirectorInitiative }> {
+  return apiFetch(`/api/agents/director/initiatives/${id}/complete`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function proposeInitiativeAction(
+  id: number,
+): Promise<{ data: { initiative: DirectorInitiative; plan: ActionPlan; items: ActionPlanItem[] } }> {
+  return apiFetch(`/api/agents/director/initiatives/${id}/propose`, { method: "POST", body: JSON.stringify({}) });
 }
