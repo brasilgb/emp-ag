@@ -1,7 +1,7 @@
-# Agentes v2.4 — Workflow Recovery, Reconciliation & Operational Resilience
+# Agentes v2.5 — Operational Supervision & Autonomous Incident Response
 
-Relatório de entrega da v2.4, conforme `correio.md` seção 31 ("Relatório
-final"), 30 itens obrigatórios. **NENHUM COMMIT foi feito** — todas as
+Relatório de entrega da v2.5, conforme `correio.md` seção 33 ("Relatório
+final"), 32 itens obrigatórios. **NENHUM COMMIT foi feito** — todas as
 alterações permanecem no working tree, aguardando autorização final do
 Diretor/CEO.
 
@@ -9,527 +9,540 @@ Diretor/CEO.
 
 ## 1. Resumo
 
-Implementado um mecanismo genérico de detecção e reconciliação de
-workflows "stale" — claims persistidos (`Initiative.status='active'`,
-`agent_executive_reviews.status='draft'`, `agent_strategic_memories.status='draft'`)
-que sobrevivem a um crash do processo entre o claim e a
-conclusão/compensação normal. Nenhum segundo Executor/Planner/Approval
-Workflow/Policy Evaluator foi criado — o recovery só devolve cada
-entidade a um estado do qual o pipeline OFICIAL já existente pode
-retomar sozinho, ou escala para atenção humana quando não há como
-reconciliar com segurança.
+Implementada uma camada de supervisão operacional que responde à
+pergunta "existe alguma condição operacional que exija observação,
+recuperação segura, redução de autonomia ou intervenção humana?" —
+inteiramente coordenando mecanismos JÁ EXISTENTES (Jobs/Runs, Event
+Engine, Approvals, Director Decision Queue, Recovery v2.4, Circuit
+Breaker/autonomy, audit logs). Nenhum segundo Executor, scheduler,
+Circuit Breaker, Decision Queue ou mecanismo de recovery foi criado.
+**Nenhuma decisão é tomada por LLM** — o Response Policy inteiro é uma
+tabela de decisão determinística, testada exaustivamente sem mock.
 
-## 2. Problema estrutural resolvido
+## 2. Mapa operacional encontrado
 
-Nas v2.1/v2.2/v2.3, cada serviço (`startInitiativeExecution`,
-`generateExecutiveReview`, `createStrategicMemoryFromReview`) já
-compensa corretamente em **exceções JavaScript normais** (bloco `catch`
-reverte o claim). O problema desta versão é distinto: se o **processo**
-morrer (crash de container, OOM kill, deploy interrompendo o pod) entre
-o claim persistido e a conclusão/`catch`, nenhum código roda para
-compensar — o estado transitório fica órfão indefinidamente, bloqueando
-o slot único (unique constraint) daquela entidade para sempre. A v2.4
-detecta e reconcilia esses órfãos de fora, sem exigir que o processo que
-os criou ainda exista.
+Revisão do código real feita ANTES de implementar (seção 31), com uma
+descoberta arquitetural central: **já existia um "Incident Center"**
+(v1.6, `agents/incidents/service.ts` + `routes/agents/incidents.ts`,
+permission `agents.incidents.read`) que já deriva `job_repeated_failure`
+e `event_delivery_failed` a partir de `agent_job_runs`/
+`agent_event_deliveries`/`agent_autonomy_blocks` — exatamente parte do
+que a v2.5 pede. **Reaproveitado diretamente** (`listIncidents()`),
+nunca reimplementado.
 
-## 3. Workflows mapeados
+| fonte real | estado transitório/degradação | mecanismo de detecção já existente | reaproveitado como |
+|---|---|---|---|
+| `agent_jobs`/`agent_job_runs` | falhas consecutivas | `incidents/service.ts:fetchRepeatedFailureIncidents` (usa `circuit.failureThreshold`) | signal `job_repeated_failure` |
+| `agent_job_runs` | Run preso (`queued/planning/running/waiting_approval` antigo) | **nenhum** — novo detector | signal `run_stuck` |
+| `agent_event_deliveries` | delivery falhada | `incidents/service.ts:fetchEventDeliveryFailedIncidents` | signal `delivery_failure` |
+| `agent_jobs.circuit_state` | circuito aberto | leitura direta (mais precisa que a projeção histórica de `agent_autonomy_blocks`) | signal `autonomy_circuit_open` |
+| `agent_approvals` | pendente há muito tempo | **nenhum** — novo detector | signal `approval_bottleneck` |
+| `agent_director_decisions` | `requires_human_attention=true`, `domain='agents'`, aberta | já existe desde v1.9/v2.4 (inclui `agents.recovery.*`) | signal `manual_attention_pending` |
+| `settings` (kill switch) | autonomia global desabilitada | `agents/jobs/global-switch.ts` (v1.3) | signal `autonomy_disabled_globally` |
+| Recovery v2.4 | workflow stale | `recovery/detector.ts:scanStaleWorkflows` | signal `workflow_stale` |
 
-| entity | transitional state | terminal states | claim timestamp usado | expected next transition | retry existente |
-|---|---|---|---|---|---|
-| `agent_director_initiatives` | `status='active'` sem `action_plan_id` | `approved, blocked, completed, cancelled` | `updated_at` | `active` (com plano) → segue fluxo normal | `POST .../propose` (v2.1, idempotente) |
-| `agent_executive_reviews` | `status='draft'` | `completed, superseded` | `updated_at` | `completed` | `POST .../review` (v2.2, idempotente) |
-| `agent_strategic_memories` | `status='draft'` | `active, superseded, archived` | `updated_at` | `active` | `POST .../memory` (v2.3, idempotente) |
+Documentado em código (docblocks de `signals.ts`), não só aqui.
 
-Nenhuma coluna nova foi necessária — `updated_at` já existe nas 3
-tabelas e já é atualizado exatamente no momento do claim (seção 3:
-"preferir utilizar timestamps já existentes").
-
-Mapeamento adicional real, encontrado ao revisar o fluxo de
-`startInitiativeExecution` (seção 7, "não inventar sem ler o código
-real"): existe uma SEGUNDA janela de crash para Initiative — durante a
-avaliação do Action Plan pelo Policy Evaluator (`agent_action_plans.status='evaluating'`
-travado) — documentada e tratada como Caso C (item 8 abaixo).
-
-## 4. Arquitetura de recovery
+## 3. Arquitetura
 
 ```
-agents/recovery/
-  types.ts                     — vocabulário (RecoveryResult, WorkflowType, StaleCandidate, RecoveryItemResult, RecoveryAdapter)
-  registry.ts                  — lista pequena dos 3 adapters
-  detector.ts                  — varre todos os adapters (best-effort por adapter)
-  recovery-service.ts          — runRecovery() / reconcileOne() / getRecoveryStatus()
-  manual-attention.ts          — escalação para a Director Decision Queue (reaproveitada)
-  initiative-recovery.ts       — adapter da Initiative
-  executive-review-recovery.ts — adapter da Executive Review
-  strategic-memory-recovery.ts — adapter da Strategic Memory
+agents/operations/
+  health-types.ts        — vocabulário (Signal, Incident, Response, Health, Report)
+  signals.ts              — collectOperationalSignals() — leitura pura, reaproveita v1.6/v2.4/v1.3/v1.9
+  incidents.ts            — classifyIncidents() — correlação/dedup determinística, pura
+  response-policy.ts      — evaluateResponsePolicy() — tabela de decisão pura, SEM LLM
+  manual-attention.ts     — escalateIncidentToManualAttention() — reaproveita Decision Queue
+  safe-actions.ts         — applySafeRecovery() (chama Recovery v2.4), restrictJobAutonomy() (mesmo kill switch v1.5)
+  health-service.ts       — getOperationalHealth() — snapshot só-leitura
+  supervisor-service.ts   — runOperationalSupervision() — orquestra tudo, aplica respostas
 ```
 
-O core (`recovery-service.ts`/`detector.ts`) NUNCA importa nada de
-`db/schema` diretamente — só chama `adapter.detectStale()`/
-`adapter.reconcile()` de cada item do `registry.ts` (seção 5: "o core não
-deve conhecer detalhes internos de todas as tabelas").
+Fluxo real (seção 2): `signals → classify → policy → {observe|safe_recovery|restrict_autonomy|manual_attention|already_handled} → mecanismo oficial`.
+Nenhuma camada decide "executar tool arbitrária" — estruturalmente
+impossível: nenhum destes arquivos importa `executor/`, `tool-registry`
+ou o LLM.
 
-## 5. Definição de stale
+## 4. Fontes de sinais
 
-Nunca `status === 'draft'`/`'active'` sozinho (seção 3). Cada adapter
-usa `updated_at < now() - thresholdSeconds` **combinado** com o status
-transitório real:
+Ver mapa da seção 2. Todas as 8 fontes pedidas pela seção 3 foram
+cobertas com pelo menos um detector real — nenhuma inventada.
 
-- Initiative: `status='active' AND updated_at < staleBefore` — e depois
-  se ramifica conforme `action_plan_id` (Caso A/B/C, ver item 8).
-- Executive Review: `status='draft' AND updated_at < staleBefore`.
-- Strategic Memory: `status='draft' AND updated_at < staleBefore`.
+## 5. Signal types
 
-Provado por teste que um workflow em execução normal (recente) NUNCA é
-confundido com stale (itens 2/4/6 da seção 24).
+`workflow_stale, job_repeated_failure, run_stuck, delivery_failure,
+autonomy_circuit_open, approval_bottleneck, manual_attention_pending,
+autonomy_disabled_globally` (8, `health-types.ts`). Nunca secrets/tokens/
+stack traces — cada `metadata` é montado campo-a-campo pelo coletor,
+nunca um erro bruto repassado.
 
-## 6. Configuração/threshold
+## 6. Incident types
 
-`AGENT_WORKFLOW_STALE_AFTER_SECONDS` (`config/env.ts`) — default 900s
-(15min), mínimo 60s (nunca tão curto a ponto de confundir um claim em
-andamento com órfão), validado via o helper `positiveIntEnv` já
-existente (mesmo padrão de `AGENT_AUTONOMY_CIRCUIT_COOLDOWN_SECONDS`).
-Getter (não valor capturado no import) — testes conseguem passar um
-`thresholdSeconds` explícito para cada chamada (`detectStale`,
-`reconcile`, `runRecovery`, `getRecoveryStatus`), sem precisar mutar
-`process.env` — nenhum threshold hardcoded/mágico em nenhum lugar do
-código de produção.
+Os 9 sugeridos pela seção 6, reduzidos a 8 reais + mapeamento
+documentado (`incidents.ts`): `workflow_stale` (signal) → incident
+`recovery_required`; `manual_attention_pending` → `manual_attention_required`;
+`autonomy_disabled_globally` → `operational_degradation`; os demais
+mantêm o nome. `operational_degradation` cobre especificamente a
+autonomia global desabilitada — o único caso real de degradação de
+escopo GLOBAL (não específica de uma entidade) encontrado no código.
 
-## 7. Registry/adapters
+## 7. Severity
 
-`registry.ts` exporta `RECOVERY_ADAPTERS: readonly RecoveryAdapter[]` —
-uma lista simples, sem lógica. Cada adapter (`RecoveryAdapter` em
-`types.ts`) implementa exatamente dois métodos: `detectStale(thresholdSeconds)`
-e `reconcile(candidate, params)`. Adicionar um workflow recuperável no
-futuro é só implementar essa interface e adicionar à lista — nenhuma
-mudança no core.
+Determinística, nunca escolhida por LLM (seção 7): `job_repeated_failure`
+e `autonomy_circuit_open` são sempre `critical` (risco de loop/perda de
+controle de autonomia, exatamente os exemplos da seção 7);
+`run_stuck`/`delivery_failure`/`approval_bottleneck`/`workflow_stale`/
+`autonomy_disabled_globally` são `warning`; `manual_attention_pending`
+herda a severidade real do Decision Item de origem. Um incidente
+correlacionado usa a MAIOR severidade entre seus sinais.
 
-## 8. Initiative recovery
+## 8. Health calculation
 
-Revisão do fluxo real de `startInitiativeExecution` (v2.1) feita antes
-de implementar (seção 7). Três casos:
+`getOperationalHealth()` — sob demanda, nunca persistido (seção 4):
+`collectOperationalSignals` (leitura) → `classifyIncidents` (pura) →
+`buildRecommendations` (Response Policy + 1 query em lote para contexto
+de `repeated_job_failure`). `status` por prioridade determinística:
+`restricted` (autonomia restrita agora — circuito aberto, kill switch
+global, ou Job desabilitado) > `attention_required` (crítico ou atenção
+manual pendente) > `degraded` (algum incidente) > `healthy`.
 
-- **Caso A (não-stale, sem código):** `active` + Action Plan vinculado
-  em status normal → NÃO aparece na lista de stale (o check-on-read
-  existente, `syncInitiativeExecutionState`, já cuida disso sozinho).
-- **Caso B (implementado — `reverted`):** `active` sem Action Plan e
-  antiga → `UPDATE ... SET status='approved', started_at=null WHERE id=?
-  AND status='active' AND action_plan_id IS NULL AND updated_at <
-  staleBefore RETURNING`. Exatamente a MESMA compensação que o `catch`
-  de `startInitiativeExecution` teria feito se tivesse tido a chance de
-  rodar. Nunca cria Action Plan (seção 7). Retry seguro via
-  `POST .../propose` (pipeline oficial).
-- **Caso C (implementado — `manual_attention`, encontrado ao ler o
-  código real):** `active` + Action Plan vinculado, mas o Action Plan
-  ficou preso em `status='evaluating'` (o valor inicial, só avança
-  quando todos os itens são avaliados) — evidência de um crash NO MEIO
-  da avaliação do Policy Evaluator. Decidir sozinho o que fazer exigiria
-  adivinhar quais itens já foram avaliados — proibido pela seção 7
-  ("não tentar adivinhar"). Escalado para a Director Decision Queue,
-  NENHUMA linha (Initiative nem Action Plan) é tocada.
+## 9. Response policy
 
-**Limitação real documentada** (item 30): um crash EXATAMENTE entre
-`executeActionPlan()` terminar e a transação final de vínculo
-(`action_plan_id`) roda é indistinguível do Caso B pela detecção atual —
-tratado como Caso B (Initiative volta para `approved`), deixando um
-Action Plan órfão (já criado/executado, nunca religado). Não adivinhado
-de propósito (seria "adivinhar", proibido pela seção 7).
+Tabela de decisão pura (`response-policy.ts`, `evaluateResponsePolicy`),
+zero I/O, zero LLM:
 
-## 9. Executive Review recovery
+| incident type | condição | resposta |
+|---|---|---|
+| `recovery_required` | sempre | `safe_recovery` |
+| `repeated_job_failure` | severity warning | `observe` |
+| `repeated_job_failure` | crítico + autonomia ligada | `restrict_autonomy` |
+| `repeated_job_failure` | crítico + autonomia JÁ restrita | `manual_attention` |
+| `run_stuck` | sempre | `observe` (nenhum recovery seguro nesta versão) |
+| `delivery_failure` | sempre | `observe` |
+| `autonomy_circuit_open` | sempre | `already_handled` (Circuit Breaker já agiu) |
+| `approval_bottleneck` | sempre | `observe` |
+| `manual_attention_required` | sempre | `already_handled` (já é um Decision Item aberto) |
+| `operational_degradation` | sempre | `observe` (nunca reativa autonomia global sozinho) |
 
-`status='draft' AND updated_at < staleBefore` →
-`DELETE ... WHERE id=? AND status='draft' AND updated_at < staleBefore
-RETURNING`. Resultado `reverted` (linha removida) ou `skipped` (0 linhas
-afetadas — já não estava mais draft/stale). **Nunca chama o LLM**
-(`executive-review-recovery.ts` não importa `llm/factory.ts` nem
-`reviews/executive-reviewer.ts`) — só libera o slot único de
-`action_plan_id`; a próxima chamada NORMAL a `POST .../review` gera a
-review de verdade.
+## 10. Safe recovery
 
-## 10. Strategic Memory recovery
+`applySafeRecovery()` chama `recovery/recovery-service.ts:reconcileOne`
+(v2.4) diretamente — nenhuma linha de tabela tocada por este módulo.
+Provado por teste real (`23: safe_recovery chama Recovery v2.4 de
+verdade`): uma review `draft` órfã inserida diretamente no banco é
+removida pela chamada de supervisão, através do MESMO caminho de código
+já testado exaustivamente na v2.4.
 
-Idêntico ao item 9, sobre `agent_strategic_memories` (`source_review_id`
-como slot único). **Nunca fabrica uma memória incompleta como `active`,
-nunca copia `lesson` de outro registro** (seção 9) — a única operação
-possível é `DELETE` do claim órfão.
+## 11. Autonomy restriction
 
-## 11. Regras de idempotência
+`restrictJobAutonomy()` escreve na MESMA coluna do kill switch por Job
+já existente (`agent_jobs.autonomy_enabled`, mesmo campo do `PATCH
+/agents/jobs/:id/autonomy` da v1.5) — nenhum segundo kill switch.
+Estruturalmente só reduz (a função não tem parâmetro para religar).
+`UPDATE ... WHERE id=? AND autonomy_enabled=true` — condicional, nunca
+incondicional (seção 18): um Job já restrito nunca sofre efeito
+duplicado (provado por teste de idempotência e de concorrência).
 
-Provado por teste (itens 14/15/16 da seção 24, "Idempotência/concorrência"):
-- Duas reconciliações concorrentes da MESMA entidade produzem exatamente
-  um `reverted`/`manual_attention` real e um `skipped` — nunca dois
-  efeitos.
-- Recovery repetido sobre uma entidade já reconciliada → `skipped`,
-  nunca um erro destrutivo (a linha já não existe/já mudou de status —
-  o predicado simplesmente não casa mais).
-- Entidade alterada por outro processo (ex.: completou normalmente)
-  ENTRE a detecção e a reconciliação → `skipped`, a entidade real
-  (agora `completed`/`active`) NUNCA é tocada.
+## 12. Manual attention
 
-## 12. Proteção concorrente
+`escalateIncidentToManualAttention()` reutiliza a Director Decision
+Queue (`agent_director_decisions`) — `domain='agents'`,
+`signalType='agents.operations.<tipo>'`, `requiresHumanAttention=true`.
+Deduplicação por `deduplicationKey` estável
+(`agents.operations.<tipo>::<entityType>::<entityId>`) + `ON CONFLICT
+DO NOTHING` — o mesmo incidente NUNCA cria uma segunda decisão a cada
+scan (provado por teste explícito de 3 scans seguidos).
 
-Nunca `SELECT → decidir → UPDATE/DELETE` desprotegido (seção 11). Todo
-`reconcile()` real usa `UPDATE`/`DELETE ... WHERE id=? AND status=<esperado>
-AND updated_at < staleBefore RETURNING` — uma única instrução SQL
-atômica; `RETURNING` prova qual chamada (se alguma) efetivamente venceu.
-Nenhum `SELECT ... FOR UPDATE` bloqueante, nenhum lock segurado durante
-I/O externo — o recovery desta versão nem faz I/O externo real (seção
-11: "idealmente recovery desta versão nem precisa fazer I/O externo" —
-cumprido: nenhum adapter chama LLM/tool/API externa).
+## 13. Correlation/deduplication
 
-## 13. Dry-run
+`classifyIncidents()` (`incidents.ts`) — determinística, sem ML, sem
+LLM (seção 13). Chave `${incidentType}:${entityType}:${entityId}` —
+múltiplos sinais do mesmo Job falhando viram UM incidente (provado por
+teste: 3 sinais → 1 incidente). Entidade diferente sempre produz
+incidente independente (também testado).
 
-`dryRun: boolean` propagado de `runRecovery()`/`reconcileOne()` até
-`adapter.reconcile()` — quando `true`, cada adapter retorna o resultado
-que SERIA aplicado (mesmo texto de `reason`, prefixado `dry_run:`) sem
-executar nenhum `UPDATE`/`DELETE`/`INSERT` real. Provado por teste:
-dry-run detecta os mesmos stale items, o banco permanece inalterado
-(linha `draft` continua existindo), nenhum audit de `reconciled` é
-emitido (só `scan.started`/`stale_detected`, que são sempre auditados
-independente de dry-run — são leituras, não mutações).
+## 14. Thresholds
 
-## 14. Manual attention
+Avaliados ANTES de criar (seção 14/31): `job_repeated_failure` reaproveita
+`circuit.failureThreshold` (mesmo valor do Circuit Breaker real, via
+`resolveGlobalSetting`, já usado pelo Incident Center v1.6 — NUNCA um
+segundo threshold divergente); `workflow_stale` reaproveita
+`AGENT_WORKFLOW_STALE_AFTER_SECONDS` (v2.4). Só 2 variáveis
+verdadeiramente novas, sem equivalente algum no código real:
+`AGENT_OPERATIONAL_STUCK_AFTER_SECONDS` (default 1800s, min 60) e
+`AGENT_OPERATIONAL_APPROVAL_WARNING_AFTER_SECONDS` (default 3600s, min
+60) — ambas via o helper `positiveIntEnv` já existente, getters (não
+capturadas no import, mesmo padrão de `AGENT_WORKFLOW_STALE_AFTER_SECONDS`).
 
-`escalateToManualAttention()` (`recovery/manual-attention.ts`) reutiliza
-a Director Decision Queue (`agent_director_decisions`, v1.9) — nenhuma
-segunda fila de incidentes. Diferenciado de uma decisão estratégica
-normal por: `domain='agents'` (já existente desde a v1.8), `signalType`
-sempre prefixado `agents.recovery.*`, título/descrição explícitos
-("Problema operacional de recovery"). Idempotente via
-`deduplicationKey` + `ON CONFLICT DO NOTHING` (mesmo padrão de
-`upsertSignal`, v1.9).
+## 15. Dry-run
 
-## 15. Integração com Decision Queue
+`dryRun` propagado até `adapter.reconcile()`/`restrictJobAutonomy()` —
+quando `true`, NENHUM `UPDATE`/`DELETE`/`INSERT` real acontece; cada
+resultado usa outcomes prefixados `would_*` (seção 16). Provado por
+teste: dry-run detecta os mesmos incidentes, reporta `would_recover`/
+`would_restrict_autonomy`, e o banco permanece bit-a-bit inalterado
+(review draft continua existindo, `autonomy_enabled` continua `true`).
 
-Único uso desta versão: Caso C da Initiative recovery (item 8). O
-Decision Item nasce `status='open'`, `requiresHumanAttention=true` — o
-CEO vê e trata pelo MESMO mecanismo já existente (`GET/POST
-/agents/director/decisions`), nenhuma tela nova de "incidentes de
-recovery".
+## 16. Concorrência
 
-## 16. Auditoria
+Nunca `SELECT → decisão em memória → UPDATE incondicional` (seção 18).
+`restrictJobAutonomy` usa `UPDATE ... WHERE autonomy_enabled=true
+RETURNING`; `safe_recovery` reaproveita os predicados condicionais já
+provados da v2.4; `manual_attention` reaproveita `ON CONFLICT DO
+NOTHING`. Provado por teste real: duas chamadas de
+`runOperationalSupervision` concorrentes sobre o MESMO Job falhando
+produzem exatamente UMA restrição real (auditoria com
+`triggeredBy=operational_supervisor` aparece exatamente uma vez).
 
-Implementados os 4 eventos sugeridos pela seção 14, ajustados aos fluxos
-reais:
-- `agents.recovery.scan.started` — a cada chamada de `runRecovery`
-  (dry-run ou real), com `{dryRun, thresholdSeconds}`.
-- `agents.recovery.stale_detected` — uma vez por item stale ENCONTRADO
-  (nunca por entidade saudável examinada, seção 14) — `{workflowType,
-  previousState, ageSeconds, problem, dryRun}`.
-- `agents.recovery.reconciled` — só em reconciliação REAL bem-sucedida
-  (`reverted`) — `{workflowType, previousState, ageSeconds, result,
-  reason}`.
-- `agents.recovery.manual_attention` — quando uma escalação acontece —
-  `{workflowType, previousState, ageSeconds, decisionId}`.
+## 17. Idempotência
 
-Nunca secrets. `entityId` sempre presente exceto no evento agregado de
-scan (que não tem uma entidade única).
+Executar o supervisor duas vezes sobre o mesmo estado nunca duplica
+efeito (seção 17) — provado por teste de 3 scans consecutivos: 1º
+restringe a autonomia, 2º (Job já restrito, falhas continuam) escala
+para `manual_attention` em vez de tentar restringir de novo, 3º não
+duplica o Decision Item já existente.
 
-## 17. Observabilidade/status
+## 18. Scheduler
 
-`getRecoveryStatus(thresholdSeconds?)` (calculado sob demanda, seção
-15 — nenhuma tabela nova): `staleTotal`, `byType` (contagem por
-`WorkflowType`), `oldest` (o candidato com maior `ageSeconds`),
-`manualAttentionPending` (contagem real de Decision Items abertos com
-`signalType LIKE 'agents.recovery.%'`), `lastScanAt`/`lastReconciledAt`
-— **derivados da trilha de auditoria JÁ existente** (`audit_logs`,
-`MAX(created_at)` dos eventos `scan.started`/`reconciled`) — nenhum
-estado novo persistido só para isto.
+Não integrado ao scheduler automático nesta entrega (seção 19: "só
+integrar se puder ser feito de forma pequena e segura... caso a
+integração aumente muito o escopo, deixar serviço pronto e documentar
+a ativação automática para v2.5.1"). `runOperationalSupervision()` é
+um serviço reutilizável e independente de transporte — chamável de
+dentro do scheduler de Jobs já existente
+(`agents/jobs/job-runner.ts`/o `setInterval` do scheduler v1.3) sem
+nenhuma mudança de contrato, quando a ativação automática for decidida.
+Nenhum cron interno concorrente, nenhum segundo scheduler, nenhum
+`setInterval` solto foi criado.
 
-## 18. API
+## 19. Auditoria
+
+Implementados os 7 eventos sugeridos (seção 21), ajustados ao fluxo
+real: `agents.operations.scan.started` (início, com `dryRun`),
+`agents.operations.incident.detected` (por incidente correlacionado —
+NUNCA por sinal bruto, "evitar dezenas de audit logs" seção 14/21),
+`agents.operations.safe_recovery`, `agents.operations.autonomy_restricted`,
+`agents.operations.manual_attention` (só quando a ação real acontece,
+nunca em dry-run), `agents.operations.scan.completed` (fim, com
+contagens). `agents.operations.signal.detected` (sugerido pela seção
+21) foi DELIBERADAMENTE OMITIDO — ver item 32 (limitações).
+
+## 20. API
 
 ```
-GET  /agents/recovery/status              agents.operations.read
-GET  /agents/recovery/stale               agents.operations.read
-POST /agents/recovery/run?dryRun=&thresholdSeconds=   agents.recovery.manage
-POST /agents/recovery/:type/:id?dryRun=   agents.recovery.manage
+GET  /agents/operations/health       agents.operations.read
+GET  /agents/operations/incidents    agents.operations.read
+POST /agents/operations/supervise?dryRun=  agents.operations.manage
 ```
 
-`POST /run` só executa a reconciliação segura desta versão — nunca
-dispara execução arbitrária de agente/tool (seção 16). `POST /:type/:id`
-implementado (seção 16: "somente se houver necessidade clara") — permite
-reconciliar manualmente UM item já identificado via `GET /stale`, sem
-esperar o próximo scan completo.
+`POST /:type/:id` individual (equivalente ao de Recovery v2.4) NÃO foi
+criado — nenhuma necessidade objetiva encontrada (seção 23: "só criar
+endpoints adicionais se houver necessidade objetiva"); reconciliação
+manual de item único já existe em `POST /agents/recovery/:type/:id`
+(v2.4), reaproveitável diretamente quando necessário. O endpoint de
+execução (`/supervise`) nunca aceita instrução livre do usuário — só
+`dryRun` (boolean); a política aplicada é sempre a codificada.
 
-## 19. Permissions
+## 21. Permissions
 
-Avaliado antes de criar (seção 17): `agents.manage` é "reservada para
-CRUD de agentes" (descrição já existente, não semanticamente adequada);
-`agents.autonomy.manage` é só o kill switch global. Nenhuma permission
-existente cobria "executar reconciliação administrativa de workflows" —
-criada `agents.recovery.manage` (justificada, protege `POST /run` e
-`POST /:type/:id`). Leitura (`GET /status`, `GET /stale`) reaproveita
-`agents.operations.read` — mesma natureza de observabilidade
-operacional do dashboard v1.8 (seção 17: "leitura pode usar permission
-mais ampla de observabilidade/admin"). Nenhuma permission nova para
-leitura. Authorization sempre no backend (`requirePermission()`).
+Leitura reaproveita `agents.operations.read` (mesma já usada por
+`/operations/summary` desde a v1.6 — mesma natureza de observabilidade).
+Execução: avaliado se `agents.recovery.manage` bastava (seção 22) —
+**não**: sua descrição já existente é explicitamente escopada a
+"reconciliação de workflows stale" (só Initiative/Review/Memory); o
+Supervisor também restringe autonomia de Job e escala incidentes mais
+amplos (Job failures, delivery failures, approval bottlenecks) — uma
+capacidade administrativa genuinamente mais ampla. Criada
+`agents.operations.manage`, justificada. Authorization sempre no
+backend (`requirePermission()`); frontend só esconde botões via
+`PermissionGate`, nunca é a barreira real.
 
-## 20. Frontend
+## 22. Frontend
 
-Nova página `/agents/recovery` (`RecoveryDashboard`) — tela
-administrativa/operacional (nunca apresentada como ferramenta diária):
+Reaproveitada a página `/agents/operations` JÁ EXISTENTE (v1.6) —
+**nunca criada uma segunda rota paralela** para "operações" (a sugestão
+da seção 24 colidiria exatamente com essa página real; decisão
+documentada em código). Nova seção "Supervisão Operacional" adicionada
+abaixo do dashboard v1.6 existente:
 
-- Card "Saúde dos workflows": stale total, por tipo (Initiatives/
-  Executive Reviews/Strategic Memories), mais antigo, atenção manual
-  pendente (destacado em âmbar quando > 0), último scan, última
-  reconciliação.
-- Card "Workflows stale": tabela Tipo/ID/Estado/Idade/Problema/Ação
-  proposta-resultado (seção 27) — populada por `GET /stale`.
-- "Simular recuperação" (dry-run, atrás de `PermissionGate agents.recovery.manage`,
-  sempre disponível sem confirmação — sem custo real) preenche a coluna
-  "Ação proposta" com o resultado simulado.
-- "Executar recuperação" abre um `Dialog` de confirmação explícita antes
-  de rodar de verdade (seção 26: "exibir confirmação adequada antes de
-  operação real").
-- Item "Recovery" adicionado à sub-navegação do módulo Agentes
-  (visível com `agents.operations.read`).
+- Card "Saúde operacional": status badge (Healthy/Degraded/Attention
+  Required/Restricted), incidentes ativos/críticos, stale workflows,
+  Jobs com falha, falhas de delivery, atenção humana pendente, gerado em.
+- Card "Incidentes": tabela Severity/Type/Entity/Problem/Detected/
+  Recommended response/Current state (seção 25).
+- "Simular supervisão" (dry-run, sem confirmação — seção 26) / "Executar
+  supervisão" (dialog de confirmação explícito, texto exato da seção
+  26: "poderá executar recoveries previamente autorizados, restringir
+  autonomia... criar itens de atenção humana", nunca "IA vai corrigir
+  tudo").
+- Ações atrás de `PermissionGate agents.operations.manage`; leitura
+  segue a permission já existente da página.
 
-## 21. Migrations
+## 23. Migrations
 
-**Nenhuma migration foi necessária** (seção 29: "evitar migration se
-timestamps/estados atuais forem suficientes") — `updated_at` já existe
-e já é atualizado corretamente nas 3 tabelas envolvidas nos momentos
-certos (claim). Nenhuma coluna nova foi criada por conveniência.
+**Nenhuma migration foi necessária** (seção 30: "evitar migration... se
+status e histórico puderem ser representados adequadamente"). Toda a
+observabilidade é derivada de tabelas/colunas já existentes
+(`agent_jobs`, `agent_job_runs`, `agent_event_deliveries`,
+`agent_approvals`, `agent_director_decisions`, `audit_logs`, tabelas da
+v2.4) — nenhuma tabela `operational_incidents` foi criada, exatamente a
+preferência da seção 20.
 
-## 22. Arquivos criados
+## 24. Arquivos criados
 
 Backend:
 ```
-backend/src/agents/recovery/types.ts
-backend/src/agents/recovery/registry.ts
-backend/src/agents/recovery/detector.ts
-backend/src/agents/recovery/recovery-service.ts
-backend/src/agents/recovery/manual-attention.ts
-backend/src/agents/recovery/initiative-recovery.ts
-backend/src/agents/recovery/executive-review-recovery.ts
-backend/src/agents/recovery/strategic-memory-recovery.ts
-backend/src/agents/recovery/schemas.ts
-backend/src/agents/recovery/adapters.test.ts
-backend/src/agents/recovery/recovery-service.test.ts
-backend/src/routes/agents/recovery.ts
-backend/src/routes/agents/recovery.test.ts
+backend/src/agents/operations/health-types.ts
+backend/src/agents/operations/signals.ts
+backend/src/agents/operations/incidents.ts
+backend/src/agents/operations/response-policy.ts
+backend/src/agents/operations/manual-attention.ts
+backend/src/agents/operations/safe-actions.ts
+backend/src/agents/operations/health-service.ts
+backend/src/agents/operations/supervisor-service.ts
+backend/src/agents/operations/incidents.test.ts
+backend/src/agents/operations/response-policy.test.ts
+backend/src/agents/operations/signals.test.ts
+backend/src/agents/operations/supervisor-service.test.ts
+backend/src/routes/agents/operations-supervisor.test.ts
 ```
 
 Frontend:
 ```
-frontend/app/(dashboard)/agents/recovery/page.tsx
-frontend/app/api/agents/recovery/status/route.ts
-frontend/app/api/agents/recovery/stale/route.ts
-frontend/app/api/agents/recovery/run/route.ts
-frontend/app/api/agents/recovery/[type]/[id]/route.ts
-frontend/components/agents/recovery/recovery-dashboard.tsx
-frontend/hooks/agents/use-recovery.ts
+frontend/app/api/agents/operations/health/route.ts
+frontend/app/api/agents/operations/incidents/route.ts
+frontend/app/api/agents/operations/supervise/route.ts
+frontend/components/agents/operations/operations-supervisor-dashboard.tsx
+frontend/hooks/agents/use-operations-supervisor.ts
 ```
 
-## 23. Arquivos alterados
+## 25. Arquivos alterados
 
 ```
-backend/src/config/env.ts             (+AGENT_WORKFLOW_STALE_AFTER_SECONDS)
-backend/src/db/seed.ts                (+permission agents.recovery.manage)
-backend/src/routes/agents/index.ts    (+registro de recoveryRoutes)
-frontend/components/agents/agents-sub-nav.tsx   (+item "Recovery")
-frontend/components/agents/status-badge.tsx     (+RecoveryResultBadge)
-frontend/lib/agents/derived.ts                  (+recoveryResultLabel, workflowTypeLabel, formatAgeSeconds)
-frontend/lib/agents/derived.test.ts             (+5 testes)
-frontend/lib/query/keys.ts                      (+recoveryStatus, recoveryStale)
-frontend/services/agents.ts                     (+getRecoveryStatus, getStaleWorkflows, runWorkflowRecovery, reconcileWorkflow)
-frontend/types/agents.ts                        (+RecoveryResult/WorkflowType/StaleCandidate/RecoveryItemResult/RecoveryReport/RecoveryStatus)
+backend/src/agents/operations/schemas.ts     (+superviseQuerySchema)
+backend/src/config/env.ts                     (+AGENT_OPERATIONAL_STUCK_AFTER_SECONDS, +AGENT_OPERATIONAL_APPROVAL_WARNING_AFTER_SECONDS)
+backend/src/db/seed.ts                        (+permission agents.operations.manage)
+backend/src/routes/agents/operations.ts       (+GET /health, +GET /incidents, +POST /supervise)
+frontend/app/(dashboard)/agents/operations/page.tsx  (+seção Supervisão Operacional)
+frontend/components/agents/status-badge.tsx   (+4 badges novos)
+frontend/lib/agents/derived.ts                (+4 famílias de label)
+frontend/lib/agents/derived.test.ts           (+10 testes)
+frontend/lib/query/keys.ts                    (+operationalHealth, operationalIncidents)
+frontend/services/agents.ts                   (+getOperationalHealth, getOperationalIncidents, runOperationalSupervision)
+frontend/types/agents.ts                      (+SupervisorSignal/OperationalIncident/OperationalHealth/OperationalSupervisionReport e vocabulário)
 ```
 
-## 24. Testes adicionados
+## 26. Testes adicionados
 
-Cobrindo os 28 itens da seção 24 do correio.md:
+Cobrindo os 37 itens da seção 28 do correio.md:
 
-- `agents/recovery/adapters.test.ts` (novo) — **20 testes**: detecção
-  (itens 1-6, incluindo Caso A e Caso C explícitos), reconciliação real
-  (itens 7-13), idempotência/concorrência (itens 14-16), segurança
-  (itens 17-20: nunca cria approval, nunca executa tool, nunca modifica
-  permission/Policy Evaluator).
-- `agents/recovery/recovery-service.test.ts` (novo) — **8 testes**:
-  dry-run (itens 22-24), relatório estruturado reconciliável
-  matematicamente, auditoria (itens 25-26), manual_attention visível
-  (item 27), status agregado (item 28), `reconcileOne` (item específico
-  + entidade não-stale → null).
-- `routes/agents/recovery.test.ts` (novo) — **7 testes**: (item 21)
-  sem permission → 403 em ambas as rotas mutáveis/status; só
-  `agents.operations.read` → leitura OK, execução continua 403; `GET
-  /stale` real via HTTP; dry-run via HTTP não altera banco + execução
-  real reconcilia de verdade; `POST /:type/:id` reconcilia item
-  específico; entidade não-stale → 404; `type` inválido → 400.
+- `incidents.test.ts` (novo) — **6 testes**: itens 7-10 (severity
+  warning/critical, correlação evita duplicação, entidade diferente
+  independente) + saudável sem incidente + mapeamento signal→incident.
+- `response-policy.test.ts` (novo) — **10 testes**: itens 11-14
+  (observe/safe_recovery/restrict_autonomy/manual_attention) + os 6
+  demais tipos de incidente exaustivamente.
+- `signals.test.ts` (novo) — **8 testes**: itens 1-6 (saudável, stale,
+  falha isolada vs. threshold, autonomia restrita, Decision Queue) +
+  run_stuck + approval_bottleneck (novos detectores desta versão).
+- `supervisor-service.test.ts` (novo) — **12 testes**: execução (itens
+  21-25: dry-run, safe_recovery real, manual_attention real),
+  segurança (itens 15-20: nunca Action Plan/approval/tool/permission,
+  nunca aumenta autonomia, nunca toca Circuit Breaker), idempotência
+  (itens 26-28), concorrência (item 29), status (itens 35-37).
+- `routes/agents/operations-supervisor.test.ts` (novo) — **5 testes**:
+  itens 30-34 (403 sem permission, 200 com `agents.operations.read`,
+  dry-run real via HTTP, execução real via HTTP, shape do health).
 
-Total: **35 testes novos no backend**. Nenhum teste novo de frontend
-além dos 5 de label/formatação (`derived.test.ts`) — a UI não introduziu
-lógica testável isoladamente além dessas funções puras (o dashboard em
-si é testado indiretamente pelos testes de rota, que provam o contrato
-real que ele consome).
+Total: **41 testes novos no backend**. Nenhum teste novo de frontend
+além dos 10 de label (`derived.test.ts`) — mesma justificativa das
+entregas anteriores: a UI é validada indiretamente pelos testes de rota
+reais que ela consome.
 
-## 25. Números exatos backend (medidos pelo runner real)
+## 27. Números exatos backend (medidos pelo runner real)
 
-**Baseline após v2.3** (correio.md seção 25, medida real da entrega
-anterior): `491 testes / 491 pass / 0 fail`.
+**Baseline após v2.4**: `526 testes / 526 pass / 0 fail`.
 
-**Suíte completa após a v2.4** (`npx tsx --test --test-concurrency=1
+**Suíte completa após a v2.5** (`npx tsx --test --test-concurrency=1
 'src/**/*.test.ts'`, via Docker):
 
 ```
-ℹ tests 526
-ℹ suites 92
-ℹ pass 526
+ℹ tests 567
+ℹ suites 99
+ℹ pass 567
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
 ```
 
-**Reconciliação:** 491 → 526 = **+35 testes líquidos**, batendo
-exatamente com a soma por arquivo: `adapters.test.ts` (20) +
-`recovery-service.test.ts` (8) + `routes/agents/recovery.test.ts` (7) =
-35. Nenhuma regressão.
+**Reconciliação:** 526 → 567 = **+41 testes líquidos**, batendo
+exatamente com a soma por arquivo (6+10+8+12+5=41). Nenhuma regressão —
+todos os 526 testes anteriores continuam passando.
 
-## 26. Números exatos frontend (medidos pelo runner real)
+## 28. Números exatos frontend (medidos pelo runner real)
 
 `npx tsx --test 'lib/**/*.test.ts'`:
 
 ```
-ℹ tests 87
-ℹ suites 31
-ℹ pass 87
+ℹ tests 92
+ℹ suites 35
+ℹ pass 92
 ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
 ```
 
-Baseline anterior 82/82 → 87/87 = **+5 testes líquidos**
-(`recoveryResultLabel` 2 + `workflowTypeLabel` 2 + `formatAgeSeconds` 1).
-Nenhuma regressão.
+Baseline anterior 87/87 → 92/92 = **+5 testes líquidos** (labels de
+Operational Health Status/Severity/Incident Type/Response — 4 describes,
+alguns com múltiplos `assert` num único `test`). Nenhuma regressão.
 
-## 27. Typecheck/build
+## 29. Typecheck/build
 
 - Backend typecheck (`npx tsc --noEmit`, via Docker): **OK, sem erros.**
 - Frontend typecheck (`npx tsc --noEmit`): **OK, sem erros.**
-- Frontend build (`npm run build`): **OK** — rotas `/agents/recovery`,
-  `/api/agents/recovery/status`, `/api/agents/recovery/stale`,
-  `/api/agents/recovery/run`, `/api/agents/recovery/[type]/[id]`
-  presentes na saída.
-- Lint: continua sem script/config configurado — reconfirmado.
+- Frontend build (`npm run build`): **OK** — rotas
+  `/api/agents/operations/health`, `/api/agents/operations/incidents`,
+  `/api/agents/operations/supervise` presentes na saída.
+- Lint: continua sem script/config configurado — reconfirmado, nada
+  adicionado.
 
-## 28. `git diff --stat`
+## 30. `git diff --stat`
 
 ```
- backend/src/config/env.ts                     | 20 +++++++++++
- backend/src/db/seed.ts                        |  6 ++++
- backend/src/routes/agents/index.ts            |  2 ++
- frontend/components/agents/agents-sub-nav.tsx |  1 +
- frontend/components/agents/status-badge.tsx   | 20 +++++++++++
- frontend/lib/agents/derived.test.ts           | 46 +++++++++++++++++++++++++
- frontend/lib/agents/derived.ts                | 33 ++++++++++++++++++
- frontend/lib/query/keys.ts                    |  2 ++
- frontend/services/agents.ts                   | 26 +++++++++++++++
- frontend/types/agents.ts                      | 48 +++++++++++++++++++++++++++
- 10 files changed, 204 insertions(+)
+ backend/src/agents/operations/schemas.ts           | 13 +++
+ backend/src/config/env.ts                          | 16 ++++
+ backend/src/db/seed.ts                              |  6 ++
+ backend/src/routes/agents/operations.ts             | 39 ++++++++-
+ frontend/app/(dashboard)/agents/operations/page.tsx | 14 ++++
+ frontend/components/agents/status-badge.tsx         | 62 ++++++++++++++
+ frontend/lib/agents/derived.test.ts                 | 50 ++++++++++++
+ frontend/lib/agents/derived.ts                      | 53 ++++++++++++
+ frontend/lib/query/keys.ts                          |  2 +
+ frontend/services/agents.ts                         | 16 ++++
+ frontend/types/agents.ts                            | 95 ++++++++++++++++++++++
+ 11 files changed, 364 insertions(+), 2 deletions(-)
 ```
 
 Novos arquivos (sem histórico prévio, fora do `diff --stat`):
 ```
-backend/src/agents/recovery/                    (13 arquivos)
-backend/src/routes/agents/recovery.ts
-backend/src/routes/agents/recovery.test.ts
-frontend/app/(dashboard)/agents/recovery/
-frontend/app/api/agents/recovery/
-frontend/components/agents/recovery/
-frontend/hooks/agents/use-recovery.ts
+backend/src/agents/operations/health-service.ts
+backend/src/agents/operations/health-types.ts
+backend/src/agents/operations/incidents.test.ts
+backend/src/agents/operations/incidents.ts
+backend/src/agents/operations/manual-attention.ts
+backend/src/agents/operations/response-policy.test.ts
+backend/src/agents/operations/response-policy.ts
+backend/src/agents/operations/safe-actions.ts
+backend/src/agents/operations/signals.test.ts
+backend/src/agents/operations/signals.ts
+backend/src/agents/operations/supervisor-service.test.ts
+backend/src/agents/operations/supervisor-service.ts
+backend/src/routes/agents/operations-supervisor.test.ts
+frontend/app/api/agents/operations/health/
+frontend/app/api/agents/operations/incidents/
+frontend/app/api/agents/operations/supervise/
+frontend/components/agents/operations/operations-supervisor-dashboard.tsx
+frontend/hooks/agents/use-operations-supervisor.ts
 ```
 
-## 29. `git status`
+## 31. `git status`
 
 ```
+ M backend/src/agents/operations/schemas.ts
  M backend/src/config/env.ts
  M backend/src/db/seed.ts
- M backend/src/routes/agents/index.ts
+ M backend/src/routes/agents/operations.ts
  M correio.md
  M executed.md
- M frontend/components/agents/agents-sub-nav.tsx
+ M frontend/app/(dashboard)/agents/operations/page.tsx
  M frontend/components/agents/status-badge.tsx
  M frontend/lib/agents/derived.test.ts
  M frontend/lib/agents/derived.ts
  M frontend/lib/query/keys.ts
  M frontend/services/agents.ts
  M frontend/types/agents.ts
-?? backend/src/agents/recovery/
-?? backend/src/routes/agents/recovery.test.ts
-?? backend/src/routes/agents/recovery.ts
-?? frontend/app/(dashboard)/agents/recovery/
-?? frontend/app/api/agents/recovery/
-?? frontend/components/agents/recovery/
-?? frontend/hooks/agents/use-recovery.ts
+?? backend/src/agents/operations/health-service.ts
+?? backend/src/agents/operations/health-types.ts
+?? backend/src/agents/operations/incidents.test.ts
+?? backend/src/agents/operations/incidents.ts
+?? backend/src/agents/operations/manual-attention.ts
+?? backend/src/agents/operations/response-policy.test.ts
+?? backend/src/agents/operations/response-policy.ts
+?? backend/src/agents/operations/safe-actions.ts
+?? backend/src/agents/operations/signals.test.ts
+?? backend/src/agents/operations/signals.ts
+?? backend/src/agents/operations/supervisor-service.test.ts
+?? backend/src/agents/operations/supervisor-service.ts
+?? backend/src/routes/agents/operations-supervisor.test.ts
+?? frontend/app/api/agents/operations/health/
+?? frontend/app/api/agents/operations/incidents/
+?? frontend/app/api/agents/operations/supervise/
+?? frontend/components/agents/operations/operations-supervisor-dashboard.tsx
+?? frontend/hooks/agents/use-operations-supervisor.ts
 ```
 
-## 30. Bugs/limitações reais encontradas
+## 32. Bugs/limitações reais encontradas
 
-1. **Erro corrigido durante a implementação (routes/agents/recovery.ts):**
-   a primeira versão de `GET /recovery/stale` continha uma expressão
-   incoerente (`query.data.thresholdSeconds ?? (await getRecoveryStatus()).staleTotal
-   >= 0 ? undefined! : undefined!`), resíduo de uma reformulação
-   incompleta enquanto o handler era escrito — corrigida por
-   autorrevisão (não por typecheck: a expressão era sintaticamente
-   válida, só semanticamente sem sentido) para
-   `query.data.thresholdSeconds ?? env.AGENT_WORKFLOW_STALE_AFTER_SECONDS`
-   antes de qualquer typecheck/teste rodar contra o arquivo — nunca
-   chegou a ser executada. Validada depois pelos 7 testes de
-   `routes/agents/recovery.test.ts`.
-2. **Limitação estrutural conhecida (Initiative recovery, Caso B vs.
-   crash no vínculo final):** já documentada no item 8 — um crash
-   exatamente entre `executeActionPlan()` terminar e o `UPDATE` final de
-   `action_plan_id` produz um Action Plan órfão (nunca religado
-   automaticamente) quando a Initiative é revertida para `approved`.
-   Deliberado — a alternativa seria "adivinhar" qual plano pertence a
-   qual Initiative, proibido pela seção 7. Uma nova tentativa de
-   `POST .../propose` cria um Action Plan NOVO; o antigo fica órfão mas
-   inofensivo (nunca é executado de novo, nunca aparece em nenhuma
-   consulta de "Action Plan desta Initiative").
-3. **`marked_failed`/`recovered`/`retried` não são produzidos por
-   nenhum adapter desta versão** — mantidos no vocabulário
-   (`RECOVERY_RESULTS`) para adapters futuros, mas nenhum fluxo real
-   hoje os gera (só `reverted`, `manual_attention`, `skipped`). Reflete
-   fielmente o escopo pedido (seção 6 pede o vocabulário completo, não
-   que todos os valores sejam alcançáveis nesta versão).
-4. **`GET /recovery/stale` e `GET /recovery/status` fazem 2 varreduras
-   completas independentes quando chamados em sequência** (cada um roda
-   `scanStaleWorkflows` do zero) — aceitável no volume esperado (poucas
-   entidades stale por vez, cada adapter é uma query simples), mas se o
-   volume de workflows crescer ordens de magnitude, vale considerar
-   cache de curta duração entre as duas chamadas do frontend (que hoje
-   rodam em paralelo via TanStack Query, uma para status, outra para a
-   lista completa).
-5. **Nenhuma integração automática com o scheduler existente foi feita
-   nesta versão** (correio.md seção 19: "não implementar recorrência
-   automática nesta versão salvo necessidade técnica comprovada") —
-   `runRecovery()` só é chamado manualmente via `POST /run`. A
-   arquitetura já permite chamar essa mesma função de dentro do
-   scheduler de Jobs existente (`agents/jobs/job-runner.ts`) no futuro,
-   sem nenhuma mudança de contrato.
+1. **Colisão de nome de tipo no frontend, corrigida antes de rodar
+   qualquer teste:** `OperationalSignal` já existia em `types/agents.ts`
+   (módulo Director v1.8, sinais de negócio) — meu tipo novo tinha o
+   MESMO nome com shape incompatível (`severity`/`entityId` com tipos
+   diferentes). `npx tsc --noEmit` acusou o conflito imediatamente
+   (`TS2717`); renomeado para `SupervisorSignal` (nunca chegou a ser
+   usado incorretamente em nenhum componente).
+2. **`agents.operations.signal.detected` (sugerido pela seção 21) foi
+   deliberadamente omitido** — auditar cada SINAL bruto (antes da
+   correlação) geraria potencialmente dezenas de eventos por scan para
+   o mesmo Job/incidente, exatamente o ruído que a própria seção 14/21
+   pede para evitar ("evitar gerar dezenas de audit logs por entidade
+   saudável" / "registrar somente eventos significativos"). Optei por
+   auditar só `agents.operations.incident.detected` (já correlacionado/
+   deduplicado) — decisão documentada em código
+   (`supervisor-service.ts`).
+3. **`run_stuck` e `delivery_failure` não têm nenhuma resposta
+   automática além de `observe` nesta versão** — não existe, no código
+   real, nenhum mecanismo comprovadamente seguro para "destravar" um
+   Job Run preso ou reprocessar uma delivery falha (Recovery v2.4 cobre
+   só Initiative/Executive Review/Strategic Memory). Implementar algo
+   aqui seria "o Supervisor implementa reconciliação própria",
+   proibido pela seção 10. Ambos ficam só como observabilidade — uma
+   limitação real, não escondida.
+4. **`GET /operations/incidents` recalcula o health inteiro
+   internamente** (chama `getOperationalHealth()` e devolve só
+   `.incidents`) — decisão simples e correta (nunca duas
+   implementações divergentes da mesma classificação), mas
+   tecnicamente refaz o trabalho de `GET /operations/health` quando as
+   duas rotas são chamadas em sequência pelo frontend (mesmo padrão/
+   mesma limitação já documentada na v2.4 para `GET /recovery/stale` +
+   `GET /recovery/status`). Aceitável no volume esperado.
+5. **Nenhuma integração automática com o scheduler** foi feita nesta
+   versão (documentado no item 18) — ativação automática fica para uma
+   v2.5.1, exatamente como a seção 19 permite explicitamente.
+6. **`entityId` em `OperationalIncident`/Decision Item é sempre uma
+   string** (para acomodar entidades sem id numérico, como
+   `agent_approvals_backlog:global`) — ao escalar para a Director
+   Decision Queue, `escalateIncidentToManualAttention` converte para
+   `number` quando possível (`Number.isFinite`) e usa `null` quando não
+   (ex.: incidentes agregados globais como `approval_bottleneck` ou
+   `operational_degradation`) — comportamento correto e testado, só
+   registrado aqui por transparência de design.
 
 ---
 
 ## Conclusão
 
-Todos os 21 critérios da seção 30 do correio.md foram atendidos:
-workflows stale detectados com threshold temporal (testado); registros
-recentes nunca confundidos com stale (testado); recuperação idempotente
-(testado); concorrência protegida (testado, via `UPDATE`/`DELETE ...
-RETURNING` condicional); Executive Review e Strategic Memory draft
-órfãs recuperáveis (testado); Initiative órfã reconciliada com
-segurança nos 3 casos reais (A/B/C, testados); recovery nunca cria
-segundo Action Plan, nunca executa tool, nunca cria approval, nunca
-modifica permissions (todos testados); inconsistências perigosas
-escaladas para atenção humana via Decision Queue reaproveitada
-(testado); dry-run sem side effects (testado); operações auditáveis
-(testado); status agregado existe (calculado sob demanda a partir de
-dados já existentes); permission administrativa protege a execução
-(`agents.recovery.manage`, testada); nenhuma arquitetura paralela foi
-criada; backend completo passa (526/526); frontend completo passa
-(87/87); typechecks limpos; build de produção passa.
+Todos os 21 critérios da seção 34 do correio.md foram atendidos:
+nenhum segundo Executor/scheduler/Circuit Breaker/Decision Queue/
+mecanismo de recovery criado; incidentes derivados de estados reais
+(mapeados na seção 2, nunca inventados); classificação determinística
+(testada exaustivamente); Response Policy sem LLM (garantido
+estruturalmente); recovery usa exclusivamente v2.4; supervisor nunca
+eleva autonomia (testado); condição perigosa restringe autonomia
+(testado); condição ambígua escala ao humano (testado); dry-run sem
+side effects (testado); execução real idempotente (testado);
+concorrência segura (testado); operations health disponível; auditoria
+implementada; backend authorization correta (nova permission
+justificada); testes de segurança cobrem as 12 proibições da seção 27;
+suíte completa verde (567/567); frontend build verde; nenhuma regressão
+arquitetural.
 
 **NENHUM COMMIT foi realizado.** Todas as alterações permanecem no
 working tree, aguardando autorização final do Diretor/CEO.

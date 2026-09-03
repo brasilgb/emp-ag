@@ -22,6 +22,10 @@ import {
   memoryImportanceLabel,
   memoryStatusLabel,
   memoryTypeLabel,
+  operationalHealthStatusLabel,
+  operationalIncidentTypeLabel,
+  operationalResponseLabel,
+  operationalSeverityLabel,
   recommendationTypeLabel,
   recoveryResultLabel,
   reviewOutcomeLabel,
@@ -379,5 +383,51 @@ describe("formatAgeSeconds", () => {
     assert.equal(formatAgeSeconds(86399), "23h");
     assert.equal(formatAgeSeconds(86400), "1d");
     assert.equal(formatAgeSeconds(172800), "2d");
+  });
+});
+
+// Agentes v2.5 — Operational Supervision & Autonomous Incident Response.
+describe("operationalHealthStatusLabel", () => {
+  test("todo status conhecido tem rótulo em pt-BR", () => {
+    assert.equal(operationalHealthStatusLabel("healthy"), "Saudável");
+    assert.equal(operationalHealthStatusLabel("degraded"), "Degradado");
+    assert.equal(operationalHealthStatusLabel("attention_required"), "Atenção necessária");
+    assert.equal(operationalHealthStatusLabel("restricted"), "Restrito");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(operationalHealthStatusLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+describe("operationalSeverityLabel", () => {
+  test("todo nível conhecido tem rótulo em pt-BR", () => {
+    assert.equal(operationalSeverityLabel("info"), "Informativo");
+    assert.equal(operationalSeverityLabel("warning"), "Atenção");
+    assert.equal(operationalSeverityLabel("critical"), "Crítico");
+  });
+});
+
+describe("operationalIncidentTypeLabel", () => {
+  test("todo tipo conhecido tem rótulo em pt-BR", () => {
+    assert.equal(operationalIncidentTypeLabel("recovery_required"), "Recuperação necessária");
+    assert.equal(operationalIncidentTypeLabel("repeated_job_failure"), "Falha repetida de Job");
+    assert.equal(operationalIncidentTypeLabel("run_stuck"), "Execução presa");
+    assert.equal(operationalIncidentTypeLabel("delivery_failure"), "Falha de delivery");
+    assert.equal(operationalIncidentTypeLabel("manual_attention_required"), "Atenção manual necessária");
+    assert.equal(operationalIncidentTypeLabel("autonomy_circuit_open"), "Circuit Breaker aberto");
+    assert.equal(operationalIncidentTypeLabel("approval_bottleneck"), "Gargalo de aprovações");
+    assert.equal(operationalIncidentTypeLabel("operational_degradation"), "Degradação operacional");
+  });
+});
+
+describe("operationalResponseLabel", () => {
+  test("toda resposta conhecida tem rótulo em pt-BR, nunca sugerindo ação automática de IA", () => {
+    assert.equal(operationalResponseLabel("observe"), "Observar");
+    assert.equal(operationalResponseLabel("safe_recovery"), "Recuperação segura");
+    assert.equal(operationalResponseLabel("restrict_autonomy"), "Restringir autonomia");
+    assert.equal(operationalResponseLabel("manual_attention"), "Atenção manual");
+    assert.equal(operationalResponseLabel("already_handled"), "Já tratado");
   });
 });

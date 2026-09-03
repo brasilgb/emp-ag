@@ -392,6 +392,12 @@ const defaultPermissions = [
     description:
       'Permite executar a reconciliação de workflows stale (POST /agents/recovery/run e /agents/recovery/:type/:id — Agentes v2.4). Leitura de status/stale segue em agents.operations.read.',
   },
+  {
+    name: 'Gerenciar supervisão operacional de agentes',
+    slug: 'agents.operations.manage',
+    description:
+      'Permite executar o Operational Supervisor (POST /agents/operations/supervise — Agentes v2.5): safe recovery, restrição de autonomia de Job, escalação. Leitura segue em agents.operations.read.',
+  },
 
   {
     name: 'Visualizar usuários',

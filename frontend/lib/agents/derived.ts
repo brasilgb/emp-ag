@@ -24,6 +24,10 @@ import type {
   MemoryImportance,
   MemoryStatus,
   MemoryType,
+  OperationalHealthStatus,
+  OperationalIncidentType,
+  OperationalResponse,
+  OperationalSeverity,
   RecommendationType,
   RecoveryResult,
   ReviewOutcome,
@@ -720,6 +724,55 @@ export const WORKFLOW_TYPE_LABELS: Record<WorkflowType, string> = {
 
 export function workflowTypeLabel(type: WorkflowType): string {
   return WORKFLOW_TYPE_LABELS[type] ?? type;
+}
+
+// Agentes v2.5 — Operational Supervision & Autonomous Incident Response.
+export const OPERATIONAL_HEALTH_STATUS_LABELS: Record<OperationalHealthStatus, string> = {
+  healthy: "Saudável",
+  degraded: "Degradado",
+  attention_required: "Atenção necessária",
+  restricted: "Restrito",
+};
+
+export function operationalHealthStatusLabel(status: OperationalHealthStatus): string {
+  return OPERATIONAL_HEALTH_STATUS_LABELS[status] ?? status;
+}
+
+export const OPERATIONAL_SEVERITY_LABELS: Record<OperationalSeverity, string> = {
+  info: "Informativo",
+  warning: "Atenção",
+  critical: "Crítico",
+};
+
+export function operationalSeverityLabel(severity: OperationalSeverity): string {
+  return OPERATIONAL_SEVERITY_LABELS[severity] ?? severity;
+}
+
+export const OPERATIONAL_INCIDENT_TYPE_LABELS: Record<OperationalIncidentType, string> = {
+  recovery_required: "Recuperação necessária",
+  repeated_job_failure: "Falha repetida de Job",
+  run_stuck: "Execução presa",
+  delivery_failure: "Falha de delivery",
+  manual_attention_required: "Atenção manual necessária",
+  autonomy_circuit_open: "Circuit Breaker aberto",
+  approval_bottleneck: "Gargalo de aprovações",
+  operational_degradation: "Degradação operacional",
+};
+
+export function operationalIncidentTypeLabel(type: OperationalIncidentType): string {
+  return OPERATIONAL_INCIDENT_TYPE_LABELS[type] ?? type;
+}
+
+export const OPERATIONAL_RESPONSE_LABELS: Record<OperationalResponse, string> = {
+  observe: "Observar",
+  safe_recovery: "Recuperação segura",
+  restrict_autonomy: "Restringir autonomia",
+  manual_attention: "Atenção manual",
+  already_handled: "Já tratado",
+};
+
+export function operationalResponseLabel(response: OperationalResponse): string {
+  return OPERATIONAL_RESPONSE_LABELS[response] ?? response;
 }
 
 export function formatAgeSeconds(ageSeconds: number): string {

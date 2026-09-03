@@ -14,8 +14,10 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { requirePermission } from '../../middleware/require-permission.js';
 import { AUTONOMY_BLOCK_REASONS } from '../../agents/autonomy/reasons.js';
 
-import { badRequest } from './helpers.js';
-import { operationsSummaryQuerySchema } from '../../agents/operations/schemas.js';
+import { badRequest, currentUserId } from './helpers.js';
+import { operationsSummaryQuerySchema, superviseQuerySchema } from '../../agents/operations/schemas.js';
+import { getOperationalHealth } from '../../agents/operations/health-service.js';
+import { runOperationalSupervision } from '../../agents/operations/supervisor-service.js';
 
 /**
  * Agentes v1.6 (correio.md seção 3) — Operations Dashboard.
@@ -205,6 +207,39 @@ export async function operationsRoutes(app: FastifyInstance) {
           approvals,
         },
       };
+    },
+  );
+
+  // Agentes v2.5 (correio.md seção 23) — Operational Supervisor.
+  // Leitura em `agents.operations.read` (mesma permission já usada por
+  // `/operations/summary`, mesma natureza de observabilidade
+  // operacional); execução real em `agents.operations.manage`
+  // (justificada — mais ampla que `agents.recovery.manage`, que só
+  // cobre reconciliação de workflow, ver seção 22 e `executed.md`).
+  app.get(
+    '/operations/health',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async () => ({ data: await getOperationalHealth() }),
+  );
+
+  app.get(
+    '/operations/incidents',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async () => {
+      const health = await getOperationalHealth();
+      return { data: health.incidents };
+    },
+  );
+
+  app.post(
+    '/operations/supervise',
+    { preHandler: [authenticate, requirePermission('agents.operations.manage')] },
+    async (request, reply) => {
+      const query = superviseQuerySchema.safeParse(request.query);
+      if (!query.success) return badRequest(reply, query.error);
+
+      const report = await runOperationalSupervision({ dryRun: query.data.dryRun, actorUserId: currentUserId(request) });
+      return { data: report };
     },
   );
 }

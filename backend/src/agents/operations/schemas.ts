@@ -15,3 +15,16 @@ export const operationsSummaryQuerySchema = z
     message: '`from` deve ser anterior ou igual a `to`.',
     path: ['from'],
   });
+
+// Agentes v2.5 (correio.md seção 16/20/23) — `z.coerce.boolean()`
+// coercionaria qualquer string não-vazia (inclusive "false") para
+// `true` — nunca usado para query params boolean neste projeto (mesmo
+// padrão já usado em agents/recovery/schemas.ts).
+const booleanQueryFlag = z
+  .enum(['true', 'false'])
+  .optional()
+  .transform((value) => value === 'true');
+
+export const superviseQuerySchema = z.object({
+  dryRun: booleanQueryFlag,
+});

@@ -1,925 +1,1099 @@
-# Execução — Agentes v2.4: Workflow Recovery, Reconciliation & Operational Resilience
+# Agentes v2.5 — Operational Supervision & Autonomous Incident Response
 
-## Objetivo
+## 1. Objetivo
 
-Implementar um mecanismo genérico e seguro de recuperação/reconciliação para workflows dos agentes que utilizam o padrão:
+Implementar uma camada de supervisão operacional sobre a arquitetura de agentes existente, capaz de detectar degradações operacionais, correlacionar sinais provenientes dos módulos já existentes e aplicar respostas seguras e determinísticas.
 
-```text
-claim persistido
-→ I/O externo / processamento
-→ conclusão
-→ compensação via catch em falha normal
-```
+A v2.5 NÃO deve criar um novo sistema de execução.
 
-Hoje esse padrão aparece em pelo menos:
+Ela deve coordenar exclusivamente mecanismos já existentes:
 
-```text
-Initiative execution
-Executive Review
-Strategic Memory
-```
+* Jobs
+* Runs
+* Events
+* Event Rules
+* Action Plans
+* Approvals
+* Decision Queue
+* Recovery v2.4
+* Circuit Breaker / autonomy controls
+* Audit logs
+* Policy Evaluator
 
-Em exceções JavaScript normais os serviços já compensam corretamente.
+O supervisor deve responder à seguinte pergunta:
 
-O problema desta versão é outro:
-
-> Se o processo Node/container morrer depois do claim persistido e antes da conclusão/compensação, o estado transitório pode permanecer órfão indefinidamente.
-
-A v2.4 deverá detectar e reconciliar esses estados sem criar arquitetura paralela.
+> “Existe alguma condição operacional que exija observação, recuperação segura, redução de autonomia ou intervenção humana?”
 
 ---
 
-# 1. Princípio arquitetural
+# 2. Princípio arquitetural obrigatório
 
-Não criar:
-
-* segundo Executor;
-* segundo Scheduler de negócio;
-* segundo Planner;
-* segundo Policy Evaluator;
-* segundo Approval Workflow;
-* sistema paralelo de jobs;
-* mecanismo de execução direta durante recovery.
-
-A recuperação deve operar SOBRE os workflows existentes.
+O Operational Supervisor é um **coordenador de segurança operacional**, não um Executor.
 
 Fluxo conceitual:
 
 ```text
-Existing Workflow
-      ↓
-Persistent Transitional State
-      ↓
-Process crash / interruption
-      ↓
-Stale Workflow Detection
-      ↓
-Recovery/Reconciliation
-      ↓
-safe_retry | revert | mark_failed | manual_attention
-      ↓
-Official existing pipeline
-```
-
-Recovery nunca deve significar:
-
-```text
-"execute qualquer coisa para consertar"
-```
-
----
-
-# 2. Estados atualmente relevantes
-
-Levantar no código real todos os estados transitórios que podem ficar presos.
-
-No mínimo revisar:
-
-## Initiative
-
-Exemplo esperado:
-
-```text
-active
-```
-
-quando existe claim/início mas Action Plan ou conclusão não foi produzida corretamente.
-
-## Executive Review
-
-```text
-draft
-```
-
-## Strategic Memory
-
-```text
-draft
-```
-
-Não assumir esses como os únicos estados.
-
-Antes de implementar, mapear os workflows reais e documentar:
-
-```text
-entity
-transitional state
-terminal states
-claim timestamp
-expected next transition
-existing retry behavior
-```
-
----
-
-# 3. Conceito de stale workflow
-
-Não usar apenas:
-
-```text
-status == draft
-```
-
-como prova de problema.
-
-Um workflow em execução normal também pode estar temporariamente em estado transitório.
-
-Definir stale usando tempo.
-
-Sugestão:
-
-```text
-updated_at < now() - stale_threshold
-```
-
-ou timestamp específico de claim caso o schema atual permita.
-
-Preferir utilizar timestamps já existentes.
-
-Só adicionar coluna nova se houver justificativa concreta.
-
----
-
-# 4. Threshold configurável
-
-Criar configuração explícita.
-
-Exemplo conceitual:
-
-```text
-AGENT_WORKFLOW_STALE_AFTER_SECONDS
-```
-
-ou configuração equivalente consistente com o projeto.
-
-Deve possuir:
-
-* valor default seguro;
-* validação;
-* limite mínimo razoável;
-* documentação.
-
-Não espalhar números mágicos pelo código.
-
-Para testes, permitir threshold curto.
-
----
-
-# 5. Recovery Registry
-
-Criar um mecanismo central pequeno que conheça os workflows recuperáveis.
-
-Exemplo conceitual:
-
-```text
-agents/recovery/
-```
-
-Possíveis arquivos:
-
-```text
-types.ts
-registry.ts
-detector.ts
-recovery-service.ts
-initiative-recovery.ts
-executive-review-recovery.ts
-strategic-memory-recovery.ts
-```
-
-Não é obrigatório usar exatamente estes nomes.
-
-Cada adapter deverá saber:
-
-```text
-como detectar
-como validar
-como reconciliar
-```
-
-sua própria entidade.
-
-O core de recovery não deve conhecer detalhes internos de todas as tabelas.
-
----
-
-# 6. Tipos de resultado da reconciliação
-
-Usar resultado estruturado.
-
-Exemplo:
-
-```text
-recovered
-retried
-reverted
-marked_failed
+Operational Signals
+       ↓
+Health Assessment
+       ↓
+Incident Classification
+       ↓
+Response Policy
+       ↓
+observe
+recover
+restrict_autonomy
 manual_attention
-skipped
+       ↓
+Existing official mechanisms
 ```
 
-Não usar apenas boolean.
-
-Cada tentativa deve explicar:
+Proibido:
 
 ```text
-entityType
-entityId
-previousState
-result
-reason
-timestamp
+Supervisor
+   ↓
+LLM decide o que executar
+   ↓
+tool arbitrária
 ```
 
----
+O LLM nunca deve decidir autonomamente:
 
-# 7. Initiative Recovery
-
-Revisar exatamente como `startInitiativeExecution` funciona hoje.
-
-Não inventar comportamento sem ler o fluxo real.
-
-Para Initiative stale:
-
-O recovery deve primeiro verificar fatos existentes.
-
-Exemplos:
-
-### Caso A
-
-Initiative `active`, mas Action Plan válido já existe.
-
-Então não criar outro Action Plan.
-
-Reconstruir/reconciliar a visão da Initiative a partir do estado real.
-
-### Caso B
-
-Initiative `active`, sem Action Plan, claim claramente stale.
-
-Permitir voltar a um estado seguro que possibilite retry através do serviço oficial.
-
-Não criar plano diretamente dentro do recovery.
-
-### Caso C
-
-Existem evidências contraditórias/corrompidas.
-
-Não tentar adivinhar.
-
-Marcar necessidade de atenção humana ou registrar falha operacional adequada.
-
----
-
-# 8. Executive Review Recovery
-
-Review `draft` stale:
-
-Verificar se a review possui conteúdo completo compatível com `completed`.
-
-Se não possuir, o comportamento preferencial é permitir retry seguro.
-
-Exemplo:
-
-```text
-draft stale
-→ remover/reverter claim
-→ próxima chamada normal pode gerar novamente
-```
-
-Não chamar LLM automaticamente durante reconciliação, salvo justificativa extremamente clara.
-
-Preferência desta versão:
-
-> recovery torna o workflow novamente executável; não executa o workflow cognitivo sozinho.
-
----
-
-# 9. Strategic Memory Recovery
-
-Mesmo princípio da Executive Review.
-
-```text
-draft stale
-→ validar
-→ limpar/reverter claim
-→ permitir criação normal posteriormente
-```
-
-Nunca fabricar uma memória incompleta como `active`.
-
-Nunca copiar `lesson` ou interpretação de outro registro para “consertar”.
-
----
-
-# 10. Recovery deve ser idempotente
-
-Executar recovery duas vezes sobre o mesmo estado não pode causar dano.
-
-Exemplo:
-
-Primeira execução:
-
-```text
-draft stale → removed
-```
-
-Segunda:
-
-```text
-registro não existe → skipped
-```
-
-e não erro destrutivo.
-
-Adicionar testes explícitos.
-
----
-
-# 11. Concorrência no recovery
-
-Dois processos podem tentar reconciliar a mesma entidade.
-
-Proteger a operação.
-
-Evitar:
-
-```text
-SELECT
-→ decidir
-→ UPDATE/DELETE
-```
-
-sem condição de corrida protegida.
-
-Preferir operações condicionais:
-
-```text
-DELETE ... WHERE id=? AND status='draft' AND updated_at < threshold
-```
-
-ou:
-
-```text
-UPDATE ... WHERE ... RETURNING
-```
-
-Assim apenas um reconciliador vence.
-
-Não segurar locks enquanto executa I/O externo.
-
-Idealmente recovery desta versão nem precisa fazer I/O externo.
-
----
-
-# 12. Recovery nunca deve elevar privilégios
-
-O reconciliador é infraestrutura interna.
-
-Mas isso não significa que ele possa:
-
-* aprovar ações;
-* mudar owner;
-* conceder permission;
+* conceder permissões;
+* ignorar approvals;
+* reativar autonomia;
+* executar shell;
+* executar SQL arbitrário;
+* chamar ferramentas fora do catálogo oficial;
 * alterar Policy Evaluator;
-* ignorar Approval;
-* executar tool em nome de usuário;
-* criar Action Plan diretamente.
-
-Quando o workflow precisar continuar, ele deve voltar a um estado no qual o pipeline oficial possa continuar normalmente.
+* modificar roles/permissions;
+* contornar Circuit Breaker.
 
 ---
 
-# 13. Manual attention
+# 3. Fontes de sinais
 
-Há casos em que recuperação automática seria perigosa.
+Reaproveitar dados reais da plataforma.
 
-Criar conceito de:
+O supervisor deve inicialmente considerar, no mínimo:
 
-```text
-manual_attention
-```
+### Workflow Recovery
 
-Quando houver inconsistência real.
+Dados da v2.4:
 
-Preferencialmente reutilizar a infraestrutura existente de:
+* stale workflows;
+* manual attention pendente;
+* última reconciliação;
+* falhas de recovery.
 
-```text
-Director Decision Queue
-```
+### Jobs / Runs
 
-ou mecanismo operacional já existente, SE semanticamente apropriado.
+Detectar situações como:
 
-Não criar uma segunda “fila de incidentes” sem necessidade.
+* runs consecutivamente falhando;
+* job com muitas falhas recentes;
+* execução presa;
+* budget excedido;
+* job desabilitado por segurança;
+* scheduler executando mas workflow não avançando.
 
-Se reutilizar Decision Queue, diferenciar claramente:
+Não inventar estados: revisar schema e código existentes antes da implementação.
 
-```text
-operational recovery issue
-```
+### Event Engine
 
-de uma decisão estratégica normal.
+Considerar:
 
----
+* deliveries falhando repetidamente;
+* evento sem processamento esperado;
+* event rules produzindo falhas repetidas;
+* backlog operacional anormal, caso possa ser calculado com dados existentes.
 
-# 14. Auditoria
+### Approvals
 
-Adicionar eventos coerentes.
+Considerar:
 
-Sugestão:
+* approvals críticas pendentes por período excessivo;
+* grande volume pendente;
+* execução bloqueada exclusivamente aguardando aprovação.
 
-```text
-agents.recovery.scan.started
-agents.recovery.stale_detected
-agents.recovery.reconciled
-agents.recovery.manual_attention
-```
+A existência de approval pendente não deve automaticamente representar incidente.
 
-Não registrar evento para cada entidade saudável examinada.
+### Decision Queue
 
-Evitar ruído excessivo.
+Considerar:
 
-Metadata útil:
+* decisões operacionais abertas;
+* decisões `agents.recovery.*`;
+* itens `requiresHumanAttention=true`.
 
-```text
-workflowType
-entityId
-previousState
-ageSeconds
-action
-result
-reason
-```
+### Circuit Breaker / Autonomy
 
-Nunca secrets.
+Considerar:
 
----
+* circuit breaker aberto;
+* autonomy global desabilitada;
+* bloqueios recentes;
+* recorrência de trips.
 
-# 15. Observabilidade
+### Audit Logs
 
-Criar uma visão agregada do estado de recovery.
+Usar quando necessário para calcular:
 
-No mínimo o backend deve conseguir informar:
+* falhas recentes;
+* última ocorrência;
+* histórico de incidentes;
+* mudanças de estado.
 
-```text
-stale workflows total
-por tipo
-mais antigo
-último scan
-última reconciliação
-manual attention pendente
-```
-
-Pode ser calculado sob demanda nesta versão.
-
-Não precisa criar Prometheus/Grafana se o projeto ainda não usa.
+Evitar criar nova persistência se a informação já puder ser derivada de forma barata e segura.
 
 ---
 
-# 16. API operacional
+# 4. Operational Health Snapshot
 
-Criar endpoints administrativos mínimos.
+Criar um serviço central equivalente conceitualmente a:
 
-Sugestão:
-
-```text
-GET  /agents/recovery/status
-GET  /agents/recovery/stale
-POST /agents/recovery/run
+```ts
+getOperationalHealth()
 ```
 
-Possivelmente:
+Ele deve produzir um snapshot estruturado semelhante a:
 
-```text
-POST /agents/recovery/:type/:id
+```ts
+type OperationalHealth = {
+  status:
+    | 'healthy'
+    | 'degraded'
+    | 'attention_required'
+    | 'restricted';
+
+  generatedAt: Date;
+
+  summary: {
+    activeIncidents: number;
+    criticalIncidents: number;
+    manualAttentionPending: number;
+    staleWorkflows: number;
+    failingJobs: number;
+    failingDeliveries: number;
+  };
+
+  signals: OperationalSignal[];
+
+  incidents: OperationalIncident[];
+
+  recommendations: OperationalRecommendation[];
+};
 ```
 
-somente se houver necessidade clara para recuperação manual de um item.
+Os nomes podem ser ajustados ao padrão real do projeto.
 
-`POST /run` deve executar apenas a reconciliação segura definida nesta versão.
-
-Não disparar execução arbitrária de agentes.
+Não persistir snapshots apenas por conveniência.
 
 ---
 
-# 17. Permissions
+# 5. Operational Signals
 
-Recovery é operação administrativa sensível.
+Criar um vocabulário pequeno e explícito.
 
-Não usar apenas `agents.read` para executar reconciliação.
+Exemplo:
 
-Reaproveitar uma permission administrativa existente se semanticamente correta.
-
-Se nenhuma permission existente representar adequadamente essa capacidade, aí sim justificar uma permission nova, como:
-
-```text
-agents.recovery.manage
+```ts
+type OperationalSignal = {
+  type: OperationalSignalType;
+  severity: 'info' | 'warning' | 'critical';
+  source: string;
+  entityType?: string;
+  entityId?: string;
+  detectedAt: Date;
+  reason: string;
+  metadata?: Record<string, safe value>;
+};
 ```
 
-Não criar permission nova automaticamente; primeiro avaliar o modelo atual.
+Nunca incluir:
 
-Leitura de status pode usar permission mais ampla de observabilidade/admin, conforme arquitetura real.
-
-Authorization sempre backend.
+* secrets;
+* tokens;
+* credentials;
+* payloads sensíveis;
+* stack traces completos contendo informações confidenciais.
 
 ---
 
-# 18. Execução manual primeiro
+# 6. Classificação de incidentes
 
-Nesta versão, preferir:
+Um ou mais sinais relacionados poderão formar um incidente operacional.
+
+Tipos iniciais sugeridos:
 
 ```text
-POST /agents/recovery/run
+workflow_stale
+repeated_job_failure
+run_stuck
+delivery_failure
+recovery_required
+manual_attention_required
+autonomy_circuit_open
+approval_bottleneck
+operational_degradation
 ```
 
-manual/administrativo.
-
-Não criar daemon automaticamente de início.
-
-Depois que o mecanismo estiver comprovado, podemos integrá-lo ao scheduler existente.
-
-Isso reduz risco enquanto validamos as regras.
+Não criar tipos que não correspondam a condições reais encontradas no código.
 
 ---
 
-# 19. Integração futura com scheduler
+# 7. Severidade
 
-A arquitetura deve permitir posteriormente algo como:
+Definir severidade deterministicamente.
 
-```text
-reconcileStaleAgentWorkflows()
-```
+Sugestão inicial:
 
-ser chamado pelo scheduler existente.
+### info
 
-Não criar scheduler novo.
+Situação operacional observável, porém sem degradação.
 
-Não implementar recorrência automática nesta versão salvo necessidade técnica comprovada.
+### warning
+
+Há degradação ou risco operacional, mas o sistema continua funcionando.
+
+### critical
+
+Existe risco de:
+
+* loop operacional;
+* execução repetidamente falhando;
+* perda de controle da autonomia;
+* impossibilidade de reconciliar automaticamente;
+* integridade operacional ameaçada.
+
+Severity nunca deve ser escolhida por LLM.
 
 ---
 
-# 20. Dry-run
+# 8. Response Policy
 
-Adicionar capacidade de dry-run se for simples e limpa.
+Criar um componente explícito semelhante a:
+
+```text
+operational-response-policy.ts
+```
+
+A política recebe o incidente e retorna exclusivamente uma destas decisões:
+
+```ts
+type OperationalResponse =
+  | 'observe'
+  | 'safe_recovery'
+  | 'restrict_autonomy'
+  | 'manual_attention';
+```
+
+Se houver necessidade real, pode existir:
+
+```text
+already_handled
+```
+
+ou equivalente.
+
+Evitar vocabulário excessivo.
+
+---
+
+# 9. Observe
+
+Usado quando:
+
+* condição merece monitoramento;
+* não existe correção automática comprovadamente segura;
+* ainda não atingiu threshold de intervenção.
+
+Nenhuma mutação operacional deve ocorrer.
+
+Deve haver auditabilidade adequada.
+
+---
+
+# 10. Safe Recovery
+
+Safe Recovery significa exclusivamente chamar mecanismos de recovery já considerados seguros.
+
+Inicialmente:
+
+```text
+Recovery v2.4
+```
+
+O Supervisor NÃO deve implementar reconciliação própria.
 
 Exemplo:
 
 ```text
-POST /agents/recovery/run?dryRun=true
-```
-
-Retorna:
-
-```text
-o que seria reconciliado
-por quê
-qual ação seria aplicada
-```
-
-sem alterar banco.
-
-Isso é muito útil operacionalmente.
-
-Se implementado, garantir que dry-run não produza efeitos colaterais.
-
----
-
-# 21. Recovery report
-
-O serviço deve retornar relatório estruturado.
-
-Exemplo:
-
-```json
-{
-  "startedAt": "...",
-  "finishedAt": "...",
-  "dryRun": false,
-  "scanned": 12,
-  "stale": 3,
-  "recovered": 2,
-  "manualAttention": 1,
-  "items": [...]
-}
-```
-
-Nunca esconder erros individuais.
-
-Se uma entidade falhar na reconciliação, avaliar se o scan pode continuar nas demais.
-
-Preferência:
-
-```text
-best-effort por item
-```
-
-com relatório completo.
-
----
-
-# 22. Tratamento de erro
-
-Distinguir:
-
-```text
-workflow não stale
-workflow já reconciliado
-workflow inconsistente
-erro operacional do DB
-erro inesperado
-```
-
-Não transformar tudo em 500 genérico internamente.
-
-API pode mapear conforme padrão atual de `AgentError`.
-
----
-
-# 23. Segurança contra deleção indevida
-
-Qualquer DELETE usado para limpar claims deve possuir predicados fortes.
-
-Exemplo conceitual:
-
-```text
-id = ?
-AND status = 'draft'
-AND updated_at < staleBefore
+incident
+   ↓
+Response Policy = safe_recovery
+   ↓
+runRecovery/reconcileOne existente
 ```
 
 Nunca:
 
 ```text
-DELETE WHERE status='draft'
+incident
+   ↓
+Supervisor altera diretamente tabela de workflow
 ```
-
-como operação cega.
-
-Preferir `RETURNING`.
-
-Adicionar teste garantindo que registro recente não seja removido.
 
 ---
 
-# 24. Testes obrigatórios
+# 11. Restrict Autonomy
 
-Adicionar no mínimo:
+Esta é uma ação de segurança.
 
-### Detection
+Usar somente quando existir condição objetiva que torne perigoso continuar executando autonomamente.
 
-1. Initiative stale é detectada.
-2. Initiative recente não é stale.
-3. Executive Review draft stale é detectada.
-4. Review draft recente não é stale.
-5. Strategic Memory draft stale é detectada.
-6. Memory draft recente não é stale.
+Exemplos possíveis:
 
-### Recovery
+* falhas repetidas acima de threshold;
+* circuit breaker já indicando degradação;
+* loop de execução detectado;
+* volume de falhas superior a limite de segurança.
 
-7. Review draft stale volta a permitir retry.
-8. Memory draft stale volta a permitir retry.
-9. Recovery não remove review completed.
-10. Recovery não remove memory active.
-11. Initiative com Action Plan existente não cria segundo plano.
-12. Initiative stale sem plano volta a estado seguro conforme fluxo real.
-13. Inconsistência relevante gera manual_attention.
+Preferencialmente utilizar mecanismo de autonomia/circuit breaker já existente.
 
-### Idempotência/concorrência
+Não criar um segundo kill switch.
 
-14. Duas reconciliações concorrentes produzem um único efeito.
-15. Recovery repetido é idempotente.
-16. Entidade alterada por outro processo antes do recovery é skipped com segurança.
+### Regra fundamental
 
-### Segurança
+O Supervisor pode:
 
-17. Recovery nunca cria approval.
-18. Recovery nunca executa tool.
-19. Recovery nunca modifica permission.
-20. Recovery nunca altera Policy Evaluator.
-21. Usuário sem permission não executa `/recovery/run`.
+```text
+reduzir autonomia
+```
 
-### Dry-run
+mas NÃO pode automaticamente:
 
-22. Dry-run detecta os mesmos stale items.
-23. Dry-run não altera banco.
-24. Dry-run não gera side effects.
+```text
+aumentar autonomia
+```
 
-### Observabilidade/auditoria
-
-25. stale_detected é auditado quando apropriado.
-26. reconciled contém entity/type/reason.
-27. manual_attention fica visível.
-28. status agregado retorna contagens corretas.
-
-Adicionar outros testes conforme o código real exigir.
+Se autonomia foi reduzida por segurança, restaurá-la deve obedecer ao mecanismo existente e, quando apropriado, exigir CEO/admin.
 
 ---
 
-# 25. Regressão
+# 12. Manual Attention
 
-Baseline atual após v2.3:
+Reutilizar a Director Decision Queue.
 
-Backend:
+Não criar:
 
-```text
-491 tests
-491 pass
-0 fail
-```
+* incident inbox separada;
+* segunda tabela de decisões;
+* segunda central de aprovações.
 
-Frontend:
+Para incidentes que exigem atenção humana:
 
 ```text
-82 tests
-82 pass
-0 fail
+domain='agents'
+signalType='agents.operations.<tipo>'
+requiresHumanAttention=true
 ```
 
-Executar suíte completa.
+ou padrão equivalente coerente com v1.9/v2.4.
 
-Reconciliar matematicamente:
+Deduplicação obrigatória.
 
-```text
-baseline
-+ novos testes
-= total final
-```
-
-Não aceitar somente suítes novas.
+O mesmo incidente não pode criar uma nova decisão a cada scan.
 
 ---
 
-# 26. Frontend
+# 13. Incident Correlation
 
-Criar tela operacional simples.
+Implementar correlação simples e determinística.
 
-Sugestão:
-
-```text
-/agents/recovery
-```
-
-Mostrar:
+Exemplo:
 
 ```text
-Saúde dos workflows
-Stale total
-Initiatives
-Executive Reviews
-Strategic Memories
-Mais antigo
-Manual attention
-Última execução
+job X
+↓
+run failure
+↓
+novo run
+↓
+failure
+↓
+novo run
+↓
+failure
 ```
 
-Ações:
+Deve representar uma condição operacional única de:
 
 ```text
-Simular recuperação
-Executar recuperação
+repeated_job_failure: job X
 ```
 
-Exibir confirmação adequada antes de operação real.
+e não três incidentes independentes, se semanticamente forem o mesmo problema.
 
-Não apresentar isso como ferramenta diária do usuário comum.
+Não implementar machine learning.
 
-É tela administrativa/operacional.
+Não utilizar LLM para correlation.
+
+Preferir:
+
+```text
+incidentType + entityType + entityId
+```
+
+como identidade/deduplication key quando aplicável.
 
 ---
 
-# 27. UX do dry-run
+# 14. Thresholds
 
-Após simular:
+Todos os thresholds operacionais devem:
 
-Mostrar tabela/lista:
+* possuir defaults conservadores;
+* ser configuráveis;
+* ter limites mínimos/máximos razoáveis;
+* ficar centralizados em env/config;
+* não aparecer como números mágicos espalhados pelo código.
+
+Exemplos que podem ser necessários:
 
 ```text
-Tipo
-ID
-Estado
-Idade
-Problema
-Ação proposta
+AGENT_OPERATIONAL_JOB_FAILURE_THRESHOLD
+AGENT_OPERATIONAL_FAILURE_WINDOW_SECONDS
+AGENT_OPERATIONAL_STUCK_AFTER_SECONDS
+AGENT_OPERATIONAL_APPROVAL_WARNING_AFTER_SECONDS
 ```
 
-Somente depois permitir executar recovery real.
+Criar SOMENTE variáveis realmente utilizadas.
 
-Não é obrigatório forçar dry-run antes da operação real no backend, mas a UI pode privilegiar esse fluxo.
+Não criar uma grande coleção especulativa de env vars.
 
 ---
 
-# 28. Typecheck/build
+# 15. Supervisor scan
+
+Implementar algo conceitualmente equivalente a:
+
+```ts
+runOperationalSupervision({
+  dryRun?: boolean
+})
+```
+
+Fluxo:
+
+```text
+collect signals
+     ↓
+classify incidents
+     ↓
+evaluate response policy
+     ↓
+apply allowed responses
+     ↓
+audit
+     ↓
+return structured report
+```
+
+Resultado sugerido:
+
+```ts
+type OperationalSupervisionReport = {
+  startedAt: Date;
+  finishedAt: Date;
+
+  dryRun: boolean;
+
+  signalsDetected: number;
+  incidentsDetected: number;
+
+  observed: number;
+  recovered: number;
+  autonomyRestricted: number;
+  escalated: number;
+
+  results: OperationalIncidentResult[];
+};
+```
+
+---
+
+# 16. Dry-run obrigatório
+
+Antes de execução real, deve existir modo:
+
+```text
+dryRun=true
+```
+
+No dry-run:
+
+Permitido:
+
+* ler banco;
+* detectar sinais;
+* classificar incidentes;
+* aplicar Response Policy;
+* produzir recomendações;
+* registrar scan somente se consistente com nossa política atual de auditoria.
+
+Proibido:
+
+* executar recovery;
+* alterar autonomia;
+* criar Decision Item;
+* modificar workflows.
+
+O resultado deve mostrar claramente:
+
+```text
+would_observe
+would_recover
+would_restrict_autonomy
+would_escalate
+```
+
+ou equivalente.
+
+---
+
+# 17. Idempotência
+
+Executar o supervisor duas vezes sobre o mesmo estado não pode:
+
+* criar decisões duplicadas;
+* abrir incidentes duplicados;
+* repetir recuperação destrutiva;
+* desabilitar repetidamente algo já desabilitado;
+* multiplicar side effects.
+
+Todos os efeitos reais devem possuir predicados condicionais, deduplicação ou reutilizar serviços já idempotentes.
+
+---
+
+# 18. Concorrência
+
+Duas execuções simultâneas do supervisor devem ser seguras.
+
+Não exigir necessariamente lock global caso a arquitetura consiga ser naturalmente idempotente.
+
+Porém:
+
+```text
+SELECT
+↓
+decisão em memória
+↓
+UPDATE incondicional
+```
+
+não é aceitável para operações críticas.
+
+Usar mecanismos condicionais/transacionais existentes.
+
+---
+
+# 19. Scheduler
+
+Diferentemente da v2.4, a arquitetura da v2.5 DEVE estar pronta para execução recorrente.
+
+Entretanto:
+
+### primeira entrega
+
+Implementar execução manual e serviço reutilizável.
+
+### execução automática
+
+Só integrar ao scheduler existente se puder ser feito de forma pequena, segura e sem criar outro scheduler.
+
+Se o scheduler atual puder chamar o serviço diretamente, pode ser integrado.
+
+Caso a integração aumente muito o escopo, deixar serviço pronto e documentar a ativação automática para v2.5.1.
+
+Não criar:
+
+* cron interno concorrente;
+* segundo scheduler;
+* setInterval solto dentro do backend.
+
+---
+
+# 20. Persistência de incidentes
+
+Antes de criar uma tabela `operational_incidents`, avaliar se incidentes podem ser derivados de:
+
+* estado atual;
+* audit logs;
+* Decision Queue.
+
+Preferência:
+
+```text
+não criar tabela nova
+```
+
+nesta versão, desde que status e histórico possam ser representados adequadamente.
+
+Criar persistência somente se tecnicamente necessária e justificar no relatório.
+
+---
+
+# 21. Auditoria
+
+Eventos sugeridos:
+
+```text
+agents.operations.scan.started
+agents.operations.signal.detected
+agents.operations.incident.detected
+agents.operations.safe_recovery
+agents.operations.autonomy_restricted
+agents.operations.manual_attention
+agents.operations.scan.completed
+```
+
+Ajustar conforme arquitetura real.
+
+Registrar somente eventos significativos.
+
+Evitar gerar dezenas de audit logs por entidade saudável.
+
+---
+
+# 22. Permissions
+
+Avaliar permissions existentes antes de criar novas.
+
+Leitura provavelmente poderá usar:
+
+```text
+agents.operations.read
+```
+
+Execução administrativa deve avaliar se:
+
+```text
+agents.recovery.manage
+```
+
+é semanticamente suficiente ou se realmente precisamos de:
+
+```text
+agents.operations.manage
+```
+
+Criar nova permission somente se houver necessidade semântica real.
+
+Autorização sempre no backend.
+
+Frontend nunca deve ser barreira de segurança.
+
+---
+
+# 23. API
+
+Sugestão inicial:
+
+```http
+GET /agents/operations/health
+GET /agents/operations/incidents
+POST /agents/operations/supervise?dryRun=true
+POST /agents/operations/supervise?dryRun=false
+```
+
+Só criar endpoints adicionais se houver necessidade objetiva.
+
+O endpoint de execução nunca deve aceitar instruções livres do usuário como:
+
+```json
+{
+  "action": "execute anything"
+}
+```
+
+Ele executa apenas a política operacional previamente codificada.
+
+---
+
+# 24. Frontend
+
+Criar uma página administrativa:
+
+```text
+/agents/operations
+```
+
+Nome visual sugerido:
+
+```text
+Operações
+```
+
+ou:
+
+```text
+Saúde Operacional
+```
+
+Adicionar à sub-nav de Agentes.
+
+Tela deve ser claramente operacional, não uma ferramenta cotidiana.
+
+---
+
+# 25. Dashboard operacional
+
+Exibir:
+
+### Overall health
+
+```text
+Healthy
+Degraded
+Attention Required
+Restricted
+```
+
+### Indicadores
+
+* incidentes ativos;
+* incidentes críticos;
+* stale workflows;
+* jobs com falhas;
+* falhas de eventos/deliveries;
+* atenção humana;
+* estado da autonomia;
+* estado do circuit breaker;
+* último scan.
+
+### Incidentes
+
+Tabela:
+
+```text
+Severity
+Type
+Entity
+Problem
+Detected
+Recommended response
+Current state
+```
+
+---
+
+# 26. Ações da UI
+
+Permitir:
+
+### Simular supervisão
+
+Executa `dryRun=true`.
+
+Sem confirmação obrigatória.
+
+### Executar supervisão
+
+Executa operação real.
+
+Exigir diálogo de confirmação.
+
+Mostrar antes:
+
+```text
+Esta operação poderá executar recoveries previamente autorizados,
+restringir autonomia em condições de segurança e criar itens de
+atenção humana.
+```
+
+Não apresentar como “IA vai corrigir tudo”.
+
+---
+
+# 27. Autonomous safety rules
+
+Adicionar regras explícitas e testes para provar que o Supervisor:
+
+1. nunca concede permission;
+2. nunca altera role;
+3. nunca executa SQL arbitrário;
+4. nunca executa shell;
+5. nunca executa tool arbitrária;
+6. nunca cria Action Plan por conta própria;
+7. nunca ignora approval;
+8. nunca altera decisão do Policy Evaluator;
+9. nunca remove bloqueio imposto por Circuit Breaker;
+10. nunca aumenta autonomia automaticamente;
+11. só executa recovery pelos serviços oficiais;
+12. só escala humanos pela Decision Queue oficial.
+
+---
+
+# 28. Testes obrigatórios
+
+Cobrir no mínimo:
+
+## Signal detection
+
+1. estado saudável não gera incidente;
+2. stale workflow gera signal;
+3. falha isolada de job abaixo do threshold não gera incidente crítico;
+4. falhas consecutivas atingindo threshold geram incidente;
+5. condição de autonomia restrita aparece no health;
+6. Decision Queue com recovery pendente aparece no health.
+
+## Classification
+
+7. severity correta para warning;
+8. severity correta para critical;
+9. incident correlation evita duplicação;
+10. entidade diferente produz incidente independente.
+
+## Policy
+
+11. condição observável → observe;
+12. stale recuperável → safe_recovery;
+13. condição perigosa → restrict_autonomy;
+14. condição não reconciliável → manual_attention.
+
+## Safety
+
+15. supervisor nunca cria Action Plan;
+16. nunca cria approval;
+17. nunca chama ferramenta arbitrária;
+18. nunca modifica permissions;
+19. nunca aumenta autonomia;
+20. nunca ignora Circuit Breaker.
+
+## Execution
+
+21. dry-run sem side effects;
+22. dry-run informa ações que seriam executadas;
+23. safe recovery chama Recovery v2.4;
+24. manual attention reutiliza Decision Queue;
+25. restrict autonomy reutiliza mecanismo oficial.
+
+## Idempotency
+
+26. dois scans não duplicam Decision Item;
+27. recovery já realizado não roda novamente;
+28. autonomy já restrita não sofre efeito duplicado.
+
+## Concurrency
+
+29. dois supervisors concorrentes não provocam dois efeitos reais incompatíveis.
+
+## API/Auth
+
+30. leitura sem permission → 403;
+31. leitura com permission adequada → 200;
+32. execução sem permission administrativa → 403;
+33. dry-run autorizado → 200;
+34. execução real autorizada → 200.
+
+## Status
+
+35. health summary matematicamente consistente;
+36. contagem por severity consistente;
+37. último scan auditado corretamente.
+
+Adicionar outros testes que forem necessários após leitura do código real.
+
+---
+
+# 29. Compatibilidade
+
+A v2.5 deve preservar integralmente:
+
+* Agentes v1.x;
+* Action Planning;
+* Approvals;
+* Jobs;
+* Runs;
+* Events;
+* Event Rules;
+* Director Decision Queue;
+* Strategy;
+* Executive Reviews;
+* Strategic Memory;
+* Recovery v2.4;
+* Circuit Breaker;
+* permissions atuais;
+* audit logs atuais.
+
+Nenhum fluxo existente deve ser reimplementado.
+
+---
+
+# 30. Migração
+
+Evitar migration.
+
+Antes de criar nova tabela/coluna:
+
+1. verificar schema atual;
+2. verificar audit logs;
+3. verificar Decision Queue;
+4. verificar estado do Job/Run/Event;
+5. verificar Recovery.
+
+Se for inevitável criar migration:
+
+* justificar;
+* manter mínima;
+* adicionar índices necessários;
+* garantir compatibilidade com dados existentes.
+
+---
+
+# 31. Processo obrigatório de implementação
+
+Antes de escrever código:
+
+1. revisar implementação real de Jobs/Runs;
+2. revisar Event Engine;
+3. revisar Approvals;
+4. revisar Decision Queue;
+5. revisar Circuit Breaker/autonomy;
+6. revisar Recovery v2.4;
+7. revisar audit logs;
+8. mapear quais estados reais representam degradação;
+9. documentar rapidamente o mapa encontrado.
+
+Somente então implementar.
+
+Não inferir estados apenas pelos nomes.
+
+---
+
+# 32. Validação final
 
 Executar:
 
-Backend:
+### Backend
 
 ```bash
 npx tsc --noEmit
 ```
 
-Frontend:
+Suite completa usando o mesmo runner/concurrency oficial do projeto.
+
+Registrar números exatos:
+
+```text
+tests
+pass
+fail
+skipped
+```
+
+Comparar contra baseline da v2.4:
+
+```text
+526 / 526
+```
+
+### Frontend
+
+Executar suite completa.
+
+Baseline da v2.4:
+
+```text
+87 / 87
+```
+
+Executar:
 
 ```bash
 npx tsc --noEmit
 npm run build
 ```
 
-Se lint continuar inexistente, apenas registrar.
+Executar lint somente se houver script/config real.
+
+Não afirmar lint OK se lint não existir.
 
 ---
 
-# 29. Migration
+# 33. Relatório final
 
-Evitar migration se timestamps/estados atuais forem suficientes.
-
-Se for necessária migration, usar:
-
-```text
-drizzle-kit generate
-drizzle-kit migrate
-```
-
-e validar:
-
-```text
-SQL
-_journal.json
-snapshot
-__drizzle_migrations
-```
-
-Não criar colunas apenas por conveniência.
-
----
-
-# 30. Critérios de aprovação
-
-A v2.4 só estará aprovada se:
-
-1. workflows stale forem detectados com threshold temporal;
-2. registros recentes não forem confundidos com stale;
-3. recuperação for idempotente;
-4. concorrência estiver protegida;
-5. Executive Review draft órfã puder ser recuperada;
-6. Strategic Memory draft órfã puder ser recuperada;
-7. Initiative órfã puder ser reconciliada com segurança;
-8. recovery nunca criar segundo Action Plan;
-9. recovery nunca executar tool;
-10. recovery nunca criar approval;
-11. recovery nunca modificar permissions;
-12. inconsistências perigosas forem escaladas para atenção humana;
-13. dry-run não tiver side effects;
-14. operações forem auditáveis;
-15. status agregado existir;
-16. permission administrativa proteger execução;
-17. nenhuma arquitetura paralela tiver sido criada;
-18. backend completo passar;
-19. frontend completo passar;
-20. typechecks passarem;
-21. build passar.
-
----
-
-# 31. Relatório final obrigatório
-
-Ao concluir, NÃO faça commit.
-
-Entregar `executed.md` contendo:
+Entregar relatório contendo:
 
 1. resumo;
-2. problema estrutural resolvido;
-3. workflows mapeados;
-4. arquitetura de recovery;
-5. definição de stale;
-6. configuração/threshold;
-7. registry/adapters;
-8. Initiative recovery;
-9. Executive Review recovery;
-10. Strategic Memory recovery;
-11. regras de idempotência;
-12. proteção concorrente;
-13. dry-run;
-14. manual attention;
-15. integração com Decision Queue, se usada;
-16. auditoria;
-17. observabilidade/status;
-18. API;
-19. permissions;
-20. frontend;
-21. migrations, se houver;
-22. arquivos criados;
-23. arquivos alterados;
-24. testes adicionados;
-25. números exatos backend;
-26. números exatos frontend;
-27. typecheck/build;
-28. `git diff --stat`;
-29. `git status`;
-30. bugs/limitações reais encontradas.
+2. mapa operacional encontrado;
+3. arquitetura;
+4. fontes de sinais;
+5. signal types;
+6. incident types;
+7. severity;
+8. health calculation;
+9. response policy;
+10. safe recovery;
+11. autonomy restriction;
+12. manual attention;
+13. correlation/deduplication;
+14. thresholds;
+15. dry-run;
+16. concorrência;
+17. idempotência;
+18. scheduler;
+19. auditoria;
+20. API;
+21. permissions;
+22. frontend;
+23. migrations;
+24. arquivos criados;
+25. arquivos alterados;
+26. testes adicionados;
+27. números exatos backend;
+28. números exatos frontend;
+29. typecheck/build;
+30. git diff --stat;
+31. git status;
+32. bugs/limitações reais encontrados.
 
-Não esconder limitações.
+### Regra final
 
-**NÃO REALIZAR COMMIT.**
+**NÃO FAZER COMMIT.**
 
-Aguardar aprovação final do Diretor/CEO.
+Todas as mudanças devem permanecer no working tree aguardando análise e autorização do Diretor/CEO.
+
+---
+
+# 34. Critérios de aprovação
+
+A v2.5 somente será aprovada se:
+
+* não criar segundo Executor;
+* não criar segundo scheduler;
+* não criar segundo Circuit Breaker;
+* não criar segunda Decision Queue;
+* não criar mecanismo paralelo de recovery;
+* incidentes forem derivados de estados reais;
+* classificação for determinística;
+* Response Policy não depender de LLM;
+* recovery usar exclusivamente v2.4;
+* supervisor nunca elevar autonomia;
+* condição perigosa puder restringir autonomia;
+* condição ambígua for escalada ao humano;
+* dry-run não produzir side effects;
+* execução real for idempotente;
+* concorrência for segura;
+* operations health estiver disponível;
+* auditoria estiver implementada;
+* backend authorization estiver correta;
+* testes de segurança cobrirem proibições críticas;
+* suíte completa permanecer verde;
+* frontend build permanecer verde;
+* nenhuma regressão arquitetural for introduzida.
+
+Não mascarar bugs encontrados durante a implementação. Registrar todos no relatório final, mesmo quando forem corrigidos durante o desenvolvimento.

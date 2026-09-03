@@ -32,6 +32,9 @@ import type {
   ExecutiveReview,
   MemoryStatus,
   MemoryType,
+  OperationalHealth,
+  OperationalIncident,
+  OperationalSupervisionReport,
   RecoveryItemResult,
   RecoveryReport,
   RecoveryStatus,
@@ -685,4 +688,17 @@ export function reconcileWorkflow(
   dryRun: boolean,
 ): Promise<{ data: RecoveryItemResult }> {
   return apiFetch(`/api/agents/recovery/${type}/${id}${toQueryString({ dryRun })}`, { method: "POST", body: JSON.stringify({}) });
+}
+
+// Agentes v2.5 — Operational Supervision & Autonomous Incident Response (correio.md).
+export function getOperationalHealth(): Promise<{ data: OperationalHealth }> {
+  return apiFetch(`/api/agents/operations/health`);
+}
+
+export function getOperationalIncidents(): Promise<{ data: OperationalIncident[] }> {
+  return apiFetch(`/api/agents/operations/incidents`);
+}
+
+export function runOperationalSupervision(dryRun: boolean): Promise<{ data: OperationalSupervisionReport }> {
+  return apiFetch(`/api/agents/operations/supervise${toQueryString({ dryRun })}`, { method: "POST", body: JSON.stringify({}) });
 }

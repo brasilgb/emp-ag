@@ -1035,3 +1035,98 @@ export interface RecoveryStatus {
   lastScanAt: string | null;
   lastReconciledAt: string | null;
 }
+
+// Agentes v2.5 — Operational Supervision & Autonomous Incident Response (correio.md).
+export const OPERATIONAL_SEVERITIES = ["info", "warning", "critical"] as const;
+export type OperationalSeverity = (typeof OPERATIONAL_SEVERITIES)[number];
+
+export const OPERATIONAL_INCIDENT_TYPES = [
+  "recovery_required",
+  "repeated_job_failure",
+  "run_stuck",
+  "delivery_failure",
+  "manual_attention_required",
+  "autonomy_circuit_open",
+  "approval_bottleneck",
+  "operational_degradation",
+] as const;
+export type OperationalIncidentType = (typeof OPERATIONAL_INCIDENT_TYPES)[number];
+
+export const OPERATIONAL_RESPONSES = ["observe", "safe_recovery", "restrict_autonomy", "manual_attention", "already_handled"] as const;
+export type OperationalResponse = (typeof OPERATIONAL_RESPONSES)[number];
+
+export const OPERATIONAL_HEALTH_STATUSES = ["healthy", "degraded", "attention_required", "restricted"] as const;
+export type OperationalHealthStatus = (typeof OPERATIONAL_HEALTH_STATUSES)[number];
+
+// Nome distinto de `OperationalSignal` (já usado pelo módulo Director
+// v1.8 para sinais de negócio, ver linha ~636) — este é o sinal do
+// Operational Supervisor v2.5, formato diferente (severity fechada,
+// entityId string, metadata tipada), nunca o mesmo tipo.
+export interface SupervisorSignal {
+  type: string;
+  severity: OperationalSeverity;
+  source: string;
+  entityType?: string;
+  entityId?: string;
+  detectedAt: string;
+  reason: string;
+  metadata?: Record<string, string | number | boolean | null>;
+}
+
+export interface OperationalIncident {
+  id: string;
+  type: OperationalIncidentType;
+  severity: OperationalSeverity;
+  entityType: string;
+  entityId: string;
+  problem: string;
+  detectedAt: string;
+  signals: SupervisorSignal[];
+}
+
+export interface OperationalRecommendation {
+  incidentId: string;
+  incidentType: OperationalIncidentType;
+  response: OperationalResponse;
+  reason: string;
+}
+
+export interface OperationalHealth {
+  status: OperationalHealthStatus;
+  generatedAt: string;
+  summary: {
+    activeIncidents: number;
+    criticalIncidents: number;
+    manualAttentionPending: number;
+    staleWorkflows: number;
+    failingJobs: number;
+    failingDeliveries: number;
+  };
+  signals: SupervisorSignal[];
+  incidents: OperationalIncident[];
+  recommendations: OperationalRecommendation[];
+}
+
+export interface OperationalIncidentResult {
+  incidentId: string;
+  incidentType: OperationalIncidentType;
+  entityType: string;
+  entityId: string;
+  response: OperationalResponse;
+  outcome: string;
+  reason: string;
+  timestamp: string;
+}
+
+export interface OperationalSupervisionReport {
+  startedAt: string;
+  finishedAt: string;
+  dryRun: boolean;
+  signalsDetected: number;
+  incidentsDetected: number;
+  observed: number;
+  recovered: number;
+  autonomyRestricted: number;
+  escalated: number;
+  results: OperationalIncidentResult[];
+}

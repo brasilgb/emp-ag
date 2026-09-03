@@ -118,5 +118,7 @@ export const queryKeys = {
     directorMemory: (id: number) => ["agents", "director", "memories", id] as const,
     recoveryStatus: ["agents", "recovery", "status"] as const,
     recoveryStale: ["agents", "recovery", "stale"] as const,
+    operationalHealth: ["agents", "operations", "health"] as const,
+    operationalIncidents: ["agents", "operations", "incidents"] as const,
   },
 };

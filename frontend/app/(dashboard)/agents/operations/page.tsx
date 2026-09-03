@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 
 import { AgentsSubNav } from "@/components/agents/agents-sub-nav";
 import { OperationsDashboard } from "@/components/agents/operations/operations-dashboard";
+import { OperationsSupervisorDashboard } from "@/components/agents/operations/operations-supervisor-dashboard";
 
 export const metadata: Metadata = { title: "Operações de Agentes" };
 
@@ -18,6 +19,19 @@ export default function AgentOperationsPage() {
       <AgentsSubNav />
 
       <OperationsDashboard />
+
+      {/* Agentes v2.5 (correio.md seções 24-25) — Operational Supervisor:
+          reaproveita esta MESMA página administrativa (nunca uma segunda
+          tela paralela para "operações" — a v1.6 já é exatamente essa
+          página; o Supervisor é uma seção adicional dela, não uma rota
+          nova concorrente). */}
+      <div>
+        <h2 className="text-lg font-semibold tracking-tight">Supervisão Operacional</h2>
+        <p className="text-sm text-muted-foreground">
+          Detecção e resposta segura a degradações operacionais — tela administrativa, não uma ferramenta de uso diário.
+        </p>
+      </div>
+      <OperationsSupervisorDashboard />
     </div>
   );
 }

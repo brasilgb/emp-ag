@@ -172,4 +172,20 @@ export const env = {
   get AGENT_WORKFLOW_STALE_AFTER_SECONDS(): number {
     return positiveIntEnv('AGENT_WORKFLOW_STALE_AFTER_SECONDS', 900, 60);
   },
+
+  // Agentes v2.5 — Operational Supervision (correio.md seção 14). Só as
+  // 2 variáveis realmente sem equivalente existente: contagem/janela de
+  // falha repetida de Job já é `circuit.failureThreshold`
+  // (agents/settings/resolver.ts, mesmo valor do Circuit Breaker,
+  // reaproveitado por `agents/incidents/service.ts` desde a v1.6 —
+  // nunca duplicado aqui) e o threshold de workflow stale já é
+  // `AGENT_WORKFLOW_STALE_AFTER_SECONDS` acima (Recovery v2.4,
+  // reaproveitado). "Run preso" e "approval pendente há muito tempo" não
+  // tinham NENHUM threshold equivalente no código real — daí as 2 novas.
+  get AGENT_OPERATIONAL_STUCK_AFTER_SECONDS(): number {
+    return positiveIntEnv('AGENT_OPERATIONAL_STUCK_AFTER_SECONDS', 1800, 60);
+  },
+  get AGENT_OPERATIONAL_APPROVAL_WARNING_AFTER_SECONDS(): number {
+    return positiveIntEnv('AGENT_OPERATIONAL_APPROVAL_WARNING_AFTER_SECONDS', 3600, 60);
+  },
 };

@@ -26,6 +26,10 @@ import {
   jobStatusLabel,
   memoryImportanceLabel,
   memoryStatusLabel,
+  operationalHealthStatusLabel,
+  operationalIncidentTypeLabel,
+  operationalResponseLabel,
+  operationalSeverityLabel,
   recommendationTypeLabel,
   recoveryResultLabel,
   reviewOutcomeLabel,
@@ -56,6 +60,10 @@ import type {
   JobStatus,
   MemoryImportance,
   MemoryStatus,
+  OperationalHealthStatus,
+  OperationalIncidentType,
+  OperationalResponse,
+  OperationalSeverity,
   RecommendationType,
   RecoveryResult,
   ReviewOutcome,
@@ -534,6 +542,60 @@ export function RecoveryResultBadge({ result }: { result: RecoveryResult }) {
   return (
     <Badge variant="secondary" className={cn("border-transparent", RECOVERY_RESULT_STYLES[result])}>
       {recoveryResultLabel(result)}
+    </Badge>
+  );
+}
+
+// Agentes v2.5 — Operational Supervision & Autonomous Incident Response.
+const OPERATIONAL_HEALTH_STATUS_STYLES: Record<OperationalHealthStatus, string> = {
+  healthy: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  degraded: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  attention_required: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  restricted: "bg-red-500/10 text-red-700 dark:text-red-400",
+};
+
+export function OperationalHealthStatusBadge({ status }: { status: OperationalHealthStatus }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", OPERATIONAL_HEALTH_STATUS_STYLES[status])}>
+      {operationalHealthStatusLabel(status)}
+    </Badge>
+  );
+}
+
+const OPERATIONAL_SEVERITY_STYLES: Record<OperationalSeverity, string> = {
+  info: "bg-muted text-muted-foreground",
+  warning: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  critical: "bg-red-500/10 text-red-700 dark:text-red-400",
+};
+
+export function OperationalSeverityBadge({ severity }: { severity: OperationalSeverity }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", OPERATIONAL_SEVERITY_STYLES[severity])}>
+      {operationalSeverityLabel(severity)}
+    </Badge>
+  );
+}
+
+export function OperationalIncidentTypeBadge({ type }: { type: OperationalIncidentType }) {
+  return (
+    <Badge variant="secondary" className="border-transparent bg-muted text-muted-foreground">
+      {operationalIncidentTypeLabel(type)}
+    </Badge>
+  );
+}
+
+const OPERATIONAL_RESPONSE_STYLES: Record<OperationalResponse, string> = {
+  observe: "bg-muted text-muted-foreground",
+  safe_recovery: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  restrict_autonomy: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  manual_attention: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  already_handled: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+};
+
+export function OperationalResponseBadge({ response }: { response: OperationalResponse }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", OPERATIONAL_RESPONSE_STYLES[response])}>
+      {operationalResponseLabel(response)}
     </Badge>
   );
 }
