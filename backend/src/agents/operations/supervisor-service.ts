@@ -1,4 +1,5 @@
 import { audit } from '../../services/audit.js';
+import { escalateSupervisorFinding } from '../escalations/supervisor-integration.js';
 import { applySafeRecovery, restrictJobAutonomy } from './safe-actions.js';
 import { escalateIncidentToManualAttention } from './manual-attention.js';
 import { classifyIncidents } from './incidents.js';
@@ -69,6 +70,29 @@ export async function runOperationalSupervision(params: RunOperationalSupervisio
 
     const result = await applyResponse(incident, recommendation, dryRun, params.actorUserId);
     results.push(result);
+
+    // Agentes v2.6 (correio.md seções 13/14/33 item 25) — integração com
+    // Responsibility/Escalation, SEMPRE best-effort e ORTOGONAL à
+    // Response Policy acima (uma escalation formal para o dono do
+    // domínio é uma notificação organizacional, independente de qual
+    // ação técnica — safe_recovery/observe/etc. — já foi aplicada).
+    // NUNCA em dry-run (zero side effects, seção 16 da v2.5 mantida). Uma
+    // falha aqui NUNCA derruba o scan — auditada e o loop continua.
+    if (!dryRun) {
+      try {
+        await escalateSupervisorFinding(incident);
+      } catch (error) {
+        await audit({
+          userId: params.actorUserId,
+          actorType: params.actorUserId ? 'user' : 'system',
+          actorId: params.actorUserId ? String(params.actorUserId) : null,
+          action: 'agents.escalation.creation_failed',
+          entityType: incident.entityType,
+          entityId: incident.entityId,
+          metadata: { incidentType: incident.type, message: error instanceof Error ? error.message : 'Falha desconhecida ao criar escalation.' },
+        });
+      }
+    }
   }
 
   const finishedAt = new Date();

@@ -121,5 +121,9 @@ export const queryKeys = {
     operationalHealth: ["agents", "operations", "health"] as const,
     operationalIncidents: ["agents", "operations", "incidents"] as const,
     operationalSupervisionScheduler: ["agents", "operations", "scheduler"] as const,
+    responsibilities: (params?: unknown) => ["agents", "responsibilities", params ?? {}] as const,
+    responsibility: (id: number) => ["agents", "responsibilities", id] as const,
+    escalations: (params?: unknown) => ["agents", "escalations", params ?? {}] as const,
+    escalation: (id: number) => ["agents", "escalations", id] as const,
   },
 };

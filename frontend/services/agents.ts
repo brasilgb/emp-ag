@@ -6,6 +6,7 @@ import type {
   ActionPlanStatus,
   Agent,
   AgentApproval,
+  AgentResponsibility,
   AgentConversation,
   AgentConversationDetail,
   AgentEvent,
@@ -25,6 +26,9 @@ import type {
   DirectorDecision,
   DirectorGoal,
   DirectorInitiative,
+  EscalationSeverity,
+  EscalationStatus,
+  EscalationPolicy,
   EventCatalogEntry,
   EventFilters,
   EventStatus,
@@ -32,6 +36,7 @@ import type {
   ExecutiveReview,
   MemoryStatus,
   MemoryType,
+  OperationalEscalation,
   OperationalHealth,
   OperationalIncident,
   OperationalSupervisionReport,
@@ -65,6 +70,8 @@ import type {
   MetricCatalogEntry,
   MetricDirection,
   OperationalSignal,
+  ResponsibilityPriority,
+  ResponsibilityType,
   OperationsSummary,
   ProposeActionResult,
   ResolvedSetting,
@@ -711,4 +718,88 @@ export function getOperationalSupervisionSchedulerStatus(): Promise<{ data: Oper
 
 export function setOperationalSupervisionSchedulerEnabled(enabled: boolean): Promise<{ data: OperationalSupervisionSchedulerStatus }> {
   return apiFetch(`/api/agents/operations/scheduler`, { method: "PATCH", body: JSON.stringify({ enabled }) });
+}
+
+// Agentes v2.6 — Agent Responsibilities, Operational Ownership & Escalation (correio.md).
+export interface ListResponsibilitiesParams {
+  page?: number;
+  limit?: number;
+  agentId?: number;
+  domain?: SignalDomain;
+  responsibilityType?: ResponsibilityType;
+  enabled?: boolean;
+}
+
+export function listResponsibilities(params: ListResponsibilitiesParams = {}): Promise<Paginated<AgentResponsibility>> {
+  return apiFetch(`/api/agents/responsibilities${toQueryString({ ...params })}`);
+}
+
+export function getResponsibility(id: number): Promise<{ data: AgentResponsibility }> {
+  return apiFetch(`/api/agents/responsibilities/${id}`);
+}
+
+export interface CreateResponsibilityInput {
+  agentId: number;
+  name: string;
+  description?: string;
+  domain: SignalDomain;
+  responsibilityType: ResponsibilityType;
+  priority?: ResponsibilityPriority;
+  conditions?: Record<string, unknown>;
+  escalationPolicy?: EscalationPolicy;
+  escalationTargetAgentId?: number;
+  escalationTargetUserId?: number;
+}
+
+export function createResponsibility(input: CreateResponsibilityInput): Promise<{ data: AgentResponsibility }> {
+  return apiFetch(`/api/agents/responsibilities`, { method: "POST", body: JSON.stringify(input) });
+}
+
+export interface UpdateResponsibilityInput {
+  name?: string;
+  description?: string | null;
+  priority?: ResponsibilityPriority;
+  conditions?: Record<string, unknown>;
+  enabled?: boolean;
+  escalationPolicy?: EscalationPolicy;
+  escalationTargetAgentId?: number | null;
+  escalationTargetUserId?: number | null;
+}
+
+export function updateResponsibility(id: number, input: UpdateResponsibilityInput): Promise<{ data: AgentResponsibility }> {
+  return apiFetch(`/api/agents/responsibilities/${id}`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+export function deleteResponsibility(id: number): Promise<void> {
+  return apiFetch(`/api/agents/responsibilities/${id}`, { method: "DELETE" });
+}
+
+export interface ListEscalationsParams {
+  page?: number;
+  limit?: number;
+  status?: EscalationStatus;
+  severity?: EscalationSeverity;
+  responsibilityId?: number;
+  targetAgentId?: number;
+  targetUserId?: number;
+}
+
+export function listEscalations(params: ListEscalationsParams = {}): Promise<Paginated<OperationalEscalation>> {
+  return apiFetch(`/api/agents/escalations${toQueryString({ ...params })}`);
+}
+
+export function getEscalation(id: number): Promise<{ data: OperationalEscalation }> {
+  return apiFetch(`/api/agents/escalations/${id}`);
+}
+
+export function acknowledgeEscalation(id: number): Promise<{ data: OperationalEscalation }> {
+  return apiFetch(`/api/agents/escalations/${id}/acknowledge`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function resolveEscalation(id: number): Promise<{ data: OperationalEscalation }> {
+  return apiFetch(`/api/agents/escalations/${id}/resolve`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function dismissEscalation(id: number, reason: string): Promise<{ data: OperationalEscalation }> {
+  return apiFetch(`/api/agents/escalations/${id}/dismiss`, { method: "POST", body: JSON.stringify({ reason }) });
 }

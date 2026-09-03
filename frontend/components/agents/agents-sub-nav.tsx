@@ -23,6 +23,8 @@ const ITEMS = [
   { href: "/agents/audit", label: "Auditoria", permission: "agents.audit.read" },
   { href: "/agents/settings", label: "Configurações", permission: "agents.settings.read" },
   { href: "/agents/recovery", label: "Recovery", permission: "agents.operations.read" },
+  { href: "/agents/responsibilities", label: "Responsibilities", permission: "agents.responsibilities.read" },
+  { href: "/agents/escalations", label: "Escalations", permission: "agents.escalations.read" },
 ] as const;
 
 // Navegação interna do módulo Agentes (seções 38-41) — mesmo princípio de

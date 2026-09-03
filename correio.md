@@ -1,832 +1,863 @@
-# Agentes v2.5.1 — Automatic Operational Supervision
+# Agência de Software 2026 — Agentes v2.6
 
-## 1. Objetivo
+## Agent Responsibilities, Operational Ownership & Escalation
 
-Integrar o `Operational Supervisor` da v2.5 ao mecanismo de agendamento já existente da plataforma, permitindo supervisão recorrente e segura da operação sem criar:
+Estamos continuando a evolução da arquitetura de agentes da Agência de Software 2026.
 
-* segundo scheduler;
-* cron paralelo;
-* `setInterval` solto;
-* novo Executor;
-* novo Circuit Breaker;
-* nova Decision Queue;
-* novo mecanismo de recovery.
+A v2.5.1 — Automatic Operational Supervision foi aprovada pelo Diretor/CEO e deve ser considerada baseline imutável desta implementação.
 
-A execução automática deve chamar exclusivamente o serviço existente:
-
-```ts
-runOperationalSupervision(...)
-```
-
-O objetivo é permitir que a agência fiscalize periodicamente a própria saúde operacional.
+Não refatore módulos anteriores sem necessidade objetiva.
 
 ---
 
-# 2. Princípio arquitetural
+# 1. Objetivo da v2.6
 
-Fluxo obrigatório:
+Implementar uma camada formal de **responsabilidade operacional dos agentes**.
 
-```text
-Scheduler existente
-      ↓
-Operational Supervision Trigger
-      ↓
-runOperationalSupervision()
-      ↓
-Response Policy v2.5
-      ↓
-observe
-safe_recovery
-restrict_autonomy
-manual_attention
-already_handled
-```
+Até agora temos infraestrutura robusta para:
 
-O scheduler não toma decisões operacionais.
+* interpretação por LLM;
+* planejamento;
+* Action Plans;
+* Policy Evaluator;
+* approvals;
+* execução determinística;
+* Jobs;
+* Runs;
+* delegação controlada;
+* Event Engine;
+* autonomia;
+* recovery;
+* governança;
+* observabilidade;
+* Operational Supervisor;
+* supervisão automática.
 
-Ele apenas dispara o serviço já existente.
+Agora precisamos responder formalmente:
 
-Proibido:
+> Qual agente é responsável por observar determinada área da empresa?
 
-```text
-Scheduler
-   ↓
-interpreta sinais
-   ↓
-altera workflows diretamente
-```
+> O que ele deve fazer quando encontrar determinada situação?
 
-Toda classificação continua dentro da arquitetura da v2.5.
+> Quando deve apenas registrar?
 
----
+> Quando pode recomendar?
 
-# 3. Revisão obrigatória antes de implementar
+> Quando deve abrir uma ação/plano?
 
-Antes de escrever código, revisar o scheduler real existente, principalmente:
+> Quando deve pedir aprovação?
 
-```text
-agents/jobs/scheduler.ts
-agents/jobs/job-runner.ts
-```
+> Quando deve escalar para outro agente ou para um humano?
 
-e qualquer serviço responsável por:
-
-* inicialização do scheduler;
-* timers;
-* polling;
-* graceful shutdown;
-* execução concorrente;
-* lifecycle da aplicação.
-
-Documentar rapidamente no relatório:
-
-* como o scheduler atual inicia;
-* qual frequência utiliza;
-* se existe um loop central;
-* como evita sobreposição;
-* como trata exceptions;
-* como encerra no shutdown.
-
-Não inferir a arquitetura apenas pelos nomes dos arquivos.
+A v2.6 deve transformar agentes em **responsáveis operacionais**, não simplesmente agentes “mais autônomos”.
 
 ---
 
-# 4. Não criar um Job normal
+# 2. Princípio arquitetural central
 
-A supervisão operacional NÃO deve ser implementada como um Job comum criado pelo usuário.
+Responsabilidade NÃO significa permissão.
 
-Motivo:
-
-Jobs pertencem ao domínio de objetivos dos agentes.
-
-Operational Supervision é infraestrutura interna de segurança.
-
-Portanto:
+Nunca inferir:
 
 ```text
-Operational Supervisor != AgentJob
+agent owns X
+=> agent may execute anything in X
 ```
 
-Mas deve reaproveitar o mesmo scheduler/lifecycle da infraestrutura quando tecnicamente apropriado.
+A responsabilidade operacional define:
+
+```text
+o que observar
++
+o que interpretar
++
+para quem reportar
++
+quando escalar
+```
+
+Toda ação continua passando obrigatoriamente pelos mecanismos existentes:
+
+```text
+LLM / deterministic trigger
+    ↓
+Planner
+    ↓
+validation
+    ↓
+Policy Evaluator
+    ↓
+Action Plan
+    ↓
+permissions / approvals / autonomy
+    ↓
+deterministic executor
+```
+
+Nenhuma Responsibility pode:
+
+* ignorar permissions;
+* elevar role;
+* elevar autonomy;
+* bypassar approval;
+* executar SQL;
+* executar shell;
+* escolher arbitrary tools;
+* chamar handlers diretamente;
+* alterar dados sem passar pelo executor existente.
 
 ---
 
-# 5. Configuração
+# 3. Antes de implementar
 
-Criar somente configurações realmente necessárias.
+Faça primeiro uma revisão real do repositório.
 
-Sugestão:
+Identifique e documente:
 
-```text
-AGENT_OPERATIONAL_SUPERVISION_ENABLED
-AGENT_OPERATIONAL_SUPERVISION_INTERVAL_SECONDS
-```
+1. estrutura atual de agentes;
+2. definição atual de agent IDs/types;
+3. permissions relacionadas;
+4. Jobs;
+5. Event Rules;
+6. Action Plans;
+7. Delegation;
+8. Operational Supervisor;
+9. Audit Logs;
+10. notifications existentes, se houver;
+11. estrutura de usuários;
+12. roles;
+13. forma atual de identificar responsáveis por módulos, projetos, leads, tickets ou tarefas.
 
-Defaults conservadores sugeridos:
-
-```text
-enabled = false
-interval = 300
-```
-
-ou outro intervalo tecnicamente justificado após revisar o scheduler real.
-
-A ativação automática deve começar desabilitada por default.
-
-Não queremos que simplesmente atualizar a aplicação faça o Supervisor começar a executar ações reais sem decisão administrativa explícita.
+Não crie mecanismos paralelos se já houver conceitos reutilizáveis.
 
 ---
 
-# 6. Limites do intervalo
+# 4. Conceito: Agent Responsibility
 
-O intervalo deve possuir:
-
-* mínimo razoável;
-* default conservador;
-* validação centralizada;
-* ausência de número mágico espalhado.
-
-Sugestão mínima:
+Criar o conceito persistido de:
 
 ```text
-60 segundos
+AgentResponsibility
 ```
 
-Não permitir frequência excessiva.
+Representa uma responsabilidade operacional atribuída a um agente.
+
+Exemplo conceitual:
+
+```json
+{
+  "agent": "sales",
+  "name": "Pipeline comercial",
+  "scope": "crm",
+  "responsibilityType": "monitor",
+  "enabled": true
+}
+```
+
+Mas NÃO copie cegamente esse schema.
+
+Primeiro avalie o modelo real do projeto.
 
 ---
 
-# 7. Estado de ativação
+# 5. O que uma responsabilidade deve representar
 
-Avaliar se o estado deve vir de:
+Uma responsabilidade deve conseguir expressar pelo menos:
 
-1. env/config;
-2. settings já existentes;
-3. combinação dos dois.
+* agente responsável;
+* nome;
+* descrição;
+* domínio/módulo;
+* tipo;
+* estado habilitado/desabilitado;
+* prioridade;
+* condições relevantes;
+* política de escalonamento;
+* timestamps;
+* autor da configuração.
 
-Preferência:
-
-Se o projeto já possui mecanismo apropriado de settings administrativos persistidos e auditáveis, utilizar esse mecanismo.
-
-Ideal conceitual:
-
-```text
-env = capacidade/default de infraestrutura
-setting = decisão operacional atual
-```
-
-Por exemplo:
+Tipos iniciais sugeridos:
 
 ```text
-AGENT_OPERATIONAL_SUPERVISION_ENABLED=true
+monitor
+review
+coordinate
+follow_up
 ```
 
-pode significar que o recurso está disponível, enquanto um setting persistido controla se ele está operacionalmente ativo.
+Evitar dezenas de tipos.
 
-Porém não criar complexidade artificial.
-
-Revisar arquitetura existente antes de decidir.
+Não implementar uma DSL complexa.
 
 ---
 
-# 8. Execução automática
+# 6. Responsabilidade != Event Rule
 
-Implementar uma função pequena, por exemplo:
+Não duplicar Event Engine.
 
-```ts
-runScheduledOperationalSupervision()
-```
+Uma Event Rule responde:
 
-Ela deve:
+> Quando este evento acontecer, o que deve ser disparado?
 
-1. verificar se supervisão automática está habilitada;
-2. garantir que não exista execução anterior ainda ativa;
-3. chamar `runOperationalSupervision({ dryRun: false })`;
-4. registrar resultado;
-5. capturar qualquer erro;
-6. liberar o lock/guard em `finally`.
+Uma Responsibility responde:
 
-Não duplicar lógica da v2.5.
+> Quem é responsável operacionalmente por esta área/situação?
+
+Uma Responsibility pode eventualmente ser consultada por:
+
+* Operational Supervisor;
+* Event Engine;
+* Jobs;
+* dashboards;
+* relatórios;
+* mecanismos futuros de escalation.
+
+Mas não recrie Event Rules dentro de Responsibilities.
 
 ---
 
-# 9. Proteção contra overlap
+# 7. Operational Ownership
 
-Obrigatório impedir duas execuções automáticas simultâneas no mesmo processo.
+Precisamos conseguir consultar:
+
+```text
+Quem é responsável por CRM?
+Quem é responsável por financeiro?
+Quem acompanha tickets de suporte?
+Quem acompanha projetos atrasados?
+```
+
+Implementar serviço determinístico semelhante a:
+
+```text
+resolveOperationalResponsibility(...)
+```
+
+ou equivalente adequado à arquitetura existente.
+
+Ele deve trabalhar somente com dados persistidos.
+
+Nunca usar LLM para decidir quem é responsável.
+
+---
+
+# 8. Escalation Policy
+
+Adicionar política de escalonamento associada à Responsibility.
+
+Escalonamento deve ser simples nesta versão.
+
+Tipos sugeridos:
+
+```text
+none
+agent
+human
+```
+
+Possivelmente:
+
+```text
+agent_then_human
+```
+
+somente se realmente necessário.
+
+Não criar engine genérico de workflow.
+
+---
+
+# 9. Escalonamento entre agentes
+
+Quando configurado:
+
+```text
+Sales Agent
+    ↓ escalation
+Director Agent
+```
+
+Isso NÃO significa execução automática pelo Diretor.
+
+Significa criar um registro formal de escalonamento que possa ser tratado pela infraestrutura existente.
+
+O escalonamento deve ser persistido.
 
 Exemplo conceitual:
 
 ```text
-tick N
-  ↓
-supervisor ainda executando
-  ↓
-tick N+1
-  ↓
-skip
+OperationalEscalation
 ```
 
-O segundo tick NÃO deve iniciar nova supervisão.
+Campos possíveis:
 
-Implementar usando o mecanismo mais simples compatível com a arquitetura real.
+* sourceAgent;
+* targetAgent ou targetUser;
+* responsibilityId;
+* reason;
+* severity;
+* status;
+* createdAt;
+* acknowledgedAt;
+* resolvedAt;
+* metadata mínimo necessário.
 
-Se houver possibilidade de múltiplas instâncias do backend em produção, avaliar também proteção distribuída.
-
-Não inventar Redis lock se a aplicação atualmente roda somente em uma instância e não houver necessidade real, mas documentar a implicação.
-
----
-
-# 10. Multi-instance safety
-
-Revisar o modelo real de deploy.
-
-Se a arquitetura permite múltiplos containers/backend replicas simultâneos, a supervisão recorrente não pode rodar independentemente em todas as réplicas produzindo efeitos redundantes.
-
-Nesse caso, utilizar mecanismo distribuído já existente, se houver:
-
-* Redis lock;
-* advisory lock;
-* scheduler leader;
-* outro mecanismo oficial.
-
-Se atualmente existe uma única instância, pode ser usado guard local nesta versão, desde que a limitação seja explicitamente documentada.
-
-Não construir um sistema complexo de eleição de líder sem necessidade comprovada.
+Avalie o schema real antes de implementar.
 
 ---
 
-# 11. Falha do Supervisor
+# 10. Severidade
 
-Regra obrigatória:
+Criar apenas níveis suficientes para operação.
 
-> Uma falha do Operational Supervisor jamais deve derrubar o scheduler principal.
-
-Toda chamada automática deve ser isolada:
-
-```ts
-try {
-  await runOperationalSupervision(...)
-} catch (error) {
-  // audit/log
-}
-```
-
-O erro não pode escapar ao ponto de:
-
-* parar loop do scheduler;
-* impedir Jobs futuros;
-* encerrar processo;
-* interromper Event Engine.
-
----
-
-# 12. Failure isolation
-
-Testar explicitamente:
+Sugestão:
 
 ```text
-Supervisor lança exception
-        ↓
-scheduler permanece funcional
-        ↓
-próximo ciclo continua ocorrendo
-        ↓
-Jobs normais continuam podendo executar
+info
+warning
+critical
 ```
 
-Este é um critério bloqueante de aprovação.
+Evitar taxonomia complexa.
+
+Se já existir severity equivalente no projeto, reutilizar.
 
 ---
 
-# 13. Circuit breaker
+# 11. Estados de escalonamento
 
-A supervisão automática nunca deve:
-
-* fechar circuit breaker;
-* alterar `circuit_state` para estado menos restritivo;
-* religar Job;
-* reativar autonomia global.
-
-Ela continua obedecendo exatamente à política da v2.5.
-
----
-
-# 14. Auto-recovery permitido
-
-Quando executado automaticamente, `safe_recovery` continua permitido porque a v2.5 já restringe essa ação aos mecanismos de Recovery v2.4 considerados seguros.
-
-Nenhuma diferença de política deve existir entre:
+Sugestão:
 
 ```text
-manual supervision
+open
+acknowledged
+resolved
+dismissed
 ```
 
-e
+Não criar dezenas de estados.
 
-```text
-scheduled supervision
-```
-
-A única diferença é o `trigger source`.
+Transitions devem ser validadas no backend.
 
 ---
 
-# 15. Trigger source
+# 12. Escalation nunca executa ação diretamente
 
-Adicionar contexto à execução para auditabilidade.
+Criar uma escalation não pode:
 
-Conceitualmente:
+* executar workflow;
+* corrigir dados;
+* aprovar Action Plan;
+* chamar executor;
+* alterar autonomia.
 
-```ts
-runOperationalSupervision({
-  dryRun: false,
-  triggeredBy: 'scheduler'
-})
-```
+Escalation é uma entidade operacional/gerencial.
 
-e manual:
-
-```text
-triggeredBy = user/admin
-```
-
-Ajustar contrato apenas se realmente necessário.
-
-Evitar alterar dezenas de funções apenas por isso.
-
-Se já existir metadata/contexto de auditoria equivalente, reutilizar.
+Caso futuramente uma escalation leve à criação de uma ação, ela deverá passar pelo pipeline já existente.
 
 ---
 
-# 16. Auditoria da automação
+# 13. Integração com Operational Supervisor
 
-Adicionar eventos somente quando úteis.
+A integração deve ser cuidadosamente limitada.
 
-Sugestões:
+O Operational Supervisor poderá usar Responsibilities para determinar:
 
-```text
-agents.operations.scheduler.started
-agents.operations.scheduler.skipped
-agents.operations.scheduler.failed
-```
+> para quem uma descoberta deve ser direcionada.
 
-Não duplicar todos os eventos já emitidos por `runOperationalSupervision()`.
+Mas NÃO altere todas as regras da v2.5.
 
-O scan já produz:
+Primeiro identifique quais findings reais do supervisor podem ser associados de maneira determinística a um domínio/responsabilidade.
+
+Se associação não for inequívoca:
 
 ```text
-agents.operations.scan.started
-agents.operations.scan.completed
+não atribuir automaticamente.
 ```
 
-Portanto não criar ruído redundante.
-
-`skipped` deve ser usado somente para situações operacionais relevantes, como overlap, não a cada tick em que o recurso está desabilitado.
+Nunca usar LLM para inventar ownership.
 
 ---
 
-# 17. Observabilidade do scheduler
+# 14. Findings e escalation
 
-Adicionar status ao Operational Health ou endpoint apropriado.
+Quando um finding do Operational Supervisor for relevante e existir responsabilidade correspondente, deve ser possível criar uma escalation.
 
-Informações úteis:
+Mas evitar spam.
 
-```ts
-type OperationalSupervisionSchedulerStatus = {
-  enabled: boolean;
-  running: boolean;
-  intervalSeconds: number;
+Definir proteção contra duplicidade.
 
-  lastStartedAt?: Date;
-  lastCompletedAt?: Date;
-  lastFailedAt?: Date;
+Por exemplo:
 
-  lastDurationMs?: number;
-  lastResult?: 'success' | 'failed' | 'skipped';
-
-  nextRunAt?: Date;
-};
-```
-
-Não é obrigatório persistir tudo.
-
-Avaliar o que pode ser derivado de:
-
-* audit logs;
-* config;
-* estado em memória.
-
----
-
-# 18. Persistência
-
-Evitar nova tabela.
-
-Preferência:
-
-* configuração via mecanismo existente;
-* timestamps históricos derivados de audit logs;
-* `running` e próximo tick em memória quando aplicável.
-
-Criar persistência somente se necessária para funcionamento correto e justificar.
-
----
-
-# 19. Restart behavior
-
-Após restart do backend:
-
-* scheduler deve reiniciar normalmente;
-* não deve tentar “compensar” todos os ticks perdidos;
-* não deve disparar múltiplas supervisões acumuladas.
-
-Princípio:
+não criar continuamente uma escalation idêntica para:
 
 ```text
-missed supervision tick != queued work
+mesma responsibility
++
+mesmo tipo de problema
++
+mesma entidade
 ```
 
-A supervisão observa estado atual, portanto basta executar no próximo ciclo normal.
+enquanto existir uma equivalente ainda aberta.
+
+Implemente de acordo com o modelo real de findings existente.
 
 ---
 
-# 20. Startup behavior
+# 15. Deduplicação
 
-Não executar imediatamente na inicialização sem avaliar consequências.
+Critério bloqueante.
 
-Preferência conservadora:
+Supervisão automática rodando a cada poucos minutos NÃO pode gerar centenas de escalations iguais.
 
-```text
-startup
-↓
-scheduler inicia
-↓
-aguarda primeiro intervalo
-↓
-supervision
-```
+Implementar deduplicação determinística.
 
-Se o scheduler existente possui padrão diferente, manter coerência com ele.
+Não usar similaridade semântica/LLM.
+
+Pode usar fingerprint determinístico, unique constraint ou lookup adequado.
 
 Documentar decisão.
 
 ---
 
-# 21. Graceful shutdown
+# 16. Human escalation
 
-Se o processo iniciar shutdown enquanto supervisor está rodando:
+Escalation para humano deve apontar para usuário real do sistema.
 
-* não iniciar nova execução;
-* evitar corromper estado;
-* permitir conclusão conforme política atual de shutdown, quando possível;
-* não deixar timers novos vivos.
+Nunca permitir:
 
-Reutilizar lifecycle existente.
+```text
+"CEO"
+"admin"
+"gerente"
+```
 
-Não criar handlers de SIGTERM duplicados caso já existam.
+como string arbitrária sem vínculo com entidade real, se o projeto já possui usuários persistidos.
+
+Referenciar o mecanismo de users existente.
 
 ---
 
-# 22. Administração
+# 17. Permissions
 
-A execução automática deve poder ser habilitada/desabilitada administrativamente.
+Criar permissions novas somente se necessário.
 
-Antes de criar endpoint, verificar se existe sistema apropriado de settings.
+Avaliar possibilidade de:
 
-Se necessário:
+```text
+agents.responsibilities.read
+agents.responsibilities.manage
 
-```http
-GET   /agents/operations/scheduler
-PATCH /agents/operations/scheduler
+agents.escalations.read
+agents.escalations.manage
 ```
 
-ou equivalente.
+Mas NÃO adicionar automaticamente antes de verificar o sistema atual.
 
-PATCH só pode aceitar campos previamente definidos, por exemplo:
+Caso permissions existentes cubram semanticamente isso, reutilizá-las.
 
-```json
-{
-  "enabled": true
-}
+Backend sempre é autoridade.
+
+Frontend nunca pode ser barreira de segurança.
+
+---
+
+# 18. API sugerida
+
+Após revisar os padrões reais de routes do projeto, implementar equivalente a:
+
+```text
+GET    /agents/responsibilities
+POST   /agents/responsibilities
+GET    /agents/responsibilities/:id
+PATCH  /agents/responsibilities/:id
+DELETE /agents/responsibilities/:id
 ```
 
-Talvez:
+Se soft-delete for padrão do projeto, seguir padrão existente.
 
-```json
-{
-  "enabled": true,
-  "intervalSeconds": 300
-}
+Escalations:
+
+```text
+GET   /agents/escalations
+GET   /agents/escalations/:id
+
+POST /agents/escalations/:id/acknowledge
+POST /agents/escalations/:id/resolve
+POST /agents/escalations/:id/dismiss
 ```
 
-somente se o intervalo for realmente administrável em runtime.
+Não criar endpoints genéricos do tipo:
 
-Nunca aceitar:
-
-```json
-{
-  "command": "..."
-}
+```text
+POST /execute
+POST /command
 ```
 
 ---
 
-# 23. Permissions
+# 19. Criação manual de escalation
 
-Leitura:
-
-```text
-agents.operations.read
-```
-
-Alteração da supervisão automática:
+Avaliar se realmente existe necessidade operacional de:
 
 ```text
-agents.operations.manage
+POST /agents/escalations
 ```
 
-Reaproveitar permission da v2.5.
+Se não houver caso real nesta versão, NÃO criar.
 
-Não criar nova permission sem necessidade objetiva.
+Preferência:
+
+escalations originadas de mecanismos internos controlados.
 
 ---
 
-# 24. Frontend
+# 20. Auditoria
 
-Na página existente:
+Auditar alterações importantes.
+
+Eventos sugeridos:
 
 ```text
-/agents/operations
+agents.responsibility.created
+agents.responsibility.updated
+agents.responsibility.enabled
+agents.responsibility.disabled
+
+agents.escalation.created
+agents.escalation.acknowledged
+agents.escalation.resolved
+agents.escalation.dismissed
 ```
 
-Adicionar seção pequena:
+Não criar eventos redundantes.
 
-## Supervisão automática
+Utilizar infraestrutura de audit existente.
+
+Metadata deve ser mínimo e seguro.
+
+Nunca incluir secrets.
+
+---
+
+# 21. Histórico
+
+Escalation deve manter história suficiente para saber:
+
+* quando abriu;
+* quem recebeu;
+* quando foi reconhecida;
+* quando foi encerrada;
+* quem realizou a mudança.
+
+Se Audit Log existente já fornece parte disso, reutilizar.
+
+Não criar um event sourcing paralelo.
+
+---
+
+# 22. Frontend
+
+Integrar ao módulo de Agents.
+
+Sugestão:
+
+```text
+/agents/responsibilities
+```
+
+e:
+
+```text
+/agents/escalations
+```
+
+Mas primeiro verifique a navegação atual.
+
+Se fizer mais sentido utilizar páginas existentes do módulo Agents, prefira integração ao invés de proliferação de rotas.
+
+---
+
+# 23. UI — Responsibilities
 
 Exibir:
 
-* habilitada/desabilitada;
-* intervalo;
-* executando agora;
-* último início;
-* última conclusão;
-* última falha;
-* duração;
-* próximo ciclo.
+* agente;
+* responsabilidade;
+* domínio;
+* tipo;
+* prioridade;
+* escalation policy;
+* estado;
+* responsável de escalonamento;
+* ações permitidas conforme permission.
+
+Criar/editar por formulário estruturado.
+
+Não permitir campo livre que resulte em execução.
 
 ---
 
-# 25. Controle de ativação
+# 24. UI — Escalations
 
-Usuário com `agents.operations.manage` pode:
+A lista deve permitir operação real.
 
-```text
-Habilitar supervisão automática
-Desabilitar supervisão automática
-```
+Mostrar pelo menos:
 
-Se alteração for persistente e operacional, usar confirmação apropriada.
+* severidade;
+* origem;
+* agente responsável;
+* destino;
+* motivo;
+* entidade relacionada, quando houver;
+* criada em;
+* estado.
 
-Para habilitar, exibir mensagem:
-
-```text
-A supervisão operacional passará a executar automaticamente e poderá
-realizar recoveries seguros, restringir autonomia em situações críticas
-e escalar incidentes para atenção humana conforme as políticas atuais.
-```
-
-Nunca apresentar como:
+Filtros úteis:
 
 ```text
-Permitir que a IA corrija o sistema sozinha
+open
+acknowledged
+resolved
+critical
+agent
+human
 ```
+
+Não adicionar filtros sem utilidade.
 
 ---
 
-# 26. Intervalo
+# 25. Dashboard / indicadores
 
-Se permitir edição via UI:
+Se simples e coerente com a UI atual, mostrar indicadores:
 
-* validar backend;
-* definir mínimo;
-* não permitir frequência perigosa;
-* mostrar unidade claramente;
-* não aceitar zero ou negativo.
+```text
+Escalations abertas
+Escalations críticas
+Aguardando reconhecimento
+Resolvidas recentemente
+```
 
-Caso não seja necessário editar em runtime, mostrar apenas o intervalo configurado.
-
-Não adicionar edição apenas porque é fácil.
+Não construir analytics complexo nesta versão.
 
 ---
 
-# 27. Manual supervision permanece
+# 26. Segurança
 
-Os botões da v2.5:
+Aplicar as diretrizes permanentes do projeto:
 
-```text
-Simular supervisão
-Executar supervisão
-```
-
-devem continuar funcionando mesmo com supervisão automática ativa.
-
-Entretanto, evitar overlap entre:
-
-```text
-execução automática
-```
-
-e
-
-```text
-execução manual
-```
-
-Avaliar um guard compartilhado.
-
-Uma operação manual enquanto outra está em andamento pode:
-
-* retornar conflito;
-* informar "supervisão já em execução";
-* ou aguardar, se isso já for padrão no projeto.
-
-Preferência: **não enfileirar**.
+* validação Zod;
+* authorization server-side;
+* menor privilégio;
+* nenhuma confiança no frontend;
+* nenhum acesso arbitrário do LLM;
+* nenhuma SQL dinâmica originada por LLM;
+* nenhuma ferramenta arbitrária;
+* auditoria;
+* IDs validados;
+* evitar mass assignment;
+* respostas sem vazamento de dados internos;
+* tenant isolation se o projeto já utilizar tenancy.
 
 ---
 
-# 28. HTTP status para overlap
+# 27. Concorrência
 
-Se uma supervisão manual for solicitada enquanto outra já está rodando, considerar:
+Se duas execuções tentarem criar a mesma escalation ao mesmo tempo, deduplicação deve continuar correta.
+
+Teste explicitamente.
+
+Não confiar somente em:
 
 ```text
-409 Conflict
+SELECT
+if (!exists)
+INSERT
 ```
 
-com mensagem clara.
+se isso puder gerar race condition.
 
-Somente fazer isso se o guard puder ser centralizado no serviço e não apenas no scheduler.
+Preferir proteção transacional/constraint quando aplicável.
 
 ---
 
-# 29. Guard central
+# 28. Integridade referencial
+
+Não permitir:
+
+* responsibility apontando para agent inexistente;
+* target agent inválido;
+* target user inexistente;
+* escalation apontando para responsibility inexistente;
+* estado impossível.
+
+Utilizar FKs quando compatíveis com a modelagem existente.
+
+---
+
+# 29. Responsabilidade desabilitada
+
+Quando:
+
+```text
+responsibility.enabled = false
+```
+
+ela:
+
+* continua existindo para histórico;
+* não deve receber novas escalations automáticas;
+* não altera escalations já existentes.
+
+Testar.
+
+---
+
+# 30. Alteração de ownership
+
+Se uma Responsibility muda de target de escalation:
+
+* novas escalations seguem nova configuração;
+* escalations antigas mantêm destino histórico original.
+
+Nunca retroativamente alterar histórico.
+
+---
+
+# 31. Exclusão
+
+Não permitir que exclusão destrua histórico operacional.
+
+Se existirem escalations associadas, decidir entre:
+
+* impedir delete;
+* soft delete;
+* apenas disabled.
+
+Escolha seguindo os padrões reais do projeto.
 
 Preferência arquitetural:
 
 ```text
-runOperationalSupervision()
+disabled
 ```
 
-ou wrapper oficial correspondente deve conhecer exclusão mútua.
+para entidades que tenham histórico.
 
-Assim:
+---
+
+# 32. Não implementar nesta versão
+
+Não adicionar:
+
+* organograma visual;
+* BPMN;
+* workflow designer;
+* rule builder genérico;
+* linguagem própria;
+* chat entre agentes;
+* e-mail;
+* WhatsApp;
+* Slack;
+* push notification;
+* SLA completo;
+* distributed agent runtime;
+* embeddings;
+* vector database;
+* autonomous team formation;
+* LLM escolhendo agente responsável;
+* criação automática de novos agentes;
+* multi-stage escalation engine;
+* Redis Streams/Kafka apenas para isso.
+
+Esses assuntos poderão ser tratados futuramente.
+
+---
+
+# 33. Testes obrigatórios
+
+Cobrir pelo menos:
+
+## Responsibilities
+
+1. criar responsibility válida;
+2. rejeitar agent inválido;
+3. leitura por permission;
+4. escrita por permission;
+5. update;
+6. enable/disable;
+7. disabled não participa de resolução operacional;
+8. ownership resolution correto.
+
+## Escalations
+
+9. criar escalation válida via serviço interno;
+10. target agent;
+11. target human;
+12. severity;
+13. acknowledge;
+14. resolve;
+15. dismiss;
+16. transição inválida rejeitada;
+17. usuário sem permission rejeitado;
+18. histórico preservado.
+
+## Deduplicação
+
+19. mesma ocorrência não cria segunda escalation aberta;
+20. duas chamadas concorrentes não criam duplicata;
+21. após resolução, nova ocorrência pode gerar nova escalation, se essa for a política adotada.
+
+## Supervisor
+
+22. finding com responsibility correspondente pode gerar escalation;
+23. finding sem responsabilidade não inventa ownership;
+24. responsibility disabled não recebe escalation;
+25. supervisor continua funcionando mesmo se criação de escalation falhar, desde que isso seja compatível com a arquitetura real e a falha seja adequadamente auditada.
+
+## Segurança
+
+26. payload extra rejeitado quando pertinente;
+27. IDs inválidos rejeitados;
+28. unauthorized/forbidden corretamente;
+29. frontend não concede permission inexistente.
+
+---
+
+# 34. Testes de regressão
+
+Rodar suíte completa.
+
+Não basta rodar somente novos testes.
+
+Registrar:
 
 ```text
-scheduler → mesmo guard
-API → mesmo guard
+baseline anterior
+novo total
+pass
+fail
+skipped
 ```
 
-Não criar:
+Esperado antes da implementação:
 
 ```text
-schedulerGuard
-apiGuard
+Backend: 599 testes passando
+Frontend: 94 testes passando
 ```
 
-independentes.
+Caso números reais estejam diferentes ANTES de implementar, documentar antes de continuar.
 
-Dois guards separados não resolvem concorrência entre os dois caminhos.
-
----
-
-# 30. Dry-run
-
-Dry-run manual continua sem efeitos.
-
-A execução automática nunca precisa usar dry-run.
-
-Não criar scheduler em modo dry-run.
+Não esconder divergência de baseline.
 
 ---
 
-# 31. Segurança
+# 35. Typecheck / build
 
-Testes explícitos devem provar que execução automática:
-
-1. não aumenta autonomia;
-2. não fecha Circuit Breaker;
-3. não modifica roles;
-4. não modifica permissions;
-5. não executa tool arbitrária;
-6. não cria Action Plan diretamente;
-7. não cria approval diretamente;
-8. usa Recovery v2.4;
-9. usa Decision Queue oficial;
-10. reutiliza Response Policy da v2.5.
-
----
-
-# 32. Testes obrigatórios — scheduler
-
-Adicionar no mínimo:
-
-1. supervisão automática desabilitada não executa;
-2. habilitada executa supervisor;
-3. utiliza intervalo configurado;
-4. intervalo abaixo do mínimo é rejeitado;
-5. segundo tick durante execução ativa é ignorado;
-6. execução termina e guard é liberado;
-7. exception também libera guard;
-8. exception do supervisor não encerra scheduler;
-9. próximo ciclo após exception continua possível;
-10. scheduler não cria segundo mecanismo de supervisão.
-
----
-
-# 33. Testes obrigatórios — concorrência
-
-11. manual + automático simultâneos não produzem duas execuções reais;
-12. duas chamadas automáticas simultâneas produzem no máximo uma execução;
-13. guard retorna ao estado livre após sucesso;
-14. guard retorna ao estado livre após erro.
-
-Se houver lock distribuído:
-
-15. segunda instância não adquire lock;
-16. lock é liberado após conclusão;
-17. lock possui proteção contra abandono/crash conforme mecanismo usado.
-
-Executar somente os testes correspondentes à arquitetura realmente implementada.
-
----
-
-# 34. Testes obrigatórios — configuração
-
-18. default de supervisão automática é seguro;
-19. configuração enabled é validada;
-20. intervalo é validado;
-21. valores inválidos não alteram setting;
-22. alteração exige `agents.operations.manage`;
-23. leitura usa `agents.operations.read`.
-
----
-
-# 35. Testes obrigatórios — observabilidade
-
-24. status mostra enabled corretamente;
-25. status mostra running durante execução;
-26. lastStartedAt atualizado;
-27. lastCompletedAt atualizado;
-28. lastFailedAt atualizado em erro;
-29. duração calculada corretamente;
-30. nextRunAt coerente com intervalo.
-
-Adaptar caso alguns campos sejam derivados via audit logs em vez de memória.
-
----
-
-# 36. Testes obrigatórios — restart/lifecycle
-
-Quando testável de forma isolada:
-
-31. inicialização não cria timers duplicados;
-32. `start()` repetido é idempotente;
-33. `stop()` limpa timer;
-34. `stop()` repetido é seguro;
-35. shutdown impede novos ticks.
-
-Não criar testes artificiais impossíveis de representar com a arquitetura real.
-
----
-
-# 37. Testes de regressão
-
-Executar toda suíte backend.
-
-Baseline v2.5:
-
-```text
-567 / 567
-```
-
-Confirmar:
-
-```text
-todos os 567 anteriores continuam passando
-```
-
-Executar suite frontend.
-
-Baseline v2.5:
-
-```text
-92 / 92
-```
-
-Registrar incremento líquido de testes.
-
----
-
-# 38. Typecheck/build
+Executar:
 
 Backend:
 
@@ -841,88 +872,114 @@ npx tsc --noEmit
 npm run build
 ```
 
-Lint somente se existir script/config real.
+Executar lint somente se houver configuração real.
 
-Não afirmar que lint passou quando lint não existe.
+Não inventar sucesso de lint se projeto não possuir configuração.
 
 ---
 
-# 39. Migrations
+# 36. Migration
 
-Evitar migration.
+Se novas tabelas forem realmente necessárias, criar migration seguindo Drizzle/migrations existentes.
 
-Se precisar persistir setting e o sistema atual já possui tabela genérica de settings, reutilizar.
-
-Não criar:
+Provavelmente serão necessárias entidades equivalentes a:
 
 ```text
-agent_operational_supervision_settings
+agent_responsibilities
+agent_operational_escalations
 ```
 
-só para armazenar dois campos, se a infraestrutura de settings já resolver isso.
+Mas nomes e schema devem seguir convenções reais do repositório.
+
+Não criar tabelas até revisar o modelo existente.
 
 ---
 
-# 40. Critérios bloqueantes
+# 37. Critérios bloqueantes
 
-A v2.5.1 NÃO será aprovada se:
+A v2.6 NÃO pode ser aprovada se:
 
-* criar segundo scheduler;
-* implementar supervisão como AgentJob;
-* permitir execuções concorrentes desprotegidas;
-* erro do supervisor puder parar scheduler;
-* ativação automática ocorrer silenciosamente por default;
-* supervisor automático puder aumentar autonomia;
-* scheduler alterar workflows diretamente;
-* política da execução automática divergir da execução manual;
-* houver timers duplicados após restart/start repetido;
-* permissões existirem apenas no frontend;
-* lock puder ficar permanentemente preso após exception normal;
-* testes anteriores regredirem.
+1. Responsibility conceder permission;
+2. Responsibility alterar autonomy;
+3. ownership for decidido por LLM;
+4. escalation executar ação diretamente;
+5. escalation bypassar Planner/Policy/Executor;
+6. supervisor criar duplicatas continuamente;
+7. deduplicação tiver race condition evidente;
+8. target humano não referenciar usuário real;
+9. target agent puder ser inválido;
+10. estado de escalation aceitar transições arbitrárias;
+11. permissions forem aplicadas somente no frontend;
+12. histórico puder ser destruído inadvertidamente;
+13. responsibility desabilitada continuar recebendo escalation automática;
+14. alteração de ownership reescrever histórico;
+15. suíte completa apresentar regressão.
 
 ---
 
-# 41. Relatório final
+# 38. Relatório final obrigatório
 
-Entregar relatório contendo:
+Ao terminar, NÃO FAÇA COMMIT.
+
+Entregue relatório contendo:
 
 1. resumo;
-2. scheduler existente encontrado;
-3. forma de integração adotada;
-4. lifecycle;
-5. configuração;
-6. default de segurança;
-7. intervalo;
-8. trigger automático;
-9. guard de concorrência;
-10. concorrência manual × automática;
-11. multi-instance;
-12. tratamento de exception;
-13. isolamento do scheduler;
-14. graceful shutdown;
-15. restart behavior;
-16. auditoria;
-17. observabilidade;
-18. API;
+2. revisão da arquitetura encontrada;
+3. modelo conceitual adotado;
+4. responsibilities;
+5. ownership resolution;
+6. escalation model;
+7. escalation policy;
+8. severity;
+9. estados;
+10. transitions;
+11. integração com Operational Supervisor;
+12. estratégia de deduplicação;
+13. proteção contra race condition;
+14. target agent;
+15. target human;
+16. comportamento de responsibility disabled;
+17. alteração de ownership;
+18. política de delete/disable;
 19. permissions;
-20. frontend;
-21. migrations;
-22. arquivos criados;
-23. arquivos alterados;
-24. testes adicionados;
-25. testes de concorrência;
-26. testes de lifecycle;
-27. números backend;
-28. números frontend;
-29. typecheck/build;
-30. git diff --stat;
-31. git status;
-32. bugs encontrados;
-33. limitações reais;
-34. débitos técnicos identificados.
+20. auditoria;
+21. API;
+22. frontend;
+23. migrations;
+24. arquivos criados;
+25. arquivos alterados;
+26. testes adicionados por arquivo;
+27. testes de responsibilities;
+28. testes de escalation;
+29. testes de concorrência/deduplicação;
+30. testes de supervisor;
+31. testes de permissions;
+32. números exatos da suíte backend;
+33. números exatos da suíte frontend;
+34. reconciliação com baseline 599/94;
+35. typecheck;
+36. build;
+37. git diff --stat;
+38. git status;
+39. bugs encontrados durante implementação;
+40. limitações reais;
+41. débitos técnicos;
+42. conclusão confrontando cada critério bloqueante.
 
-## Regra final
+---
 
-**NÃO REALIZAR COMMIT.**
+# 39. Regra final
 
-Todas as mudanças devem permanecer no working tree aguardando revisão e autorização do Diretor/CEO.
+Não faça commit.
+
+Não esconda erro.
+
+Não reduza cobertura para conseguir verde.
+
+Não altere testes antigos apenas para acomodar comportamento incorreto.
+
+Não use LLM como mecanismo de autorização, ownership ou decisão de segurança.
+
+Implemente primeiro a solução correta e mínima, seguindo a arquitetura real encontrada no repositório.
+
+Ao final, aguarde aprovação do Diretor/CEO.

@@ -12,6 +12,9 @@ import {
   decisionImpactLabel,
   decisionStatusLabel,
   decisionUrgencyLabel,
+  escalationPolicyLabel,
+  escalationSeverityLabel,
+  escalationStatusLabel,
   executionStatusLabel,
   formatChatResponse,
   goalHealthLabel,
@@ -28,6 +31,8 @@ import {
   operationalSeverityLabel,
   recommendationTypeLabel,
   recoveryResultLabel,
+  responsibilityPriorityLabel,
+  responsibilityTypeLabel,
   reviewOutcomeLabel,
   schedulerLastResultLabel,
   workflowTypeLabel,
@@ -444,5 +449,75 @@ describe("schedulerLastResultLabel", () => {
   test("valor desconhecido faz fallback para o próprio valor", () => {
     // @ts-expect-error — testando o fallback de valor não mapeado.
     assert.equal(schedulerLastResultLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+// Agentes v2.6 — Agent Responsibilities, Operational Ownership & Escalation.
+describe("responsibilityTypeLabel", () => {
+  test("todo tipo conhecido tem rótulo em pt-BR", () => {
+    assert.equal(responsibilityTypeLabel("monitor"), "Monitorar");
+    assert.equal(responsibilityTypeLabel("review"), "Revisar");
+    assert.equal(responsibilityTypeLabel("coordinate"), "Coordenar");
+    assert.equal(responsibilityTypeLabel("follow_up"), "Acompanhar");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(responsibilityTypeLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+describe("responsibilityPriorityLabel", () => {
+  test("toda prioridade conhecida tem rótulo em pt-BR", () => {
+    assert.equal(responsibilityPriorityLabel("low"), "Baixa");
+    assert.equal(responsibilityPriorityLabel("medium"), "Média");
+    assert.equal(responsibilityPriorityLabel("high"), "Alta");
+    assert.equal(responsibilityPriorityLabel("critical"), "Crítica");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(responsibilityPriorityLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+describe("escalationPolicyLabel", () => {
+  test("toda política conhecida tem rótulo em pt-BR", () => {
+    assert.equal(escalationPolicyLabel("none"), "Não escala");
+    assert.equal(escalationPolicyLabel("agent"), "Agente");
+    assert.equal(escalationPolicyLabel("human"), "Humano");
+    assert.equal(escalationPolicyLabel("agent_then_human"), "Agente + Humano");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(escalationPolicyLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+describe("escalationSeverityLabel", () => {
+  test("toda severidade conhecida tem rótulo em pt-BR", () => {
+    assert.equal(escalationSeverityLabel("info"), "Informativo");
+    assert.equal(escalationSeverityLabel("warning"), "Atenção");
+    assert.equal(escalationSeverityLabel("critical"), "Crítico");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(escalationSeverityLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+describe("escalationStatusLabel", () => {
+  test("todo status conhecido tem rótulo em pt-BR", () => {
+    assert.equal(escalationStatusLabel("open"), "Aberta");
+    assert.equal(escalationStatusLabel("acknowledged"), "Reconhecida");
+    assert.equal(escalationStatusLabel("resolved"), "Resolvida");
+    assert.equal(escalationStatusLabel("dismissed"), "Descartada");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(escalationStatusLabel("nunca_existiu"), "nunca_existiu");
   });
 });

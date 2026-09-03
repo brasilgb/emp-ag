@@ -50,3 +50,5 @@ export * from './agent-director-goal-evaluations.js';
 export * from './agent-director-initiatives.js';
 export * from './agent-executive-reviews.js';
 export * from './agent-strategic-memories.js';
+export * from './agent-responsibilities.js';
+export * from './agent-operational-escalations.js';

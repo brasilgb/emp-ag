@@ -11,6 +11,8 @@ import {
   autonomyLevelLabel,
   circuitStateLabel,
   decisionStatusLabel,
+  escalationSeverityLabel,
+  escalationStatusLabel,
   eventDeliveryStatusLabel,
   eventStatusLabel,
   executionStatusLabel,
@@ -45,6 +47,8 @@ import type {
   AutonomyLevel,
   CircuitState,
   DecisionStatus,
+  EscalationSeverity,
+  EscalationStatus,
   EventDeliveryStatus,
   EventStatus,
   ExecutionStatus,
@@ -596,6 +600,36 @@ export function OperationalResponseBadge({ response }: { response: OperationalRe
   return (
     <Badge variant="secondary" className={cn("border-transparent", OPERATIONAL_RESPONSE_STYLES[response])}>
       {operationalResponseLabel(response)}
+    </Badge>
+  );
+}
+
+// Agentes v2.6 — Agent Responsibilities, Operational Ownership & Escalation.
+const ESCALATION_STATUS_STYLES: Record<EscalationStatus, string> = {
+  open: "bg-muted text-muted-foreground",
+  acknowledged: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  resolved: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  dismissed: "bg-muted text-muted-foreground line-through",
+};
+
+export function EscalationStatusBadge({ status }: { status: EscalationStatus }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", ESCALATION_STATUS_STYLES[status])}>
+      {escalationStatusLabel(status)}
+    </Badge>
+  );
+}
+
+const ESCALATION_SEVERITY_STYLES: Record<EscalationSeverity, string> = {
+  info: "bg-muted text-muted-foreground",
+  warning: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  critical: "bg-red-500/10 text-red-700 dark:text-red-400",
+};
+
+export function EscalationSeverityBadge({ severity }: { severity: EscalationSeverity }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", ESCALATION_SEVERITY_STYLES[severity])}>
+      {escalationSeverityLabel(severity)}
     </Badge>
   );
 }

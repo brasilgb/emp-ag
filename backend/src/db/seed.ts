@@ -398,6 +398,26 @@ const defaultPermissions = [
     description:
       'Permite executar o Operational Supervisor (POST /agents/operations/supervise — Agentes v2.5): safe recovery, restrição de autonomia de Job, escalação. Leitura segue em agents.operations.read.',
   },
+  {
+    name: 'Visualizar responsibilities de agentes',
+    slug: 'agents.responsibilities.read',
+    description: 'Permite consultar Agent Responsibilities — quem é dono de qual domínio (Agentes v2.6).',
+  },
+  {
+    name: 'Gerenciar responsibilities de agentes',
+    slug: 'agents.responsibilities.manage',
+    description: 'Permite criar/editar/desabilitar/excluir Agent Responsibilities (Agentes v2.6). Leitura segue em agents.responsibilities.read.',
+  },
+  {
+    name: 'Visualizar escalations operacionais',
+    slug: 'agents.escalations.read',
+    description: 'Permite consultar Operational Escalations geradas pelo Supervisor (Agentes v2.6).',
+  },
+  {
+    name: 'Gerenciar escalations operacionais',
+    slug: 'agents.escalations.manage',
+    description: 'Permite reconhecer/resolver/descartar Operational Escalations (Agentes v2.6). Leitura segue em agents.escalations.read.',
+  },
 
   {
     name: 'Visualizar usuários',

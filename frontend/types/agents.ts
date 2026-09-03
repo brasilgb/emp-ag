@@ -1146,3 +1146,63 @@ export interface OperationalSupervisionReport {
   escalated: number;
   results: OperationalIncidentResult[];
 }
+
+// Agentes v2.6 — Agent Responsibilities, Operational Ownership & Escalation (correio.md).
+export const RESPONSIBILITY_TYPES = ["monitor", "review", "coordinate", "follow_up"] as const;
+export type ResponsibilityType = (typeof RESPONSIBILITY_TYPES)[number];
+
+export const RESPONSIBILITY_PRIORITIES = ["low", "medium", "high", "critical"] as const;
+export type ResponsibilityPriority = (typeof RESPONSIBILITY_PRIORITIES)[number];
+
+export const ESCALATION_POLICIES = ["none", "agent", "human", "agent_then_human"] as const;
+export type EscalationPolicy = (typeof ESCALATION_POLICIES)[number];
+
+export interface AgentResponsibility {
+  id: number;
+  agentId: number;
+  name: string;
+  description: string | null;
+  domain: SignalDomain;
+  responsibilityType: ResponsibilityType;
+  enabled: boolean;
+  priority: ResponsibilityPriority;
+  conditions: Record<string, unknown>;
+  escalationPolicy: EscalationPolicy;
+  escalationTargetAgentId: number | null;
+  escalationTargetUserId: number | null;
+  createdBy: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// Nome distinto de `OperationalSeverity` (Supervisor v2.5) mesmo tendo o
+// mesmo vocabulário fechado — tipos conceitualmente diferentes (severidade
+// do INCIDENTE vs. severidade da ESCALATION), nunca fundidos num só.
+export const ESCALATION_SEVERITIES = ["info", "warning", "critical"] as const;
+export type EscalationSeverity = (typeof ESCALATION_SEVERITIES)[number];
+
+export const ESCALATION_STATUSES = ["open", "acknowledged", "resolved", "dismissed"] as const;
+export type EscalationStatus = (typeof ESCALATION_STATUSES)[number];
+
+export interface OperationalEscalation {
+  id: number;
+  responsibilityId: number;
+  sourceAgentId: number;
+  targetAgentId: number | null;
+  targetUserId: number | null;
+  reason: string;
+  severity: EscalationSeverity;
+  status: EscalationStatus;
+  entityType: string | null;
+  entityId: number | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  acknowledgedAt: string | null;
+  acknowledgedBy: number | null;
+  resolvedAt: string | null;
+  resolvedBy: number | null;
+  dismissedAt: string | null;
+  dismissedBy: number | null;
+  dismissReason: string | null;
+}

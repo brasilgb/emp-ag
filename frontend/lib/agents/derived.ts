@@ -11,6 +11,9 @@ import type {
   DecisionImpact,
   DecisionStatus,
   DecisionUrgency,
+  EscalationPolicy,
+  EscalationSeverity,
+  EscalationStatus,
   EventDeliveryStatus,
   EventStatus,
   ExecutionStatus,
@@ -30,6 +33,8 @@ import type {
   OperationalSeverity,
   RecommendationType,
   RecoveryResult,
+  ResponsibilityPriority,
+  ResponsibilityType,
   ReviewOutcome,
   SchedulerLastResult,
   WorkflowType,
@@ -785,6 +790,61 @@ export const SCHEDULER_LAST_RESULT_LABELS: Record<SchedulerLastResult, string> =
 
 export function schedulerLastResultLabel(result: SchedulerLastResult): string {
   return SCHEDULER_LAST_RESULT_LABELS[result] ?? result;
+}
+
+// Agentes v2.6 — Agent Responsibilities, Operational Ownership & Escalation.
+export const RESPONSIBILITY_TYPE_LABELS: Record<ResponsibilityType, string> = {
+  monitor: "Monitorar",
+  review: "Revisar",
+  coordinate: "Coordenar",
+  follow_up: "Acompanhar",
+};
+
+export function responsibilityTypeLabel(type: ResponsibilityType): string {
+  return RESPONSIBILITY_TYPE_LABELS[type] ?? type;
+}
+
+export const RESPONSIBILITY_PRIORITY_LABELS: Record<ResponsibilityPriority, string> = {
+  low: "Baixa",
+  medium: "Média",
+  high: "Alta",
+  critical: "Crítica",
+};
+
+export function responsibilityPriorityLabel(priority: ResponsibilityPriority): string {
+  return RESPONSIBILITY_PRIORITY_LABELS[priority] ?? priority;
+}
+
+export const ESCALATION_POLICY_LABELS: Record<EscalationPolicy, string> = {
+  none: "Não escala",
+  agent: "Agente",
+  human: "Humano",
+  agent_then_human: "Agente + Humano",
+};
+
+export function escalationPolicyLabel(policy: EscalationPolicy): string {
+  return ESCALATION_POLICY_LABELS[policy] ?? policy;
+}
+
+export const ESCALATION_SEVERITY_LABELS: Record<EscalationSeverity, string> = {
+  info: "Informativo",
+  warning: "Atenção",
+  critical: "Crítico",
+};
+
+export function escalationSeverityLabel(severity: EscalationSeverity): string {
+  return ESCALATION_SEVERITY_LABELS[severity] ?? severity;
+}
+
+export const ESCALATION_STATUS_LABELS: Record<EscalationStatus, string> = {
+  open: "Aberta",
+  acknowledged: "Reconhecida",
+  resolved: "Resolvida",
+  dismissed: "Descartada",
+};
+
+export function escalationStatusLabel(status: EscalationStatus): string {
+  return ESCALATION_STATUS_LABELS[status] ?? status;
 }
 
 export function formatAgeSeconds(ageSeconds: number): string {
