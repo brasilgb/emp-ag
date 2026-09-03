@@ -17,9 +17,10 @@ import { useAgents } from "@/hooks/agents/use-agents";
 import { useDeleteResponsibility, useResponsibilities, useUpdateResponsibility } from "@/hooks/agents/use-responsibilities";
 import { escalationPolicyLabel, responsibilityPriorityLabel, responsibilityTypeLabel } from "@/lib/agents/derived";
 import { toErrorMessage } from "@/services/http";
-import type { SignalDomain } from "@/types/agents";
+import type { AgentResponsibility, SignalDomain } from "@/types/agents";
 
 import { CreateResponsibilityDialog } from "./create-responsibility-dialog";
+import { EditResponsibilityDialog } from "./edit-responsibility-dialog";
 
 const DOMAIN_OPTIONS: SignalDomain[] = ["crm", "projects", "finance", "support", "agents"];
 const LIMIT = 20;
@@ -35,6 +36,7 @@ export function ResponsibilitiesList() {
   const [domain, setDomain] = useState<SignalDomain | "all">("all");
   const [enabled, setEnabled] = useState<"all" | "true" | "false">("all");
   const [createOpen, setCreateOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<AgentResponsibility | null>(null);
 
   const agentsQuery = useAgents();
   const responsibilities = useResponsibilities({
@@ -163,6 +165,9 @@ export function ResponsibilitiesList() {
                       <TableCell className="text-right">
                         <PermissionGate permission="agents.responsibilities.manage">
                           <div className="flex flex-wrap items-center justify-end gap-2">
+                            <Button size="sm" variant="outline" onClick={() => setEditTarget(responsibility)}>
+                              Editar
+                            </Button>
                             <Button size="sm" variant="outline" onClick={() => handleToggle(responsibility.id, !responsibility.enabled)}>
                               {responsibility.enabled ? "Desabilitar" : "Habilitar"}
                             </Button>
@@ -184,6 +189,9 @@ export function ResponsibilitiesList() {
       </Card>
 
       <CreateResponsibilityDialog open={createOpen} onOpenChange={setCreateOpen} />
+      {editTarget ? (
+        <EditResponsibilityDialog responsibility={editTarget} open onOpenChange={(open) => !open && setEditTarget(null)} />
+      ) : null}
     </div>
   );
 }
