@@ -20,6 +20,7 @@ import type {
   ApprovalStatus,
   AuditLogEntry,
   ChatResponse,
+  ControlCenterData,
   DecisionQueueOverview,
   DecisionStatus,
   DecisionSyncSummary,
@@ -48,6 +49,7 @@ import type {
   RecoveryItemResult,
   RecoveryReport,
   RecoveryStatus,
+  TimelineEvent,
   StaleCandidate,
   StrategicMemory,
   WorkflowType,
@@ -892,4 +894,13 @@ export function submitActionProposal(id: number): Promise<{ data: OperationalAct
 
 export function cancelActionProposal(id: number, reason: string): Promise<{ data: OperationalActionProposal }> {
   return apiFetch(`/api/agents/action-proposals/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
+}
+
+// Agentes v3.0 — Operational Observability & Control Center (correio.md).
+export function getOperationalControlCenter(): Promise<{ data: ControlCenterData }> {
+  return apiFetch(`/api/agents/operations/control-center`);
+}
+
+export function getFollowUpTimeline(followUpId: number): Promise<{ data: TimelineEvent[] }> {
+  return apiFetch(`/api/agents/follow-ups/${followUpId}/timeline`);
 }

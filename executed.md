@@ -960,4 +960,697 @@ não no código.
 
 ---
 
+## 35. Agentes v2.9 — relatório completo (template de entrega detalhado)
+
+O commit da v2.9 (seção 34) já estava feito quando esta rodada começou
+("commit feito", confirmado via `git log`: `a436d66 v2.8 aprovada`,
+depois de `5abf9d3`). O `correio.md` foi então reescrito com um template
+de entrega mais detalhado (20 itens) para os MESMOS dois bloqueios já
+resolvidos — mais uma tarefa nova e concreta: reconciliar objetivamente a
+origem dos "quatro testes adicionais" entre o 688 relatado no fechamento
+inicial da v2.8 e o 692 medido depois.
+
+Nenhuma linha de código foi alterada nesta rodada — só investigação e
+este relatório. Segue o template pedido, item por item.
+
+### 1. Resumo
+
+Os dois bloqueios (lifecycle Action Plan → Proposal e evidência no
+FollowUp) foram implementados e testados na rodada anterior (seção 34,
+commit já feito). Esta rodada: (a) reconcilia objetivamente a origem dos 4
+testes que apareceram entre dois relatórios anteriores, e (b) reapresenta
+a entrega completa no formato de 20 itens agora pedido.
+
+### 2. Os dois bloqueios encontrados
+
+1. `syncActionProposalStatus()` era chamado explicitamente em 2 dos 8
+   pontos reais que alteram `agent_action_plans.status` via
+   `executeActionPlan` — qualquer um dos outros 6 (presentes ou futuros)
+   nunca sincronizaria a Proposal.
+2. A página de detalhe do FollowUp não mostrava nenhuma evidência real do
+   Action Plan (itens executados/bloqueados/aguardando aprovação/
+   falharam) nem oferecia as ações humanas da v2.7
+   (Iniciar/Aguardar/Retomar/Concluir/Descartar) — só existiam na
+   listagem.
+
+### 3. Solução adotada para cada um
+
+Ver seção 34 ("BLOQUEIO 1"/"BLOQUEIO 2") para o detalhamento completo.
+Resumo: (1) sincronização movida para dentro de `executeActionPlan`, no
+único ponto que grava o status agregado (`finalizePlanStatus`) —
+estruturalmente impossível de esquecer, para qualquer chamador presente
+ou futuro; `submitActionProposal` reordenado para linkar `actionPlanId`
+antes de executar. (2) evidência (`ActionPlanEvidence`, componente novo)
+consultando `GET /agents/action-plans/:id` já existente, e os botões de
+transição da v2.7 replicados na página de detalhe, reusando os mesmos
+hooks/diálogos da listagem.
+
+### 4. Arquitetura reutilizada
+
+`executeActionPlan`/`finalizePlanStatus` (Executor único, v1.2),
+`planEvaluateAndPersistActionPlan` (Planner único, v1.2), `agent_approvals`
+(mecanismo de Approval único, v1.2), `FOLLOW_UP_TRANSITIONS` (máquina de
+estados única do FollowUp, v2.7), `useStartFollowUp`/`useWaitFollowUp`/
+`useResumeFollowUp`/`useCompleteFollowUp`/`useDismissFollowUp` e os
+diálogos correspondentes (v2.7), `useActionPlan`/`GET /agents/action-plans/:id`
+(v1.2), `ActionPlanItemStatusBadge` (badge já existente). Nenhuma
+abstração nova de domínio foi criada — só um componente de apresentação
+(`ActionPlanEvidence`) e um gancho de teste (`setForcedSubmitFailureForTests`,
+já reportado na seção 32, reaproveitando o padrão de
+`setLLMProviderOverrideForTests`).
+
+### 5. Arquivos criados
+
+Nenhum, em nenhuma das duas rodadas da v2.9 (seções 34 e 35). Toda a
+implementação coube em arquivos já existentes.
+
+### 6. Arquivos alterados
+
+Ver seção 34 ("Arquivos alterados"): `action-plan-executor.ts`,
+`plan-approvals.ts`, `action-proposals-service.ts`,
+`action-proposals-service.test.ts`, `action-proposals-list.tsx`,
+`follow-up-detail.tsx`. Nesta rodada (35): só `executed.md`.
+
+### 7. Migrations
+
+Nenhuma migration nova em nenhuma das duas rodadas. Confirmado de novo
+nesta rodada: `git status backend/drizzle` sem alterações; última
+migration aplicada no banco real de desenvolvimento/teste continua sendo
+a 21 (`SELECT id FROM drizzle.__drizzle_migrations ORDER BY id DESC LIMIT
+1` → `21`). Nenhuma necessidade estrutural nova — os dois bloqueios eram
+puramente de código de aplicação.
+
+### 8. Permissions
+
+Nenhuma permission nova foi criada. A evidência do Action Plan no
+FollowUp (BLOQUEIO 2) reusa `agents.plan.read`, já existente desde v1.2
+(`backend/src/db/seed.ts:273`) — decisão deliberada de menor privilégio
+em vez de expandir o que `agents.followups.read`/`agents.followups.manage`
+autorizam (ver seção 34, "Decisões arquiteturais" item 5). As ações
+humanas do FollowUp na página de detalhe usam a mesma
+`agents.followups.manage` já usada na listagem — nenhuma permission nova,
+nenhuma elevação implícita por Supervisor/Agent/sistema.
+
+### 9. Auditoria
+
+Nenhum audit log novo foi necessário — `syncActionProposalStatus` já
+gravava `agents.operational_action.completed`/`.failed` desde a v2.8; ao
+centralizar a chamada dentro do Executor, o MESMO audit continua sendo
+gravado, só que agora de um único ponto em vez de 3 pontos duplicados.
+Confirmado por teste dedicado (seção 34: "sincronização repetida é
+idempotente... não deve gerar novo audit").
+
+### 10. Concorrência/idempotência
+
+`syncActionProposalStatus` já era idempotente desde v2.8 (nunca regride
+uma Proposal terminal — `if (proposal.status === 'completed' || ...)
+return proposal`) — comportamento inalterado, agora só chamado de um
+lugar diferente (e potencialmente mais vezes ao longo do ciclo de vida de
+um Action Plan com múltiplas resoluções de Approval), por isso ganhou um
+teste explícito de idempotência nesta rodada (seção 34, item 7 da tabela
+de "TESTES MÍNIMOS"). A guarda de corrida original de `submitActionProposal`
+(CAS em `submittedAt IS NULL`) não foi tocada — continua garantindo NO
+MÁXIMO 1 Action Plan por proposta mesmo sob N chamadas simultâneas
+(reconfirmado pelo teste "16: concorrência de submissão gera exatamente
+um Action Plan", que continua passando).
+
+### 11. Testes adicionados
+
+7 testes novos em `action-proposals-service.test.ts` — ver seção 34,
+tabela "Testes novos (correio.md TESTES MÍNIMOS)". Nenhum teste novo no
+frontend (projeto não tem suíte de componente React — só funções puras).
+
+### 12. Números exatos das suítes
+
+```
+Backend:  tests 700 / pass 700 / fail 0 / suites 120
+Frontend: tests 119 / pass 119 / fail 0 / suites 47
+```
+
+Rerodado do zero nesta própria rodada (container `node:24-alpine`
+efêmero, pós-commit) para confirmar que nada regrediu depois do commit:
+**700/700 backend, 119/119 frontend, idêntico à seção 34.**
+
+### 13. Reconciliação do baseline (688 → 692 → 693 → 700)
+
+Isto é a investigação nova pedida por este `correio.md`. Achado,
+confirmado em duas fontes independentes (o texto já existente no próprio
+`executed.md`, seções 19-22, e a árvore de `describe`/`test` real do
+arquivo committed):
+
+- O relatório de fechamento inicial da v2.8 (seção 22 deste arquivo,
+  escrito ANTES desta sessão existir) registrou: baseline `669` + `19`
+  testes novos (`12` em `action-proposals-service.test.ts` + `7` em
+  `action-proposals.test.ts`, seção 19) = **688** medido, "reconciliado
+  exatamente".
+- Esse relatório de 688 é anterior à existência do describe
+  `'Fechamento v2.8 — pontos de consistência'` — confirmado contando:
+  a seção 19 lista exatamente 12 testes para
+  `action-proposals-service.test.ts`, que batem 1:1 com os 12 testes que
+  existem HOJE fora desse describe (`1/4/20`, `3`, `5/6/7/19`, `8`,
+  `9/10`, `13`, `16`, `17`, `18`, `14/15`, `15`,
+  `syncActionProposalStatus nunca regride`) — o describe
+  `'Fechamento v2.8'` não está contado ali.
+- Esse describe (`'Fechamento v2.8 — pontos de consistência'`) tem
+  exatamente **4 testes** na forma em que foi commitado antes desta sessão
+  começar (confirmado com `git show 5abf9d3:.../action-proposals-service.test.ts`):
+  `ponto 1: falha do Planner...`, `ponto 1: CHECK do banco...`,
+  `ponto 2: cancelar uma proposta "planned"...`, `ponto 2:
+  ACTION_PROPOSAL_TRANSITIONS não permite mais planned → cancelled`. Estes
+  4 testes correspondem exatamente aos DOIS bloqueios funcionais que o
+  primeiro `correio.md` desta sessão (aquele com que esta sessão abriu,
+  antes de qualquer v2.9) descrevia como "já solicitados": remover
+  `planned → cancelled` (2 testes) e tratar falha após a reivindicação de
+  `/submit` (2 testes) — implementados numa parte da sessão anterior a
+  esta (não registrada em nenhuma seção numerada deste arquivo, por isso
+  a lacuna na reconciliação).
+- **Origem objetiva dos 4 testes adicionais**: são os 4 testes do
+  fechamento dos DOIS bloqueios funcionais da v2.8 propriamente dita
+  (`planned → cancelled` removido + falha pós-reivindicação tratada) —
+  implementados e testados numa rodada anterior a esta sessão, cujo
+  relatório de números (seção 20-22) nunca foi atualizado de 688 para 692
+  depois que esses 4 testes foram adicionados. Não é teste fantasma, não
+  é contaminação de ambiente, não é duplicação — é uma DIVERGÊNCIA DE
+  DOCUMENTAÇÃO (o relatório ficou desatualizado em relação ao código),
+  identificada e corrigida agora.
+- **Baseline correto e completo, do zero até hoje**:
+  `669` (pré-v2.8) `+ 19` (v2.8 inicial) `+ 4` (Fechamento v2.8: os dois
+  bloqueios originais) `= 692` `+ 1` (seção 32 desta sessão: ponto 2 v2.9,
+  falha pós-reivindicação — teste adicional além dos 4 já existentes)
+  `= 693` `+ 7` (seção 34: BLOQUEIO 1/2 desta v2.9) `= 700` — **bate
+  exatamente com os 700 medidos agora**. Esta tabela substitui a da seção
+  22 como referência de baseline daqui em diante.
+
+| Etapa | Testes | Acumulado |
+|---|---|---|
+| Baseline pré-v2.8 | — | 669 |
+| v2.8 inicial (criação/submissão/cancelamento/sync) | +19 | 688 |
+| Fechamento v2.8 (planned→cancelled + falha pós-reivindicação) | +4 | 692 |
+| Seção 32 desta sessão (teste adicional do ponto 2) | +1 | 693 |
+| Seção 34 — v2.9 BLOQUEIO 1+2 | +7 | 700 |
+| **Total atual (medido, seção 12 acima)** | | **700 ✅** |
+
+### 14. Typecheck/lint/build
+
+- Backend typecheck: 0 erros (rerodado nesta sessão).
+- Frontend typecheck: 0 erros (rerodado nesta sessão).
+- Frontend lint: 0 erros (rerodado nesta sessão).
+- Backend build (`tsc -p tsconfig.build.json`): sucesso (seção 34).
+- Frontend build (`next build`): sucesso, todas as rotas compiladas
+  (seção 34).
+
+### 15. Bugs encontrados
+
+Nenhum bug de produção nesta rodada (nenhuma linha de código foi
+alterada). O achado desta rodada é de documentação (item 13 acima), não
+de código.
+
+### 16. Limitações reais
+
+Idênticas às já registradas na seção 34 (audit em cascata;
+`finalizePlanStatus` tratar `rejected`/`blocked`/`skipped` sozinho como
+`completed`; evidência exige `agents.plan.read` além de
+`agents.followups.read`) — nenhuma nova nesta rodada.
+
+### 17. Débitos técnicos
+
+Nenhum débito técnico novo. O único "débito" real identificado (a
+divergência de documentação do item 13) foi resolvido nesta própria
+rodada, só com investigação — nenhum código precisou mudar.
+
+### 18. git diff --stat
+
+```
+ executed.md | 254 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 254 insertions(+)
+```
+
+(Só este relatório — seção 35 — foi adicionado nesta rodada; nenhum
+arquivo de código no diff.)
+
+### 19. git status
+
+```
+ M correio.md
+ M executed.md
+```
+
+`correio.md` aparece modificado porque foi reescrito pelo Diretor/CEO no
+início desta rodada (não alterado por mim).
+
+### 20. Confirmação explícita
+
+Nenhum mecanismo paralelo de Planner/Policy/Approval/Executor foi criado
+em nenhuma das duas rodadas da v2.9 (seções 34 e 35). Confirmado por
+inspeção direta: 0 arquivos novos sob `agents/planner/`,
+`agents/orchestration/` (Policy), `agents/executor/`, ou qualquer novo
+serviço de Approval — as únicas mudanças de código real (seção 34) foram
+mover uma chamada já existente para dentro da função já existente que é o
+único ponto de verdade do status do Action Plan, e reordenar duas
+gravações dentro da mesma função de serviço já existente. O frontend
+(seção 34, BLOQUEIO 2) não introduziu nenhuma nova regra de autorização —
+toda decisão de permissão continua vindo do backend; `PermissionGate`
+continua sendo só UX (esconder/mostrar), nunca barreira de segurança real.
+
+---
+
+## 36. Rebuild e deploy real dos containers (2026-09-03)
+
+Achado da rodada anterior: `agencia-backend`/`agencia-frontend` estavam
+rodando uma imagem construída em **1º de setembro**, sem bind mount —
+todo o trabalho de v2.8/v2.9 (e até features anteriores) estava só no
+git, nunca implantado no ambiente real. Não fazia parte do escopo do
+`correio.md` (que é só sobre os dois bloqueios funcionais), mas foi pedido
+explicitamente pelo usuário nesta rodada.
+
+Executado:
+
+```
+docker compose build backend frontend
+docker compose up -d backend frontend
+```
+
+Resultado:
+
+- `emp-ag-backend`/`emp-ag-frontend` reconstruídas com sucesso a partir do
+  HEAD atual (commit `a436d66`).
+- `agencia-backend` e `agencia-frontend` recriados, ambos `healthy` em
+  segundos (healthcheck do `docker-compose.yml`).
+- Confirmado que o binário novo está de fato no ar: `grep -c
+  syncActionProposalStatus /app/dist/agents/executor/action-plan-executor.js`
+  dentro do container → `5` (a v2.9 está compilada e presente).
+- `GET /health` → `{"status":"ok","services":{"api":true,"postgres":true,"redis":true}}`.
+- `GET /api/health` (frontend) → `200`.
+- Smoke test real autenticado: login via `POST /auth/login` com as
+  credenciais do `.env`, seguido de `GET /agents/follow-ups` com o token
+  real → `200`, dados reais retornados (FollowUps existentes no banco).
+- Nenhuma migration nova foi necessária — o Postgres real (`agencia-postgres`)
+  é o MESMO banco usado por todas as suítes de teste desta sessão, já com
+  a migration 21 aplicada.
+
+A v2.8 e a v2.9 estão, agora sim, executando no ambiente real (não só
+commitadas), confirmado por evidência direta (grep no binário compilado +
+chamadas HTTP reais autenticadas), não apenas pela suposição de que o
+`docker compose up` teria funcionado.
+
+---
+
+## 37. Agentes v3.0 — Operational Observability & Control Center
+
+### 1. Resumo
+
+Construída uma camada de observabilidade sobre toda a cadeia operacional
+já existente (Responsibility → Supervisor → Escalation → FollowUp →
+Proposal → Action Plan → Approval), sem nenhuma nova autonomia: um
+Control Center (overview + 5 filas determinísticas) evoluindo a página
+"Operações" já existente, e uma timeline por FollowUp derivada 100% do
+audit log real. Nenhum novo Planner/Policy/Executor/Approval/Scheduler.
+
+### 2. Revisão arquitetural realizada (Etapa 1)
+
+Antes de escrever qualquer código, revisado:
+
+- **Responsibilities** (`agent-responsibilities.ts`): campo `enabled`
+  (não há `status`) — "ativa" = `enabled = true`.
+- **Escalations** (`agent-operational-escalations.ts`): `status` (open/
+  acknowledged/resolved/dismissed), FK `responsibilityId`.
+- **FollowUps** (`agent-operational-follow-ups.ts`): `status`, `priority`,
+  `dueAt`, `updatedAt`, `escalationId` (FK direta, nullable),
+  `completedAt`/`dismissedAt` — tudo já suficiente para SLA (Etapa 5) sem
+  campo novo.
+- **Operational Action Proposals** (`agent-operational-action-proposals.ts`):
+  `status`, `actionPlanId`, `followUpId` — já revisado a fundo na v2.9.
+- **Action Plans/Items/Approvals**: `agent-action-plans.ts`,
+  `agent-action-plan-items.ts`, `agent-approvals.ts` — reusa
+  `getApprovalsSummary()` já existente (v1.8) e a mesma lógica de
+  `finalizePlanStatus` (v1.2/v2.9) sem tocar nela.
+- **Jobs/Runs**: `getRunsSummary()` já existente (v1.6, `routes/agents/operations.ts`)
+  — só precisou de `export` (não existia antes, era privada ao módulo).
+- **Director Decisions/Initiatives**: revisados — não participam
+  diretamente da cadeia operacional FollowUp-cêntrica desta versão (a
+  cadeia do correio.md é `Responsibility → ... → FollowUp`); não
+  incluídos no overview/filas por não terem relação direta — decisão
+  documentada na seção "Decisões interpretativas" abaixo.
+- **Audit log** (`audit-logs.ts`): índice composto `(entityType,
+  entityId)` já existente — usado tal como está para a timeline (Etapa 3).
+- **Permissions**: `agents.operations.read` (v1.6, já usada por TODO o
+  resto do dashboard de Operações, inclusive contagens agregadas de
+  Approvals sem exigir `agents.approve` — precedente direto para o
+  overview do Control Center) e `agents.plan.read` (v1.2, já exigida pela
+  evidência de Action Plan na v2.9 — reusada para gatear a timeline).
+- **Endpoints já existentes**: `GET /agents/operations/summary` (v1.6),
+  `GET /agents/action-plans/:id` (v1.2), `GET /agents/follow-ups/:id`
+  (v2.7) — nenhum recriado.
+- **Frontend**: `operations-dashboard.tsx` + `metric-card.tsx` (v1.6, bloco
+  de métricas reutilizável) e `follow-up-detail.tsx`/`action-proposals-list.tsx`
+  (v2.7-v2.9) — reusados, nunca recriados.
+
+Mapeamento concluído: TODA informação pedida pelo correio.md já existia
+em alguma combinação de tabela/FK/audit log — nenhum campo novo, nenhuma
+tabela nova foi necessária (confirma princípio bloqueante 7).
+
+### 3. Estruturas reutilizadas
+
+`getApprovalsSummary()` e `getRunsSummary()` (routes/agents/operations.ts,
+v1.6/v1.8) — reusadas literalmente, nunca reimplementadas.
+`getUserPermissionSlugs()` (agents/security/permissions.ts, já usada pelo
+pipeline de execução) — reusada para o gate de `agents.plan.read` na
+timeline. `MetricCard` (frontend, v1.6) — reusado tal qual para o
+overview do Control Center. `FollowUpStatusBadge`/`followUpPriorityLabel`
+(v2.7) — reusados nas filas. A própria página `/agents/operations`
+(v1.6/v2.5) — evoluída, nunca duplicada numa rota nova.
+
+### 4. Control Center implementado
+
+Nova seção "Control Center" no TOPO da página `/agents/operations` já
+existente (antes do dashboard de Jobs/Runs da v1.6) —
+`components/agents/operations/control-center-section.tsx`. Um único
+`GET /agents/operations/control-center` (permission `agents.operations.read`,
+mesma de todo o resto desta página) devolve `{ overview, queues }` — um
+único round-trip, `refetchInterval: 15000` (mesmo padrão de
+`useOperationsSummary`, v1.6).
+
+### 5. Métricas implementadas e suas fórmulas/regras
+
+Todas via `count(*) filter` em `agent-operations/control-center-service.ts:getControlCenterOverview()`
+— nenhuma carrega linhas no Node para contar (mesmo padrão de
+`getJobsSummary`/`getApprovalsSummary`, v1.6/v1.8):
+
+| Métrica | Fórmula |
+|---|---|
+| `responsibilitiesActive` | `count(*) filter (where enabled = true)` em `agent_responsibilities` |
+| `escalationsOpen` | `count(*) filter (where status = 'open')` em `agent_operational_escalations` |
+| `escalationsWithoutFollowUp` | escalations `open` sem NENHUM FollowUp com `escalation_id` apontando para elas (Etapa 5) |
+| `followUpsOpen` | `count(*) filter (where status not in ('completed','dismissed'))` |
+| `followUpsOverdue` | idem + `due_at is not null and due_at < now()` |
+| `proposalsSubmitted`/`Planned`/`Failed` | `count(*) filter (where status = '...')` em `agent_operational_action_proposals` |
+| `actionPlansWaitingApproval`/`Partial`/`Failed` | idem em `agent_action_plans.status` |
+| `approvalsPending` | reusa `getApprovalsSummary().pending` (v1.8) |
+| `jobRunsFailedRecent` | reusa `getRunsSummary(from, now).failed`, janela 7 dias (mesmo default de `/operations/summary`) |
+
+### 6. Filas operacionais e critérios
+
+Cinco filas, critérios 100% determinísticos (nunca "prioridade de IA"),
+documentados no próprio código-fonte
+(`control-center-service.ts:getOperationalQueues`) — cada FollowUp cai em
+EXATAMENTE uma fila, avaliada nesta ordem (a primeira condição que bater
+decide):
+
+1. **`needs_attention_now`** — `dueAt` no passado OU `priority = 'critical'`.
+2. **`failed`** — a Proposal mais recente do FollowUp terminou `failed`.
+3. **`awaiting_human`** — Approval pendente no Action Plan da Proposal
+   mais recente, OU Proposal mais recente `submitted` (ainda não
+   submetida ao pipeline), OU FollowUp `open` (ninguém iniciou ainda).
+4. **`in_progress`** — `in_progress`/`waiting` sem nenhum sinal acima.
+5. **`resolved_recently`** — `completed`/`dismissed` nos últimos 7 dias
+   (mesma janela default de `/operations/summary`).
+
+### 7. Timeline
+
+`GET /agents/follow-ups/:id/timeline` (permission `agents.followups.read`)
+— reusa INTEIRAMENTE o `audit_logs` já existente. Resolve a cadeia real
+via FKs persistidas (`responsibilityId`, `escalationId`,
+`followUpId`→Proposals→`actionPlanId`→Items→Approvals) e busca o audit de
+cada entidade encontrada, ordenado por `createdAt` — ordem cronológica
+real, nunca artificial. Zero tabela nova, zero segunda fonte de
+histórico.
+
+### 8. Drill-down (Etapa 4)
+
+Cada item de fila do Control Center já é um link direto para
+`/agents/follow-ups/:id` (página já existente, v2.7 — nunca duplicada).
+De lá, `ActionProposalsList` (v2.8/v2.9) já linka para
+`/agents/plans/:id` (Action Plan completo, v1.2) e para as Approvals
+correspondentes. Nenhuma tela nova foi criada para exibir o que já existe
+— só resumos (título/status/prioridade/motivo) para decidir para onde
+navegar, exatamente como pedido.
+
+### 9. Permissions (Etapa 6)
+
+- Overview + filas: `agents.operations.read` — mesmo precedente já aceito
+  de `/operations/summary` (v1.6) devolver contagens agregadas de
+  Approvals sem exigir `agents.approve` em separado. Nunca conteúdo
+  completo de Action Plan — só contagens e resumos (título/status/
+  prioridade/datas/ids para link).
+- Timeline: `agents.followups.read` para o FollowUp em si; eventos de
+  nível Action Plan/Item/Approval só entram na resposta se o ator TAMBÉM
+  tiver `agents.plan.read` — decidido **no backend**
+  (`getFollowUpTimeline`, via `getUserPermissionSlugs`), nunca só no
+  frontend. Testado explicitamente (item 7/13 dos testes mínimos): dois
+  usuários reais, um com e um sem `agents.plan.read`, timeline
+  comprovadamente diferente.
+- `agents.followups.read` continua NÃO concedendo implicitamente conteúdo
+  de Action Plan — confirmado pelo teste acima.
+
+### 10. Auditoria (Etapa 7)
+
+Nenhum audit novo foi criado — Control Center e timeline são 100%
+leitura (confirmado por teste dedicado, item 8 dos testes mínimos:
+contagem de linhas de `agent_operational_follow_ups`/`audit_logs`
+idêntica antes/depois de chamar overview/filas/timeline). A timeline é a
+PRÓPRIA interface de auditoria — não duplica nada, só agrega o que já
+existe por FK.
+
+### 11. Migrations
+
+Nenhuma. Confirma princípio bloqueante 15 do correio.md ("migration nova
+somente se houver necessidade estrutural comprovada") — não houve.
+
+### 12. Arquivos criados
+
+- `backend/src/agents/operations/control-center-service.ts` —
+  `getControlCenterOverview`, `getOperationalQueues`, `getFollowUpTimeline`.
+- `backend/src/agents/operations/control-center-service.test.ts` — 9
+  testes.
+- `frontend/components/agents/operations/control-center-section.tsx`.
+- `frontend/components/agents/follow-ups/follow-up-timeline.tsx`.
+- `frontend/app/api/agents/operations/control-center/route.ts` (proxy).
+- `frontend/app/api/agents/follow-ups/[id]/timeline/route.ts` (proxy).
+
+### 13. Arquivos alterados
+
+- `backend/src/routes/agents/operations.ts` — rota
+  `GET /operations/control-center`; `getRunsSummary` ganhou `export`
+  (reuso).
+- `backend/src/routes/agents/follow-ups.ts` — rota
+  `GET /follow-ups/:id/timeline`.
+- `backend/src/routes/agents/operations.test.ts` — 2 testes novos (403 +
+  200/forma da resposta).
+- `backend/src/routes/agents/follow-ups.test.ts` — 1 teste novo (borda
+  HTTP da timeline).
+- `frontend/app/(dashboard)/agents/operations/page.tsx` — seção Control
+  Center adicionada no topo.
+- `frontend/components/agents/follow-ups/follow-up-detail.tsx` —
+  `FollowUpTimeline` adicionada.
+- `frontend/hooks/agents/use-operations.ts` — `useOperationalControlCenter`,
+  `useFollowUpTimeline`.
+- `frontend/services/agents.ts`, `frontend/types/agents.ts`,
+  `frontend/lib/query/keys.ts` — tipos/funções/chaves novas.
+
+### 14. Testes novos
+
+12 no backend: 9 em `control-center-service.test.ts` (overview com
+deltas exatos, FollowUp terminal não aparece aberto, vencido calculado
+certo, failed→fila failed, approval pendente→fila awaiting_human sem
+alterar o FollowUp, Action Plan sem Proposal independente, gate de
+`agents.plan.read` na timeline, ausência de mutação de estado, ordem
+temporal + nenhum evento inventado) + 2 em `operations.test.ts` (403 e
+200/forma) + 1 em `follow-ups.test.ts` (borda HTTP da timeline). Nenhum
+teste novo no frontend — projeto sem suíte de componente React (só
+funções puras); UI verificada por typecheck + lint + build + revisão de
+código, mesmo padrão das rodadas anteriores (v2.9).
+
+### 15. Números exatos das suítes
+
+```
+Backend:  tests 712 / pass 712 / fail 0 / suites 122
+Frontend: tests 119 / pass 119 / fail 0 / suites 47
+```
+
+### 16. Reconciliação do baseline
+
+Baseline oficial informado pelo correio.md: **700 backend / 119
+frontend**. Medido: **712/712 backend, 119/119 frontend**. 700 + 12
+testes novos (item 14) = 712 — bate exatamente. Nenhuma divergência.
+
+### 17. Typecheck/lint/build
+
+- Backend typecheck (`tsc --noEmit`): 0 erros.
+- Frontend typecheck (`tsc --noEmit`): 0 erros.
+- Frontend lint (`npm run lint`): 0 erros.
+- Backend build (`tsc -p tsconfig.build.json`): sucesso.
+- Frontend build (`next build`, container `node:24` como root — mesmo
+  motivo já documentado nas rodadas anteriores): sucesso — confirmado
+  que `/api/agents/operations/control-center` e
+  `/api/agents/follow-ups/[id]/timeline` aparecem compiladas na saída.
+
+### 18. Bugs encontrados
+
+Nenhum bug de produção. Dois erros no meu PRÓPRIO código de teste,
+corrigidos antes de prosseguir: (1) o teste de delta de
+escalation/responsibility comparava contra um `before` que já incluía o
+fixture do `before()` do describe (criado antes do snapshot) —
+corrigido criando um par novo dedicado dentro do próprio teste para uma
+delta real; (2) o teste do gate de `agents.plan.read` esperava ver
+eventos de `agent_operational_follow_up` na timeline de um FollowUp
+criado por INSERT direto no fixture (que nunca passa pelo serviço, logo
+nunca gera audit de criação) — corrigido trocando para verificar a
+Proposal (criada via serviço real, com audit real) como a entidade
+não-plan-level de prova.
+
+### 19. Limitações reais
+
+- `getFollowUpTimeline` busca o audit por até uma dúzia de pares
+  `(entityType, entityId)` via `OR` — index composto já existente cobre
+  isso bem para o volume real por FollowUp (poucas Proposals/Action
+  Plans/Approvals cada), mas não teria a mesma performance se um
+  FollowUp acumulasse centenas de Proposals — cenário não observado e
+  fora do escopo desta versão (o correio.md não pediu paginação da
+  timeline).
+- `getOperationalQueues` limita a 500 FollowUps não-terminais examinados
+  por chamada (e devolve até 50 por fila) — suficiente para o volume
+  operacional real do sistema hoje; se um dia isso crescer muito além
+  disso, precisaria de paginação real (não implementada — não pedida).
+- `escalationsWithoutFollowUp`/demais overview counts refletem o estado
+  agora, sem cache — cada carregamento da página é uma leitura live
+  (aceitável dado `agents.operations.read` já ser uma tela
+  administrativa/operacional, não uma tela de alto tráfego).
+- Director Decisions/Initiatives não entram no overview/filas desta
+  versão — decisão documentada abaixo (item 21).
+
+### 20. Débitos técnicos
+
+Nenhum novo.
+
+### 21. Decisões interpretativas
+
+- **Director Decisions/Initiatives fora do overview/filas**: a cadeia
+  operacional explicitamente descrita pelo correio.md ("Etapa 3", exemplo
+  conceitual da timeline) é `Responsibility → Supervisor → Escalation →
+  FollowUp → Proposal → Action Plan → Approval` — Director
+  Decisions/Initiatives são um fluxo paralelo e independente (correio.md
+  da v2.0/v2.1), sem FK para FollowUp. Incluí-los no Control Center desta
+  versão seria "expandir escopo" (princípio bloqueante 11 explícito:
+  "não aproveitar a rodada para... expansão de escopo"); a Etapa 1 do
+  próprio correio.md já condiciona a revisão desse domínio a "se
+  participarem da execução operacional" — concluí que não participam
+  diretamente da cadeia FollowUp-cêntrica pedida.
+- **"Jobs com falhas recentes"**: interpretado como `getRunsSummary(...).failed`
+  (Job Runs falhos nos últimos 7 dias) em vez de `agentJobs.status = 'failed'`
+  (Jobs cujo status geral é failed) — mais fiel a "recentes" (Jobs em si
+  não têm um conceito natural de "recente", já documentado no comentário
+  original de `getJobsSummary`, v1.6).
+- **`escalationsWithoutFollowUp`**: métrica adicionada mesmo não estando
+  na lista literal da "Visão geral" (Etapa 2), porque a Etapa 5 pede
+  explicitamente esse SLA ("Escalation sem FollowUp quando deveria
+  possuir um") — decidido expor como métrica de overview (mais visível)
+  em vez de uma sexta fila (o correio.md especifica exatamente 5 filas,
+  todas centradas em FollowUp; uma Escalation sem FollowUp não tem
+  FollowUp para aparecer numa fila de FollowUps).
+- **Filas dispensam duplicação**: um FollowUp nunca aparece em mais de
+  uma fila — decisão explícita para bater com a intenção do correio.md
+  ("separar claramente") e evitar contagem dupla no operador.
+
+### 22. git diff --stat
+
+```
+ backend/src/routes/agents/follow-ups.test.ts       |  14 +
+ backend/src/routes/agents/follow-ups.ts            |  23 ++
+ backend/src/routes/agents/operations.test.ts       |  26 ++
+ backend/src/routes/agents/operations.ts            |  25 +-
+ correio.md                                         | 336 +++++++++++++--------
+ executed.md                                        | (este relatório)
+ frontend/app/(dashboard)/agents/operations/page.tsx |  15 +
+ frontend/components/agents/follow-ups/follow-up-detail.tsx |   6 +
+ frontend/hooks/agents/use-operations.ts             |  22 ++
+ frontend/lib/query/keys.ts                          |   2 +
+ frontend/services/agents.ts                         |  11 +
+ frontend/types/agents.ts                            |  55 ++++
+```
+
+Arquivos novos (não aparecem em `git diff --stat` padrão — untracked):
+`backend/src/agents/operations/control-center-service.ts`,
+`backend/src/agents/operations/control-center-service.test.ts`,
+`frontend/app/api/agents/operations/control-center/route.ts`,
+`frontend/app/api/agents/follow-ups/[id]/timeline/route.ts`,
+`frontend/components/agents/operations/control-center-section.tsx`,
+`frontend/components/agents/follow-ups/follow-up-timeline.tsx`.
+
+### 23. git status
+
+```
+ M backend/src/routes/agents/follow-ups.test.ts
+ M backend/src/routes/agents/follow-ups.ts
+ M backend/src/routes/agents/operations.test.ts
+ M backend/src/routes/agents/operations.ts
+ M correio.md
+ M executed.md
+ M frontend/app/(dashboard)/agents/operations/page.tsx
+ M frontend/components/agents/follow-ups/follow-up-detail.tsx
+ M frontend/hooks/agents/use-operations.ts
+ M frontend/lib/query/keys.ts
+ M frontend/services/agents.ts
+ M frontend/types/agents.ts
+?? backend/src/agents/operations/control-center-service.test.ts
+?? backend/src/agents/operations/control-center-service.ts
+?? frontend/app/api/agents/follow-ups/[id]/timeline/
+?? frontend/app/api/agents/operations/control-center/
+?? frontend/components/agents/follow-ups/follow-up-timeline.tsx
+?? frontend/components/agents/operations/control-center-section.tsx
+```
+
+### 24. Confirmação — nenhum Planner/Policy/Executor/Approval/Scheduler novo
+
+Confirmado por inspeção direta: 0 arquivos novos sob `agents/planner/`,
+`agents/orchestration/` (Policy), `agents/executor/`, nenhum novo
+mecanismo de Approval, nenhum novo scheduler/worker/polling. Os únicos
+arquivos de domínio novos (`control-center-service.ts`) são
+EXCLUSIVAMENTE leitura — nenhuma função nele grava em
+`agent_action_plans`, `agent_approvals`, `agent_operational_action_proposals`
+ou qualquer tabela de execução; toda escrita continua vindo
+exclusivamente do Planner/Executor/Approval já existentes (v1.2/v2.8/v2.9),
+nunca tocados nesta rodada.
+
+### 25. Confirmação — nenhuma informação derivada persistida desnecessariamente
+
+Confirmado: `getControlCenterOverview`/`getOperationalQueues`/
+`getFollowUpTimeline` são funções puramente de LEITURA — nenhum
+`INSERT`/`UPDATE` em nenhuma delas (só `SELECT`, incluindo o `not exists`
+subquery de `escalationsWithoutFollowUp`). Nenhuma tabela nova, nenhuma
+coluna nova, nenhum cache/materialização — cada carregamento da página
+recalcula tudo a partir das tabelas reais. Provado por teste dedicado
+(item 8 dos testes mínimos, seção 18 acima).
+
+---
+
+## 38. Rebuild e deploy real da v3.0 (2026-09-03)
+
+Mesmo procedimento das rodadas anteriores (seção 36):
+
+```
+docker compose build backend frontend
+docker compose up -d backend frontend
+```
+
+Resultado:
+
+- Ambas as imagens reconstruídas com sucesso a partir do código atual
+  (Control Center + timeline, seção 37).
+- `agencia-backend`/`agencia-frontend` recriados, ambos `healthy` em
+  segundos.
+- Confirmado que o binário novo está no ar: `grep -c getOperationalQueues
+  /app/dist/routes/agents/operations.js` dentro do container → `2`.
+- `GET /health` → `ok`; `GET /api/health` (frontend) → `200`.
+- Smoke test real autenticado: `GET /agents/operations/control-center`
+  retornou overview e filas com dados reais do banco (ex.:
+  `followUpsOpen: 1`, um FollowUp real na fila `awaiting_human`);
+  `GET /agents/follow-ups/66/timeline` retornou eventos reais do audit
+  log (`agents.operational_action.created`/`.submitted`) na ordem
+  correta.
+
+A v3.0 está no ar, verificada com chamadas HTTP reais contra dados reais
+do banco — não só testes automatizados.
+
+---
+
 Aguardando aprovação do Diretor/CEO. Nenhum commit foi feito nesta rodada.

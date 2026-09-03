@@ -177,6 +177,32 @@ describe('Agentes v1.6 — Operations, Incidents, Audit, Autonomy switch', () =>
     });
   });
 
+  // Agentes v3.0 (correio.md "Etapa 8", item 7) — Operational Control
+  // Center: mesma permission de leitura de todo este arquivo
+  // (`agents.operations.read`); testes de conteúdo/critérios das filas e
+  // da timeline vivem em `agents/operations/control-center-service.test.ts`
+  // (nível de serviço, mais fácil de controlar o fixture exato) — aqui só
+  // a borda HTTP (autorização + forma da resposta).
+  describe('GET /operations/control-center', () => {
+    test('sem permission → 403', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/control-center', headers: authHeader(limitedToken) });
+      assert.equal(response.statusCode, 403);
+    });
+
+    test('com permission → 200, overview e filas presentes na forma esperada', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/control-center', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 200, response.body);
+
+      const { overview, queues } = response.json().data;
+      for (const key of ['responsibilitiesActive', 'escalationsOpen', 'followUpsOpen', 'followUpsOverdue', 'proposalsSubmitted', 'proposalsPlanned', 'proposalsFailed', 'approvalsPending']) {
+        assert.equal(typeof overview[key], 'number', `overview.${key} deveria ser um número`);
+      }
+      for (const key of ['needs_attention_now', 'awaiting_human', 'failed', 'in_progress', 'resolved_recently']) {
+        assert.ok(Array.isArray(queues[key]), `queues.${key} deveria ser um array`);
+      }
+    });
+  });
+
   describe('GET /incidents', () => {
     let jobForIncidents: Awaited<ReturnType<typeof createJob>>;
     let repeatedFailureWindow: number;

@@ -20,6 +20,7 @@ import { getOperationalHealth } from '../../agents/operations/health-service.js'
 import { getOperationalSupervisionSchedulerStatus } from '../../agents/operations/scheduler-status.js';
 import { isOperationalSupervisionEnabled, setOperationalSupervisionEnabled } from '../../agents/operations/scheduler-settings.js';
 import { runGuardedOperationalSupervision, SupervisionAlreadyRunningError } from '../../agents/operations/supervisor-guard.js';
+import { getControlCenterOverview, getOperationalQueues } from '../../agents/operations/control-center-service.js';
 import { audit } from '../../services/audit.js';
 
 /**
@@ -69,7 +70,11 @@ export async function getJobsSummary() {
   };
 }
 
-async function getRunsSummary(from: Date, to: Date) {
+// v3.0 (correio.md "Etapa 1/2" — Control Center) — exportada pelo mesmo
+// motivo que `getJobsSummary`/`getApprovalsSummary` acima: reuso direto
+// de `agents/operations/control-center-service.ts` (jobRunsFailedRecent),
+// nunca uma segunda query reimplementando a mesma contagem.
+export async function getRunsSummary(from: Date, to: Date) {
   const [row] = await db
     .select({
       queued: sql<number>`count(*) filter (where ${agentJobRuns.status} = 'queued')`,
@@ -290,6 +295,24 @@ export async function operationsRoutes(app: FastifyInstance) {
       });
 
       return { data: await getOperationalSupervisionSchedulerStatus() };
+    },
+  );
+
+  // Agentes v3.0 (correio.md "Etapa 2") — Operational Control Center.
+  // Mesma permission de leitura já usada por TODA esta rota
+  // (`agents.operations.read`) — mesmo precedente já aceito de
+  // `/operations/summary` (v1.6) devolver contagens agregadas de
+  // Approvals sem exigir `agents.approve` separadamente: overview e
+  // filas aqui são só CONTAGENS e resumos (título/status/prioridade/
+  // datas/ids para link) — nunca o conteúdo completo de um Action Plan
+  // (isso continua exigindo `agents.plan.read`, ver
+  // `GET /follow-ups/:id/timeline` em `follow-ups.ts`).
+  app.get(
+    '/operations/control-center',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async () => {
+      const [overview, queues] = await Promise.all([getControlCenterOverview(), getOperationalQueues()]);
+      return { data: { overview, queues } };
     },
   );
 }

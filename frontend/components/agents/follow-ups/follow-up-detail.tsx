@@ -18,6 +18,7 @@ import { FollowUpStatusBadge } from "../status-badge";
 import { ActionProposalsList } from "./action-proposals-list";
 import { CompleteFollowUpDialog } from "./complete-follow-up-dialog";
 import { DismissFollowUpDialog } from "./dismiss-follow-up-dialog";
+import { FollowUpTimeline } from "./follow-up-timeline";
 import { WaitFollowUpDialog } from "./wait-follow-up-dialog";
 
 /**
@@ -144,6 +145,11 @@ export function FollowUpDetail({ followUpId }: { followUpId: number }) {
       </Card>
 
       <ActionProposalsList followUpId={followUp.id} followUpStatus={followUp.status} />
+
+      {/* Agentes v3.0 (correio.md "Etapa 3") — timeline operacional
+          reunindo tudo que já é mostrado acima (Proposals/Action
+          Plans/Approvals) numa ordem cronológica real. */}
+      <FollowUpTimeline followUpId={followUp.id} />
 
       <WaitFollowUpDialog followUpId={followUpId} open={waitOpen} onOpenChange={setWaitOpen} />
       <CompleteFollowUpDialog followUpId={followUpId} open={completeOpen} onOpenChange={setCompleteOpen} />

@@ -147,6 +147,20 @@ describe('Agentes v2.7 - FollowUps API', () => {
     assert.equal(start.statusCode, 403);
   });
 
+  test('v3.0: GET /follow-ups/:id/timeline exige agents.followups.read; conteúdo (gate de agents.plan.read) é testado em control-center-service.test.ts', async () => {
+    const followUp = await createFollowUp();
+
+    const noPerm = await app.inject({ method: 'GET', url: `/agents/follow-ups/${followUp.id}/timeline`, headers: authHeader(noPermToken) });
+    assert.equal(noPerm.statusCode, 403);
+
+    const readOnly = await app.inject({ method: 'GET', url: `/agents/follow-ups/${followUp.id}/timeline`, headers: authHeader(readOnlyToken) });
+    assert.equal(readOnly.statusCode, 200, readOnly.body);
+    assert.ok(Array.isArray(readOnly.json().data));
+
+    const notFound = await app.inject({ method: 'GET', url: '/agents/follow-ups/999999999/timeline', headers: authHeader(ceoToken) });
+    assert.equal(notFound.statusCode, 404);
+  });
+
   test('18: manage permite criação e transições completas', async () => {
     const followUp = await createFollowUp();
 

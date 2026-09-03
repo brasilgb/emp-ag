@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { AgentError } from '../../agents/errors.js';
 import { authenticate } from '../../middleware/authenticate.js';
 import { requirePermission } from '../../middleware/require-permission.js';
+import { getFollowUpTimeline } from '../../agents/operations/control-center-service.js';
 import {
   completeFollowUp,
   createManualFollowUp,
@@ -68,6 +69,28 @@ export async function followUpsRoutes(app: FastifyInstance) {
       if (!followUp) return notFound(reply, 'FollowUp não encontrado.');
 
       return { data: followUp };
+    },
+  );
+
+  // Agentes v3.0 (correio.md "Etapa 3") — timeline operacional derivada
+  // 100% do audit log existente + das FKs reais da cadeia Responsibility
+  // → Escalation → FollowUp → Proposal → Action Plan → Approval — nenhuma
+  // tabela de histórico nova. Mesma permission de leitura do FollowUp
+  // (`agents.followups.read`); eventos de nível Action Plan/Item/Approval
+  // só entram na resposta se o ator também tiver `agents.plan.read`
+  // (decidido dentro de `getFollowUpTimeline`, no backend — nunca
+  // filtrado só no frontend, seção "Etapa 6").
+  app.get(
+    '/follow-ups/:id/timeline',
+    { preHandler: [authenticate, requirePermission('agents.followups.read')] },
+    async (request, reply) => {
+      const params = followUpIdParamSchema.safeParse(request.params);
+      if (!params.success) return badRequest(reply, params.error);
+
+      const timeline = await getFollowUpTimeline(params.data.id, currentUserId(request));
+      if (!timeline) return notFound(reply, 'FollowUp não encontrado.');
+
+      return { data: timeline };
     },
   );
 

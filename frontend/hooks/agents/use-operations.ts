@@ -9,9 +9,11 @@ import {
   type OperationsSummaryParams,
   deleteJobSetting,
   deleteSetting,
+  getFollowUpTimeline,
   getGlobalAutonomy,
   getJobRunDetail,
   getJobRunLineage,
+  getOperationalControlCenter,
   getOperationsSummary,
   listAuditLogs,
   listIncidents,
@@ -32,6 +34,26 @@ export function useOperationsSummary(params: OperationsSummaryParams = {}) {
     // Dashboard operacional: refresca sozinho para refletir Runs/eventos
     // recentes sem exigir F5 manual (seção 3).
     refetchInterval: 15000,
+  });
+}
+
+// Agentes v3.0 — Operational Observability & Control Center (correio.md
+// "Etapa 2"). Mesmo racional de refetch automático de useOperationsSummary
+// acima — dashboard operacional, nunca exige F5 manual.
+export function useOperationalControlCenter() {
+  return useQuery({
+    queryKey: queryKeys.agents.operationalControlCenter,
+    queryFn: () => getOperationalControlCenter(),
+    refetchInterval: 15000,
+  });
+}
+
+// Agentes v3.0 — "Etapa 3" (timeline operacional).
+export function useFollowUpTimeline(followUpId: number | null) {
+  return useQuery({
+    queryKey: queryKeys.agents.followUpTimeline(followUpId ?? 0),
+    queryFn: () => getFollowUpTimeline(followUpId as number),
+    enabled: followUpId !== null,
   });
 }
 

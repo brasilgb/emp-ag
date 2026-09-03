@@ -1273,3 +1273,58 @@ export interface OperationalActionProposal {
   cancelledBy: number | null;
   failureReason: string | null;
 }
+
+// Agentes v3.0 — Operational Observability & Control Center (correio.md).
+export interface ControlCenterOverview {
+  responsibilitiesActive: number;
+  escalationsOpen: number;
+  escalationsWithoutFollowUp: number;
+  followUpsOpen: number;
+  followUpsOverdue: number;
+  proposalsSubmitted: number;
+  proposalsPlanned: number;
+  proposalsFailed: number;
+  actionPlansWaitingApproval: number;
+  actionPlansPartial: number;
+  actionPlansFailed: number;
+  approvalsPending: number;
+  jobRunsFailedRecent: number;
+}
+
+export const OPERATIONAL_QUEUE_NAMES = ["needs_attention_now", "awaiting_human", "failed", "in_progress", "resolved_recently"] as const;
+export type OperationalQueueName = (typeof OPERATIONAL_QUEUE_NAMES)[number];
+
+export interface OperationalQueueItem {
+  followUpId: number;
+  title: string;
+  status: FollowUpStatus;
+  priority: FollowUpPriority;
+  dueAt: string | null;
+  updatedAt: string;
+  responsibilityId: number;
+  escalationId: number | null;
+  ownerAgentId: number;
+  latestProposalId: number | null;
+  latestProposalStatus: ActionProposalStatus | null;
+  actionPlanId: number | null;
+  hasPendingApproval: boolean;
+  queue: OperationalQueueName;
+  reason: string;
+}
+
+export interface ControlCenterData {
+  overview: ControlCenterOverview;
+  queues: Record<OperationalQueueName, OperationalQueueItem[]>;
+}
+
+export interface TimelineEvent {
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  actorType: string;
+  actorId: string | null;
+  userId: number | null;
+  metadata: unknown;
+  createdAt: string;
+  requiresPlanRead: boolean;
+}

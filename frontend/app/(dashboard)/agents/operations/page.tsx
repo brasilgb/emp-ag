@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { AgentsSubNav } from "@/components/agents/agents-sub-nav";
+import { ControlCenterSection } from "@/components/agents/operations/control-center-section";
 import { OperationsDashboard } from "@/components/agents/operations/operations-dashboard";
 import { OperationsSupervisorDashboard } from "@/components/agents/operations/operations-supervisor-dashboard";
 import { OperationalSupervisionSchedulerCard } from "@/components/agents/operations/operational-supervision-scheduler-card";
@@ -18,6 +19,20 @@ export default function AgentOperationsPage() {
       </div>
 
       <AgentsSubNav />
+
+      {/* Agentes v3.0 (correio.md "Etapa 2") — Operational Control
+          Center: evolui esta MESMA página (nunca uma rota nova) com uma
+          camada de observabilidade sobre a cadeia
+          Responsibility → Supervisor → Escalation → FollowUp → Proposal →
+          Action Plan → Approval — logo no topo, antes do dashboard de
+          Jobs/Runs (v1.6) que já existia. */}
+      <div>
+        <h2 className="text-lg font-semibold tracking-tight">Control Center</h2>
+        <p className="text-sm text-muted-foreground">
+          O que está acontecendo, parado, vencido, aguardando aprovação ou falhou — em toda a cadeia operacional.
+        </p>
+      </div>
+      <ControlCenterSection />
 
       <OperationsDashboard />
 
