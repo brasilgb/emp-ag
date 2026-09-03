@@ -386,6 +386,12 @@ const defaultPermissions = [
     description:
       'Permite criar/editar, aprovar, cancelar, concluir e gerar Executive Review de Initiatives (Agentes v2.0/v2.2). Leitura segue em agents.read; propor Action Plan segue em agents.use + agents.plan.',
   },
+  {
+    name: 'Gerenciar recovery/reconciliação de workflows de agentes',
+    slug: 'agents.recovery.manage',
+    description:
+      'Permite executar a reconciliação de workflows stale (POST /agents/recovery/run e /agents/recovery/:type/:id — Agentes v2.4). Leitura de status/stale segue em agents.operations.read.',
+  },
 
   {
     name: 'Visualizar usuários',

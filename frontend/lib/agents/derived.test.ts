@@ -17,12 +17,15 @@ import {
   goalHealthLabel,
   goalPriorityLabel,
   goalStatusLabel,
+  formatAgeSeconds,
   initiativeExecutionStateLabel,
   memoryImportanceLabel,
   memoryStatusLabel,
   memoryTypeLabel,
   recommendationTypeLabel,
+  recoveryResultLabel,
   reviewOutcomeLabel,
+  workflowTypeLabel,
   initiativeStatusLabel,
   isCriticalSetting,
   isDecisionClosed,
@@ -333,5 +336,48 @@ describe("memoryImportanceLabel", () => {
   test("valor desconhecido faz fallback para o próprio valor", () => {
     // @ts-expect-error — testando o fallback de valor não mapeado.
     assert.equal(memoryImportanceLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+// Agentes v2.4 — Workflow Recovery, Reconciliation & Operational Resilience.
+describe("recoveryResultLabel", () => {
+  test("todo resultado conhecido tem rótulo em pt-BR", () => {
+    assert.equal(recoveryResultLabel("recovered"), "Recuperado");
+    assert.equal(recoveryResultLabel("retried"), "Nova tentativa");
+    assert.equal(recoveryResultLabel("reverted"), "Revertido");
+    assert.equal(recoveryResultLabel("marked_failed"), "Marcado como falho");
+    assert.equal(recoveryResultLabel("manual_attention"), "Atenção manual");
+    assert.equal(recoveryResultLabel("skipped"), "Ignorado (nada a fazer)");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(recoveryResultLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+describe("workflowTypeLabel", () => {
+  test("todo tipo conhecido tem rótulo", () => {
+    assert.equal(workflowTypeLabel("initiative"), "Initiative");
+    assert.equal(workflowTypeLabel("executive_review"), "Executive Review");
+    assert.equal(workflowTypeLabel("strategic_memory"), "Strategic Memory");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(workflowTypeLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+describe("formatAgeSeconds", () => {
+  test("formata segundos/minutos/horas/dias no maior recorte apropriado", () => {
+    assert.equal(formatAgeSeconds(30), "30s");
+    assert.equal(formatAgeSeconds(59), "59s");
+    assert.equal(formatAgeSeconds(60), "1min");
+    assert.equal(formatAgeSeconds(3599), "59min");
+    assert.equal(formatAgeSeconds(3600), "1h");
+    assert.equal(formatAgeSeconds(86399), "23h");
+    assert.equal(formatAgeSeconds(86400), "1d");
+    assert.equal(formatAgeSeconds(172800), "2d");
   });
 });

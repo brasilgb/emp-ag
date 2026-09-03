@@ -1,569 +1,535 @@
-# Agentes v2.3 — Strategic Learning & Organizational Memory
+# Agentes v2.4 — Workflow Recovery, Reconciliation & Operational Resilience
 
-Relatório de entrega da v2.3, conforme `correio.md` seção 29 ("Relatório
-final"), 28 itens obrigatórios. **NENHUM COMMIT foi feito nesta sessão**
-— todas as alterações desta entrega permanecem no working tree,
-aguardando autorização final do Diretor/CEO.
-
-**Nota sobre o baseline:** entre a entrega da v2.2 e o início desta v2.3,
-os commits `706699a` ("Commit", saneamento v2.1) e `7545772` ("Push",
-v2.2 completa) foram realizados — pelo autor do repositório, fora desta
-sessão de execução, refletindo a aprovação/consolidação daquelas
-entregas. `HEAD` já contém, portanto, toda a v2.1/v2.2. O `git diff
---stat`/`git status` deste relatório (itens 26/27) refletem exclusivamente
-o delta real da v2.3 sobre esse HEAD.
+Relatório de entrega da v2.4, conforme `correio.md` seção 31 ("Relatório
+final"), 30 itens obrigatórios. **NENHUM COMMIT foi feito** — todas as
+alterações permanecem no working tree, aguardando autorização final do
+Diretor/CEO.
 
 ---
 
-## 1. Resumo da implementação
+## 1. Resumo
 
-O Diretor Virtual passou a ter uma camada de memória organizacional
-estratégica: aprendizados extraídos de Executive Reviews (v2.2)
-concluídas, persistidos com proveniência rastreável, usados
-EXCLUSIVAMENTE como contexto consultivo — nunca como autorização. Uma
-nova Executive Review agora recebe (opcionalmente) memórias históricas
-relevantes do mesmo domínio, apresentadas ao LLM numa seção
-"HISTORICAL ORGANIZATIONAL MEMORY" claramente separada da "CURRENT
-EVIDENCE", com instrução explícita de precedência da evidência atual.
+Implementado um mecanismo genérico de detecção e reconciliação de
+workflows "stale" — claims persistidos (`Initiative.status='active'`,
+`agent_executive_reviews.status='draft'`, `agent_strategic_memories.status='draft'`)
+que sobrevivem a um crash do processo entre o claim e a
+conclusão/compensação normal. Nenhum segundo Executor/Planner/Approval
+Workflow/Policy Evaluator foi criado — o recovery só devolve cada
+entidade a um estado do qual o pipeline OFICIAL já existente pode
+retomar sozinho, ou escala para atenção humana quando não há como
+reconciliar com segurança.
 
-## 2. Arquitetura adotada
+## 2. Problema estrutural resolvido
 
-Novo módulo `agents/director/memory/`, mesmo padrão de camadas de
-`reviews/` (v2.2): `types.ts`, `schemas.ts`, `context.ts`, `prompt.ts`,
-`memory-extractor.ts` (chama o LLM, isolado de banco/execução/policy),
-`memory-service.ts` (orquestra claim/persistência/arquivamento),
-`retrieval-service.ts` (recuperação determinística). Nenhum novo
-Executor/Planner/Approval Workflow/Policy Evaluator foi criado (seção
-27). A integração com "Director Analysis" reaproveita o ÚNICO componente
-LLM de análise estratégica já existente — o Executive Reviewer da v2.2
-(`reviews/executive-reviewer.ts` + `reviews/prompt.ts`, ambos estendidos,
-nunca duplicados).
+Nas v2.1/v2.2/v2.3, cada serviço (`startInitiativeExecution`,
+`generateExecutiveReview`, `createStrategicMemoryFromReview`) já
+compensa corretamente em **exceções JavaScript normais** (bloco `catch`
+reverte o claim). O problema desta versão é distinto: se o **processo**
+morrer (crash de container, OOM kill, deploy interrompendo o pod) entre
+o claim persistido e a conclusão/`catch`, nenhum código roda para
+compensar — o estado transitório fica órfão indefinidamente, bloqueando
+o slot único (unique constraint) daquela entidade para sempre. A v2.4
+detecta e reconcilia esses órfãos de fora, sem exigir que o processo que
+os criou ainda exista.
 
-## 3. Schema/migrations
+## 3. Workflows mapeados
 
-Nova tabela `agent_strategic_memories` (migration
-`0017_agent_strategic_memories.sql`), gerada e aplicada via fluxo oficial
-`drizzle-kit generate` + `drizzle-kit migrate` (seção 26) — sem edição
-manual do tracking, consistência entre migration SQL, `drizzle/meta/_journal.json`,
-snapshot e `drizzle.__drizzle_migrations` confirmada pelo próprio
-`drizzle-kit migrate` (que teria falhado em caso de divergência).
+| entity | transitional state | terminal states | claim timestamp usado | expected next transition | retry existente |
+|---|---|---|---|---|---|
+| `agent_director_initiatives` | `status='active'` sem `action_plan_id` | `approved, blocked, completed, cancelled` | `updated_at` | `active` (com plano) → segue fluxo normal | `POST .../propose` (v2.1, idempotente) |
+| `agent_executive_reviews` | `status='draft'` | `completed, superseded` | `updated_at` | `completed` | `POST .../review` (v2.2, idempotente) |
+| `agent_strategic_memories` | `status='draft'` | `active, superseded, archived` | `updated_at` | `active` | `POST .../memory` (v2.3, idempotente) |
 
-Campos: `id, memory_type, domain, title, summary, lesson, outcome,
-confidence, importance, tags (jsonb), source_goal_id, source_initiative_id,
-source_review_id, source_decision_id, evidence (jsonb), status,
-created_by, created_at, updated_at`.
+Nenhuma coluna nova foi necessária — `updated_at` já existe nas 3
+tabelas e já é atualizado exatamente no momento do claim (seção 3:
+"preferir utilizar timestamps já existentes").
 
-Decisões de modelagem documentadas no schema
-(`agent-strategic-memories.ts`):
-- `source_review_id` NULLABLE + índice único PARCIAL (`WHERE NOT NULL`)
-  — nesta versão toda memória nasce de uma review (1:1, seção 13), mas a
-  coluna fica nullable para permitir, sem migração futura, outros
-  `memory_type` não derivados de review.
-- `status` ganhou um 4º valor, `draft`, além dos 3 sugeridos pelo
-  correio.md (`active/superseded/archived`) — mesmo racional já usado em
-  `agent_executive_reviews.status` (v2.2): é o estado transitório entre
-  o claim atômico e a resposta do LLM, necessário para nunca segurar
-  transaction durante a chamada externa.
-- `tags` foi adicionado além dos "campos mínimos" da seção 2 — a seção 7
-  pede explicitamente que a saída do LLM inclua `tags`; persistir é
-  melhor que descartar.
+Mapeamento adicional real, encontrado ao revisar o fluxo de
+`startInitiativeExecution` (seção 7, "não inventar sem ler o código
+real"): existe uma SEGUNDA janela de crash para Initiative — durante a
+avaliação do Action Plan pelo Policy Evaluator (`agent_action_plans.status='evaluating'`
+travado) — documentada e tratada como Caso C (item 8 abaixo).
 
-## 4. Modelo da Strategic Memory
-
-Uma linha de `agent_strategic_memories` representa UM aprendizado:
-`evidence` (fato, backend) + `title/summary/lesson/tags` (interpretação,
-LLM) + `confidence/importance` (auto-avaliação do LLM) + proveniência
-(`source_*`, backend) + `status` (lifecycle). Nunca uma verdade absoluta
-— sempre acompanhada de confiança e proveniência, nunca apresentada como
-regra (seção 8/19).
-
-## 5. Tipos de memória implementados
-
-Vocabulário completo definido (`memory/types.ts`): `initiative_outcome |
-strategic_lesson | decision_outcome | recurring_pattern`. **Nesta
-versão, só `initiative_outcome` é efetivamente produzido**
-(`createStrategicMemoryFromReview` sempre grava esse tipo) — os outros 3
-ficam no vocabulário/schema, prontos para uma fonte de geração futura
-(ex.: memória extraída diretamente de uma Decision resolvida, sem passar
-por Executive Review), sem exigir migração de schema quando isso
-acontecer. Consistente com a seção 2: "não criar dezenas de tipos nesta
-versão".
-
-## 6. Como provenance funciona
-
-Toda memória carrega `source_goal_id`, `source_initiative_id`,
-`source_review_id` e (quando aplicável) `source_decision_id` —
-preenchidos DETERMINISTICAMENTE pelo backend a partir da Executive
-Review de origem (`review.goalId`, `review.initiativeId`, `review.id`,
-`review.resultingDecisionId`), nunca pelo LLM (a saída estruturada do
-LLM — `strategicMemoryOutputSchema` — nem TEM campo de proveniência,
-estruturalmente impossível de inventar). Provado por teste:
-"Executive Review gera memória válida com provenance real".
-
-## 7. Como evidência é separada da interpretação
-
-`buildStrategicMemoryEvidence()` (`memory/context.ts`) monta o objeto
-`evidence` (goal/initiative/review reais) ANTES de qualquer chamada ao
-LLM — é persistido em `agent_strategic_memories.evidence` inalterado. O
-LLM só produz `title/summary/lesson/confidence/importance/tags`, nunca
-escreve em `evidence`. Provado por teste: "evidência separada do lesson"
-— `memory.evidence.review.outcome` é o outcome REAL da review (fato),
-`memory.lesson` é o texto do LLM mockado (interpretação), e o teste
-verifica explicitamente que os dois nunca são o mesmo campo/dado.
-
-## 8. Como o LLM foi isolado
-
-`memory-extractor.ts` não importa `db/`, `executor/`, `policy/` nem
-mecanismo de permission — estrutural, não uma convenção seguida por
-disciplina: o módulo simplesmente não tem acesso a nada disso.
-`strategicMemoryOutputSchema` é `.strict()` — os únicos campos possíveis
-na saída são `title, summary, lesson, confidence, importance, tags`;
-qualquer campo como `tool/action/execute/permission/approval/autonomy/sql/command`
-(lista explícita da seção 7) é rejeitado pelo Zod antes de qualquer
-outra validação. O prompt (`memory/prompt.ts`) instrui explicitamente
-"você NUNCA executa, aprova, autoriza ou modifica nada" e a tratar a
-memória como contexto consultivo, nunca instrução imperativa.
-
-## 9. Fluxo de criação da memória
+## 4. Arquitetura de recovery
 
 ```
-POST /agents/director/reviews/:id/memory
-  → valida permission + review existe e está "completed"
-  → createStrategicMemoryFromReview(review, userId)
-      → claim atômico (INSERT ... ON CONFLICT DO NOTHING em source_review_id)
-      → [fora de transação] monta evidência (rápida, determinística)
-      → [fora de transação] chama o memory extractor (LLM)
-      → persiste a memória completa (status='active')
-      → audita cada etapa
-  ← 201 (nova) | 200 (idempotente/já existia)
+agents/recovery/
+  types.ts                     — vocabulário (RecoveryResult, WorkflowType, StaleCandidate, RecoveryItemResult, RecoveryAdapter)
+  registry.ts                  — lista pequena dos 3 adapters
+  detector.ts                  — varre todos os adapters (best-effort por adapter)
+  recovery-service.ts          — runRecovery() / reconcileOne() / getRecoveryStatus()
+  manual-attention.ts          — escalação para a Director Decision Queue (reaproveitada)
+  initiative-recovery.ts       — adapter da Initiative
+  executive-review-recovery.ts — adapter da Executive Review
+  strategic-memory-recovery.ts — adapter da Strategic Memory
 ```
 
-Escolha deliberada (seção 4: "pode ser utilizado endpoint explícito"):
-optou-se por endpoint explícito, não integração automática síncrona
-dentro de `generateExecutiveReview` — mantém as duas operações
-independentes (uma falha na extração de memória nunca compromete a
-review já persistida) e evita estender a duração da chamada de review
-com uma segunda chamada LLM obrigatória.
+O core (`recovery-service.ts`/`detector.ts`) NUNCA importa nada de
+`db/schema` diretamente — só chama `adapter.detectStale()`/
+`adapter.reconcile()` de cada item do `registry.ts` (seção 5: "o core não
+deve conhecer detalhes internos de todas as tabelas").
 
-## 10. Fluxo de recuperação
+## 5. Definição de stale
 
-`getRelevantStrategicMemories({ domain, memoryType?, limit? })`
-(`retrieval-service.ts`) — determinístico, sem embeddings/vector
-database (seção 9/10): filtra por `domain` + `status='active'` (nunca
-`draft`/`superseded`/`archived`), ordena por importância → confiança →
-recência (nessa prioridade), respeita limite explícito (`default=5`,
-`max=10`, sempre capado mesmo que o caller peça mais). Chamado
-automaticamente por `generateExecutiveReview` (v2.2, estendido) antes de
-chamar o Executive Reviewer, injetando o resultado no prompt.
+Nunca `status === 'draft'`/`'active'` sozinho (seção 3). Cada adapter
+usa `updated_at < now() - thresholdSeconds` **combinado** com o status
+transitório real:
 
-## 11. Regras de precedência
+- Initiative: `status='active' AND updated_at < staleBefore` — e depois
+  se ramifica conforme `action_plan_id` (Caso A/B/C, ver item 8).
+- Executive Review: `status='draft' AND updated_at < staleBefore`.
+- Strategic Memory: `status='draft' AND updated_at < staleBefore`.
 
-Documentadas formalmente em `memory/types.ts`
-(`STRATEGIC_MEMORY_PRECEDENCE_ORDER`, seção 22):
+Provado por teste que um workflow em execução normal (recente) NUNCA é
+confundido com stale (itens 2/4/6 da seção 24).
 
-```text
-1. Permissions/Authorization
-2. Policy/Safety rules
-3. Human decisions/approvals
-4. Current deterministic evidence
-5. Current business context
-6. Historical strategic memory
-7. LLM interpretation
+## 6. Configuração/threshold
+
+`AGENT_WORKFLOW_STALE_AFTER_SECONDS` (`config/env.ts`) — default 900s
+(15min), mínimo 60s (nunca tão curto a ponto de confundir um claim em
+andamento com órfão), validado via o helper `positiveIntEnv` já
+existente (mesmo padrão de `AGENT_AUTONOMY_CIRCUIT_COOLDOWN_SECONDS`).
+Getter (não valor capturado no import) — testes conseguem passar um
+`thresholdSeconds` explícito para cada chamada (`detectStale`,
+`reconcile`, `runRecovery`, `getRecoveryStatus`), sem precisar mutar
+`process.env` — nenhum threshold hardcoded/mágico em nenhum lugar do
+código de produção.
+
+## 7. Registry/adapters
+
+`registry.ts` exporta `RECOVERY_ADAPTERS: readonly RecoveryAdapter[]` —
+uma lista simples, sem lógica. Cada adapter (`RecoveryAdapter` em
+`types.ts`) implementa exatamente dois métodos: `detectStale(thresholdSeconds)`
+e `reconcile(candidate, params)`. Adicionar um workflow recuperável no
+futuro é só implementar essa interface e adicionar à lista — nenhuma
+mudança no core.
+
+## 8. Initiative recovery
+
+Revisão do fluxo real de `startInitiativeExecution` (v2.1) feita antes
+de implementar (seção 7). Três casos:
+
+- **Caso A (não-stale, sem código):** `active` + Action Plan vinculado
+  em status normal → NÃO aparece na lista de stale (o check-on-read
+  existente, `syncInitiativeExecutionState`, já cuida disso sozinho).
+- **Caso B (implementado — `reverted`):** `active` sem Action Plan e
+  antiga → `UPDATE ... SET status='approved', started_at=null WHERE id=?
+  AND status='active' AND action_plan_id IS NULL AND updated_at <
+  staleBefore RETURNING`. Exatamente a MESMA compensação que o `catch`
+  de `startInitiativeExecution` teria feito se tivesse tido a chance de
+  rodar. Nunca cria Action Plan (seção 7). Retry seguro via
+  `POST .../propose` (pipeline oficial).
+- **Caso C (implementado — `manual_attention`, encontrado ao ler o
+  código real):** `active` + Action Plan vinculado, mas o Action Plan
+  ficou preso em `status='evaluating'` (o valor inicial, só avança
+  quando todos os itens são avaliados) — evidência de um crash NO MEIO
+  da avaliação do Policy Evaluator. Decidir sozinho o que fazer exigiria
+  adivinhar quais itens já foram avaliados — proibido pela seção 7
+  ("não tentar adivinhar"). Escalado para a Director Decision Queue,
+  NENHUMA linha (Initiative nem Action Plan) é tocada.
+
+**Limitação real documentada** (item 30): um crash EXATAMENTE entre
+`executeActionPlan()` terminar e a transação final de vínculo
+(`action_plan_id`) roda é indistinguível do Caso B pela detecção atual —
+tratado como Caso B (Initiative volta para `approved`), deixando um
+Action Plan órfão (já criado/executado, nunca religado). Não adivinhado
+de propósito (seria "adivinhar", proibido pela seção 7).
+
+## 9. Executive Review recovery
+
+`status='draft' AND updated_at < staleBefore` →
+`DELETE ... WHERE id=? AND status='draft' AND updated_at < staleBefore
+RETURNING`. Resultado `reverted` (linha removida) ou `skipped` (0 linhas
+afetadas — já não estava mais draft/stale). **Nunca chama o LLM**
+(`executive-review-recovery.ts` não importa `llm/factory.ts` nem
+`reviews/executive-reviewer.ts`) — só libera o slot único de
+`action_plan_id`; a próxima chamada NORMAL a `POST .../review` gera a
+review de verdade.
+
+## 10. Strategic Memory recovery
+
+Idêntico ao item 9, sobre `agent_strategic_memories` (`source_review_id`
+como slot único). **Nunca fabrica uma memória incompleta como `active`,
+nunca copia `lesson` de outro registro** (seção 9) — a única operação
+possível é `DELETE` do claim órfão.
+
+## 11. Regras de idempotência
+
+Provado por teste (itens 14/15/16 da seção 24, "Idempotência/concorrência"):
+- Duas reconciliações concorrentes da MESMA entidade produzem exatamente
+  um `reverted`/`manual_attention` real e um `skipped` — nunca dois
+  efeitos.
+- Recovery repetido sobre uma entidade já reconciliada → `skipped`,
+  nunca um erro destrutivo (a linha já não existe/já mudou de status —
+  o predicado simplesmente não casa mais).
+- Entidade alterada por outro processo (ex.: completou normalmente)
+  ENTRE a detecção e a reconciliação → `skipped`, a entidade real
+  (agora `completed`/`active`) NUNCA é tocada.
+
+## 12. Proteção concorrente
+
+Nunca `SELECT → decidir → UPDATE/DELETE` desprotegido (seção 11). Todo
+`reconcile()` real usa `UPDATE`/`DELETE ... WHERE id=? AND status=<esperado>
+AND updated_at < staleBefore RETURNING` — uma única instrução SQL
+atômica; `RETURNING` prova qual chamada (se alguma) efetivamente venceu.
+Nenhum `SELECT ... FOR UPDATE` bloqueante, nenhum lock segurado durante
+I/O externo — o recovery desta versão nem faz I/O externo real (seção
+11: "idealmente recovery desta versão nem precisa fazer I/O externo" —
+cumprido: nenhum adapter chama LLM/tool/API externa).
+
+## 13. Dry-run
+
+`dryRun: boolean` propagado de `runRecovery()`/`reconcileOne()` até
+`adapter.reconcile()` — quando `true`, cada adapter retorna o resultado
+que SERIA aplicado (mesmo texto de `reason`, prefixado `dry_run:`) sem
+executar nenhum `UPDATE`/`DELETE`/`INSERT` real. Provado por teste:
+dry-run detecta os mesmos stale items, o banco permanece inalterado
+(linha `draft` continua existindo), nenhum audit de `reconciled` é
+emitido (só `scan.started`/`stale_detected`, que são sempre auditados
+independente de dry-run — são leituras, não mutações).
+
+## 14. Manual attention
+
+`escalateToManualAttention()` (`recovery/manual-attention.ts`) reutiliza
+a Director Decision Queue (`agent_director_decisions`, v1.9) — nenhuma
+segunda fila de incidentes. Diferenciado de uma decisão estratégica
+normal por: `domain='agents'` (já existente desde a v1.8), `signalType`
+sempre prefixado `agents.recovery.*`, título/descrição explícitos
+("Problema operacional de recovery"). Idempotente via
+`deduplicationKey` + `ON CONFLICT DO NOTHING` (mesmo padrão de
+`upsertSignal`, v1.9).
+
+## 15. Integração com Decision Queue
+
+Único uso desta versão: Caso C da Initiative recovery (item 8). O
+Decision Item nasce `status='open'`, `requiresHumanAttention=true` — o
+CEO vê e trata pelo MESMO mecanismo já existente (`GET/POST
+/agents/director/decisions`), nenhuma tela nova de "incidentes de
+recovery".
+
+## 16. Auditoria
+
+Implementados os 4 eventos sugeridos pela seção 14, ajustados aos fluxos
+reais:
+- `agents.recovery.scan.started` — a cada chamada de `runRecovery`
+  (dry-run ou real), com `{dryRun, thresholdSeconds}`.
+- `agents.recovery.stale_detected` — uma vez por item stale ENCONTRADO
+  (nunca por entidade saudável examinada, seção 14) — `{workflowType,
+  previousState, ageSeconds, problem, dryRun}`.
+- `agents.recovery.reconciled` — só em reconciliação REAL bem-sucedida
+  (`reverted`) — `{workflowType, previousState, ageSeconds, result,
+  reason}`.
+- `agents.recovery.manual_attention` — quando uma escalação acontece —
+  `{workflowType, previousState, ageSeconds, decisionId}`.
+
+Nunca secrets. `entityId` sempre presente exceto no evento agregado de
+scan (que não tem uma entidade única).
+
+## 17. Observabilidade/status
+
+`getRecoveryStatus(thresholdSeconds?)` (calculado sob demanda, seção
+15 — nenhuma tabela nova): `staleTotal`, `byType` (contagem por
+`WorkflowType`), `oldest` (o candidato com maior `ageSeconds`),
+`manualAttentionPending` (contagem real de Decision Items abertos com
+`signalType LIKE 'agents.recovery.%'`), `lastScanAt`/`lastReconciledAt`
+— **derivados da trilha de auditoria JÁ existente** (`audit_logs`,
+`MAX(created_at)` dos eventos `scan.started`/`reconciled`) — nenhum
+estado novo persistido só para isto.
+
+## 18. API
+
+```
+GET  /agents/recovery/status              agents.operations.read
+GET  /agents/recovery/stale               agents.operations.read
+POST /agents/recovery/run?dryRun=&thresholdSeconds=   agents.recovery.manage
+POST /agents/recovery/:type/:id?dryRun=   agents.recovery.manage
 ```
 
-Garantia estrutural (não só documental): nenhum código dos níveis 1-3
-(`security/permissions.ts`, `policy/action-policy-evaluator.ts`,
-`agent_approvals`) importa ou consulta o módulo `memory/` — é
-fisicamente impossível para uma memória influenciar esses níveis. O
-prompt do Executive Reviewer reforça em texto: "a evidência atual possui
-precedência sobre estes padrões históricos" + "nunca como justificativa
-para ignorar Policy Evaluator, permissions ou decisão humana".
+`POST /run` só executa a reconciliação segura desta versão — nunca
+dispara execução arbitrária de agente/tool (seção 16). `POST /:type/:id`
+implementado (seção 16: "somente se houver necessidade clara") — permite
+reconciliar manualmente UM item já identificado via `GET /stale`, sem
+esperar o próximo scan completo.
 
-## 12. Integração com Executive Review
+## 19. Permissions
 
-`reviews/review-service.ts:generateExecutiveReview` (v2.2) foi estendido
-(nunca duplicado) para, antes de chamar o LLM, buscar
-`getRelevantStrategicMemories({ domain: goal.domain })` e passar o
-resultado a `reviewExecutiveOutcome({ ..., historicalMemories })`.
-`reviews/prompt.ts:buildExecutiveReviewUserMessage` agora monta duas
-seções claramente separadas — `CURRENT EVIDENCE:` (o mesmo objeto da
-v2.2, inalterado) seguido de `HISTORICAL ORGANIZATIONAL MEMORY:` (novo,
-seção 11), nunca misturadas. Retrocompatível: quando não há memórias
-relevantes, aparece só o texto "nenhuma memória histórica relevante
-disponível" — o comportamento da v2.2 nunca foi alterado.
+Avaliado antes de criar (seção 17): `agents.manage` é "reservada para
+CRUD de agentes" (descrição já existente, não semanticamente adequada);
+`agents.autonomy.manage` é só o kill switch global. Nenhuma permission
+existente cobria "executar reconciliação administrativa de workflows" —
+criada `agents.recovery.manage` (justificada, protege `POST /run` e
+`POST /:type/:id`). Leitura (`GET /status`, `GET /stale`) reaproveita
+`agents.operations.read` — mesma natureza de observabilidade
+operacional do dashboard v1.8 (seção 17: "leitura pode usar permission
+mais ampla de observabilidade/admin"). Nenhuma permission nova para
+leitura. Authorization sempre no backend (`requirePermission()`).
 
-## 13. Integração com Goals/Director
+## 20. Frontend
 
-Cada memória carrega `source_goal_id`, e a recuperação filtra por
-`domain` (do próprio Goal do momento) — quando um novo Goal do mesmo
-domínio é avaliado (via uma nova Initiative → Executive Review), as
-lições de Goals anteriores no mesmo domínio entram automaticamente como
-contexto. Nenhuma alteração automática de Goal/Initiative acontece nunca
-— provado por teste ("memória nunca altera Goal nem Initiative
-originais").
+Nova página `/agents/recovery` (`RecoveryDashboard`) — tela
+administrativa/operacional (nunca apresentada como ferramenta diária):
 
-## 14. Estratégia de concorrência/idempotência
+- Card "Saúde dos workflows": stale total, por tipo (Initiatives/
+  Executive Reviews/Strategic Memories), mais antigo, atenção manual
+  pendente (destacado em âmbar quando > 0), último scan, última
+  reconciliação.
+- Card "Workflows stale": tabela Tipo/ID/Estado/Idade/Problema/Ação
+  proposta-resultado (seção 27) — populada por `GET /stale`.
+- "Simular recuperação" (dry-run, atrás de `PermissionGate agents.recovery.manage`,
+  sempre disponível sem confirmação — sem custo real) preenche a coluna
+  "Ação proposta" com o resultado simulado.
+- "Executar recuperação" abre um `Dialog` de confirmação explícita antes
+  de rodar de verdade (seção 26: "exibir confirmação adequada antes de
+  operação real").
+- Item "Recovery" adicionado à sub-navegação do módulo Agentes
+  (visível com `agents.operations.read`).
 
-Idêntica ao padrão já provado em `reviews/review-service.ts` (v2.2): a
-UNICIDADE de `source_review_id` na própria tabela É o claim
-(`INSERT ... ON CONFLICT DO NOTHING`, atômico). Vencedor monta
-evidência + chama o LLM fora de transação; perdedor lê a linha
-existente — se `active`, devolve direto (idempotente, SEM chamar o LLM
-de novo); se `draft`, aguarda via polling curto (sem lock). Provado por
-teste: duas chamadas concorrentes (`Promise.all`) convergem para a MESMA
-memória, só uma efetivamente cria; uma terceira chamada normal (não
-concorrente) também é idempotente.
+## 21. Migrations
 
-## 15. Comportamento em falha do provider
+**Nenhuma migration foi necessária** (seção 29: "evitar migration se
+timestamps/estados atuais forem suficientes") — `updated_at` já existe
+e já é atualizado corretamente nas 3 tabelas envolvidas nos momentos
+certos (claim). Nenhuma coluna nova foi criada por conveniência.
 
-O `catch` de `createStrategicMemoryFromReview` DELETA a linha `draft` —
-nunca deixa um registro permanentemente em estado transitório. A próxima
-chamada (mesmo caller ou outro) reclama o slot único normalmente.
-Provado por teste: falha do provider (mock lançando erro) → linha draft
-desaparece → nova chamada com provider funcional cria a memória
-normalmente (retry seguro).
-
-## 16. Prova de ausência de transaction/lock durante LLM
-
-Mesma metodologia da v2.1/v2.2: provider mockado com delay artificial de
-800ms, consulta `pg_stat_activity` no meio do delay:
-
-```sql
-select count(*)::int as count from pg_stat_activity
-where state = 'idle in transaction' and datname = current_database()
-```
-
-Resultado: **0**. No mesmo instante, a linha `draft` já existe no banco
-(claim já commitado antes do I/O externo). Teste: "ausência de lock
-durante o LLM — nenhuma transação fica 'idle in transaction' durante a
-chamada ao provider" — passou (886ms).
-
-## 17. Auditoria
-
-Implementados exatamente os 4 eventos pedidos pela seção 16, ajustados
-aos fluxos reais:
-
-- `agents.director.memory.requested` — ao iniciar o claim (vencedor da
-  corrida).
-- `agents.director.memory.created` — quando a memória é persistida como
-  `active` pela primeira vez.
-- `agents.director.memory.reused` — em DOIS fluxos reais: (a) uma
-  chamada de criação que encontra uma memória já existente (idempotente,
-  nenhum LLM chamado de novo); (b) uma nova Executive Review que
-  recupera e injeta memórias históricas em seu prompt (com
-  `metadata.memoryIdsUsed`, seção 20) — decisão de design documentada em
-  código (`review-service.ts`), já que a seção 16 não distingue os dois
-  usos de "reused" e ambos são genuinamente "a memória foi usada de
-  novo".
-- `agents.director.memory.archived` — ao arquivar (`archiveStrategicMemory`).
-
-Todos registram `actor/memoryId (ou reviewId)/sourceReviewId/sourceGoalId/
-sourceInitiativeId/timestamp/metadata` conforme pedido, nunca secrets.
-
-## 18. Segurança/permissions
-
-Nenhuma permission nova criada (seção 17). Reaproveitadas: `agents.read`
-para leitura (`GET /director/memories`, `GET /director/memories/:id`),
-`agents.director.initiatives.manage` para a ação administrativa
-(`POST /director/reviews/:id/memory`) — mesma permission já usada por
-`POST .../review` na v2.2, descrita como "ação administrativa sobre o
-mesmo domínio do Diretor". Autorização sempre no backend (`requirePermission()`
-nas rotas); frontend nunca é barreira de segurança (`PermissionGate`
-só esconde a UI, não substitui o 403 real do backend).
-
-## 19. Frontend implementado
-
-- Nova página `/agents/director/memories` (`MemoriesList`) — filtros por
-  domínio/tipo, cada card mostra título/tipo/domínio/lição/confiança/
-  importância/data, com links para Goal e Initiative de origem. Nunca
-  usa a palavra "regra" — o texto de topo da página diz explicitamente
-  "orientação consultiva para o Diretor, nunca uma regra obrigatória".
-- Seção "Aprendizado estratégico" dentro do `ExecutiveReviewCard` (tela
-  de Initiative) — botão "Gerar aprendizado" (atrás de
-  `PermissionGate`), mostra título/lição/importância/confiança quando já
-  existe, link para a lista completa.
-- Badges: `MemoryStatusBadge`, `MemoryImportanceBadge` — nunca dependem
-  só de cor (texto sempre visível).
-- Item "Aprendizados" adicionado à sub-navegação do módulo Agentes.
-
-## 20. Arquivos criados
+## 22. Arquivos criados
 
 Backend:
 ```
-backend/src/agents/director/memory/types.ts
-backend/src/agents/director/memory/schemas.ts
-backend/src/agents/director/memory/context.ts
-backend/src/agents/director/memory/prompt.ts
-backend/src/agents/director/memory/memory-extractor.ts
-backend/src/agents/director/memory/memory-service.ts
-backend/src/agents/director/memory/retrieval-service.ts
-backend/src/agents/director/memory/schemas-route.ts
-backend/src/agents/director/memory/memory-service.test.ts
-backend/src/agents/director/memory/retrieval-service.test.ts
-backend/src/db/schema/agent-strategic-memories.ts
-backend/src/routes/agents/director-memories.ts
-backend/src/routes/agents/director-memories.test.ts
-backend/drizzle/0017_agent_strategic_memories.sql
-backend/drizzle/meta/0017_snapshot.json
+backend/src/agents/recovery/types.ts
+backend/src/agents/recovery/registry.ts
+backend/src/agents/recovery/detector.ts
+backend/src/agents/recovery/recovery-service.ts
+backend/src/agents/recovery/manual-attention.ts
+backend/src/agents/recovery/initiative-recovery.ts
+backend/src/agents/recovery/executive-review-recovery.ts
+backend/src/agents/recovery/strategic-memory-recovery.ts
+backend/src/agents/recovery/schemas.ts
+backend/src/agents/recovery/adapters.test.ts
+backend/src/agents/recovery/recovery-service.test.ts
+backend/src/routes/agents/recovery.ts
+backend/src/routes/agents/recovery.test.ts
 ```
 
 Frontend:
 ```
-frontend/app/(dashboard)/agents/director/memories/page.tsx
-frontend/app/api/agents/director/memories/route.ts
-frontend/app/api/agents/director/memories/[id]/route.ts
-frontend/app/api/agents/director/reviews/[id]/memory/route.ts
-frontend/components/agents/director/memory/memories-list.tsx
-frontend/hooks/agents/use-director-memories.ts
+frontend/app/(dashboard)/agents/recovery/page.tsx
+frontend/app/api/agents/recovery/status/route.ts
+frontend/app/api/agents/recovery/stale/route.ts
+frontend/app/api/agents/recovery/run/route.ts
+frontend/app/api/agents/recovery/[type]/[id]/route.ts
+frontend/components/agents/recovery/recovery-dashboard.tsx
+frontend/hooks/agents/use-recovery.ts
 ```
 
-## 21. Arquivos alterados
+## 23. Arquivos alterados
 
 ```
-backend/drizzle/meta/_journal.json                         (+entrada da migration 0017)
-backend/src/agents/director/reviews/executive-reviewer.ts  (+historicalMemories opcional)
-backend/src/agents/director/reviews/prompt.ts               (+seção HISTORICAL ORGANIZATIONAL MEMORY)
-backend/src/agents/director/reviews/review-service.ts       (+recuperação/injeção de memórias, +auditoria de reuso)
-backend/src/agents/director/reviews/review-service.test.ts  (+2 testes de integração v2.3, +helper de parsing do novo formato de userMessage)
-backend/src/agents/errors.ts                                (+código 'memory_failed', 422)
-backend/src/db/schema/index.ts                              (+export agent-strategic-memories)
-backend/src/routes/agents/index.ts                          (+registro de directorMemoriesRoutes)
-frontend/components/agents/agents-sub-nav.tsx               (+item "Aprendizados")
-frontend/components/agents/director/goals/initiative-detail.tsx (+seção StrategicMemorySection)
-frontend/components/agents/status-badge.tsx                 (+MemoryStatusBadge, MemoryImportanceBadge)
-frontend/lib/agents/derived.ts                               (+memoryTypeLabel, memoryStatusLabel, memoryImportanceLabel)
-frontend/lib/agents/derived.test.ts                          (+6 testes)
-frontend/lib/query/keys.ts                                   (+directorMemories, directorMemory)
-frontend/services/agents.ts                                  (+listStrategicMemories, getStrategicMemory, generateMemoryFromReview)
-frontend/types/agents.ts                                     (+StrategicMemory e tipos relacionados)
+backend/src/config/env.ts             (+AGENT_WORKFLOW_STALE_AFTER_SECONDS)
+backend/src/db/seed.ts                (+permission agents.recovery.manage)
+backend/src/routes/agents/index.ts    (+registro de recoveryRoutes)
+frontend/components/agents/agents-sub-nav.tsx   (+item "Recovery")
+frontend/components/agents/status-badge.tsx     (+RecoveryResultBadge)
+frontend/lib/agents/derived.ts                  (+recoveryResultLabel, workflowTypeLabel, formatAgeSeconds)
+frontend/lib/agents/derived.test.ts             (+5 testes)
+frontend/lib/query/keys.ts                      (+recoveryStatus, recoveryStale)
+frontend/services/agents.ts                     (+getRecoveryStatus, getStaleWorkflows, runWorkflowRecovery, reconcileWorkflow)
+frontend/types/agents.ts                        (+RecoveryResult/WorkflowType/StaleCandidate/RecoveryItemResult/RecoveryReport/RecoveryStatus)
 ```
 
-## 22. Testes adicionados
+## 24. Testes adicionados
 
-Cobrindo os 20 itens da seção 23 do correio.md:
+Cobrindo os 28 itens da seção 24 do correio.md:
 
-- `memory-service.test.ts` (novo) — **9 testes**: review não `completed`
-  rejeitada (409); (1/2/3) review gera memória válida com provenance
-  real e evidência separada do lesson; (8/9) nunca altera Goal/Initiative;
-  (10/11/12) nunca cria Action Plan, nunca executa tool, nunca cria
-  approval; (4/5) concorrência + idempotência; (7) ausência de lock
-  durante o LLM (`pg_stat_activity`); (6) falha do provider com retry
-  seguro; listagem nunca inclui `draft` por padrão (bug real encontrado
-  e corrigido durante a implementação — ver seção 28); `archiveStrategicMemory`
-  (arquivar + rejeitar arquivar de novo).
-- `retrieval-service.test.ts` (novo) — **4 testes**: (13) recuperação
-  por domínio; (14) limite respeitado (default/customizado/capado no
-  máximo); (15) arquivada/draft nunca entram no contexto; ordenação por
-  importância > confiança > recência.
-- `director-memories.test.ts` (novo) — **4 testes**: (17) sem permission
-  → 403, nenhuma memória criada; (18) só `agents.read` → lista permitida,
-  criação continua 403; fluxo completo via HTTP (criar → detalhe →
-  lista filtrada → idempotência); review inexistente → 404.
-- `review-service.test.ts` (v2.2, estendido) — **+2 testes**: (16)
-  `CURRENT EVIDENCE`/`HISTORICAL ORGANIZATIONAL MEMORY` aparecem
-  separadas no prompt real, com texto de precedência presente; (19) IDs
-  das memórias usadas ficam auditáveis (`agents.director.memory.reused`
-  com `memoryIdsUsed`); memória arquivada nunca entra no prompt de uma
-  nova review.
-- `derived.test.ts` (frontend) — **6 testes**: (20) `memoryTypeLabel`,
-  `memoryStatusLabel`, `memoryImportanceLabel` (todos os valores +
-  fallback).
+- `agents/recovery/adapters.test.ts` (novo) — **20 testes**: detecção
+  (itens 1-6, incluindo Caso A e Caso C explícitos), reconciliação real
+  (itens 7-13), idempotência/concorrência (itens 14-16), segurança
+  (itens 17-20: nunca cria approval, nunca executa tool, nunca modifica
+  permission/Policy Evaluator).
+- `agents/recovery/recovery-service.test.ts` (novo) — **8 testes**:
+  dry-run (itens 22-24), relatório estruturado reconciliável
+  matematicamente, auditoria (itens 25-26), manual_attention visível
+  (item 27), status agregado (item 28), `reconcileOne` (item específico
+  + entidade não-stale → null).
+- `routes/agents/recovery.test.ts` (novo) — **7 testes**: (item 21)
+  sem permission → 403 em ambas as rotas mutáveis/status; só
+  `agents.operations.read` → leitura OK, execução continua 403; `GET
+  /stale` real via HTTP; dry-run via HTTP não altera banco + execução
+  real reconcilia de verdade; `POST /:type/:id` reconcilia item
+  específico; entidade não-stale → 404; `type` inválido → 400.
 
-Total: **19 testes novos no backend + 6 no frontend = 25 testes novos**.
+Total: **35 testes novos no backend**. Nenhum teste novo de frontend
+além dos 5 de label/formatação (`derived.test.ts`) — a UI não introduziu
+lógica testável isoladamente além dessas funções puras (o dashboard em
+si é testado indiretamente pelos testes de rota, que provam o contrato
+real que ele consome).
 
-## 23. Números exatos da suíte backend (medidos pelo runner real)
+## 25. Números exatos backend (medidos pelo runner real)
 
-**Baseline após v2.2** (correio.md seção 24, medida real da entrega
-anterior): `472 testes / 472 pass / 0 fail`.
+**Baseline após v2.3** (correio.md seção 25, medida real da entrega
+anterior): `491 testes / 491 pass / 0 fail`.
 
-**Suíte completa após a v2.3** (`npx tsx --test --test-concurrency=1
-'src/**/*.test.ts'`, via Docker no network do projeto):
+**Suíte completa após a v2.4** (`npx tsx --test --test-concurrency=1
+'src/**/*.test.ts'`, via Docker):
 
 ```
-ℹ tests 491
-ℹ suites 83
-ℹ pass 491
+ℹ tests 526
+ℹ suites 92
+ℹ pass 526
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
 ```
 
-**Reconciliação:** 472 → 491 = **+19 testes líquidos**, batendo
-exatamente com a soma medida por arquivo: `memory-service.test.ts` (9,
-novo) + `retrieval-service.test.ts` (4, novo) + `director-memories.test.ts`
-(4, novo) + `review-service.test.ts` (12 → 14, +2) = 9 + 4 + 4 + 2 = 19.
-Nenhuma regressão — todos os 472 testes anteriores continuam passando.
+**Reconciliação:** 491 → 526 = **+35 testes líquidos**, batendo
+exatamente com a soma por arquivo: `adapters.test.ts` (20) +
+`recovery-service.test.ts` (8) + `routes/agents/recovery.test.ts` (7) =
+35. Nenhuma regressão.
 
-## 24. Números exatos da suíte frontend (medidos pelo runner real)
+## 26. Números exatos frontend (medidos pelo runner real)
 
 `npx tsx --test 'lib/**/*.test.ts'`:
 
 ```
-ℹ tests 82
-ℹ suites 28
-ℹ pass 82
+ℹ tests 87
+ℹ suites 31
+ℹ pass 87
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
 ```
 
-Baseline anterior era 76/76 → 82/82 = **+6 testes líquidos**, batendo
-exatamente com os 6 testes novos de `memoryTypeLabel`/`memoryStatusLabel`/
-`memoryImportanceLabel` (3 describes × 2 testes cada). Nenhuma regressão.
+Baseline anterior 82/82 → 87/87 = **+5 testes líquidos**
+(`recoveryResultLabel` 2 + `workflowTypeLabel` 2 + `formatAgeSeconds` 1).
+Nenhuma regressão.
 
-## 25. Typecheck/build
+## 27. Typecheck/build
 
 - Backend typecheck (`npx tsc --noEmit`, via Docker): **OK, sem erros.**
 - Frontend typecheck (`npx tsc --noEmit`): **OK, sem erros.**
-- Frontend build (`npm run build`): **OK**, build de produção completo
-  sem erros — rotas `/agents/director/memories`,
-  `/api/agents/director/memories`, `/api/agents/director/memories/[id]`
-  e `/api/agents/director/reviews/[id]/memory` presentes na saída do
-  build.
-- Lint: o projeto continua sem script/config de lint configurado —
-  reconfirmado; nenhuma ferramenta de lint foi adicionada.
+- Frontend build (`npm run build`): **OK** — rotas `/agents/recovery`,
+  `/api/agents/recovery/status`, `/api/agents/recovery/stale`,
+  `/api/agents/recovery/run`, `/api/agents/recovery/[type]/[id]`
+  presentes na saída.
+- Lint: continua sem script/config configurado — reconfirmado.
 
-## 26. `git diff --stat`
-
-(Delta real da v2.3 — HEAD já inclui v2.1/v2.2, commitados fora desta
-sessão entre rounds; ver nota no topo do relatório.)
+## 28. `git diff --stat`
 
 ```
- backend/drizzle/meta/_journal.json                 |   7 ++
- .../agents/director/reviews/executive-reviewer.ts  |   9 +-
- backend/src/agents/director/reviews/prompt.ts      |  23 ++++-
- .../agents/director/reviews/review-service.test.ts | 112 ++++++++++++++++++++-
- .../src/agents/director/reviews/review-service.ts  |  26 +++++
- backend/src/agents/errors.ts                       |   7 +-
- backend/src/db/schema/index.ts                     |   3 +-
- backend/src/routes/agents/index.ts                 |   2 +
- frontend/components/agents/agents-sub-nav.tsx      |   1 +
- .../agents/director/goals/initiative-detail.tsx    |  76 +++++++++++++-
- frontend/components/agents/status-badge.tsx        |  34 +++++++
- frontend/lib/agents/derived.test.ts                |  45 +++++++++
- frontend/lib/agents/derived.ts                     |  36 +++++++
- frontend/lib/query/keys.ts                         |   2 +
- frontend/services/agents.ts                        |  26 +++++
- frontend/types/agents.ts                           |  32 ++++++
- 16 files changed, 432 insertions(+), 9 deletions(-)
+ backend/src/config/env.ts                     | 20 +++++++++++
+ backend/src/db/seed.ts                        |  6 ++++
+ backend/src/routes/agents/index.ts            |  2 ++
+ frontend/components/agents/agents-sub-nav.tsx |  1 +
+ frontend/components/agents/status-badge.tsx   | 20 +++++++++++
+ frontend/lib/agents/derived.test.ts           | 46 +++++++++++++++++++++++++
+ frontend/lib/agents/derived.ts                | 33 ++++++++++++++++++
+ frontend/lib/query/keys.ts                    |  2 ++
+ frontend/services/agents.ts                   | 26 +++++++++++++++
+ frontend/types/agents.ts                      | 48 +++++++++++++++++++++++++++
+ 10 files changed, 204 insertions(+)
 ```
-
-(`executed.md`/`correio.md` fora do diff acima por comparação com HEAD —
-este relatório substitui o `executed.md` já commitado.)
 
 Novos arquivos (sem histórico prévio, fora do `diff --stat`):
 ```
-backend/src/agents/director/memory/                 (10 arquivos)
-backend/src/db/schema/agent-strategic-memories.ts
-backend/src/routes/agents/director-memories.ts
-backend/src/routes/agents/director-memories.test.ts
-backend/drizzle/0017_agent_strategic_memories.sql
-backend/drizzle/meta/0017_snapshot.json
-frontend/app/(dashboard)/agents/director/memories/
-frontend/app/api/agents/director/memories/
-frontend/app/api/agents/director/reviews/
-frontend/components/agents/director/memory/
-frontend/hooks/agents/use-director-memories.ts
+backend/src/agents/recovery/                    (13 arquivos)
+backend/src/routes/agents/recovery.ts
+backend/src/routes/agents/recovery.test.ts
+frontend/app/(dashboard)/agents/recovery/
+frontend/app/api/agents/recovery/
+frontend/components/agents/recovery/
+frontend/hooks/agents/use-recovery.ts
 ```
 
-## 27. `git status`
+## 29. `git status`
 
 ```
- M backend/drizzle/meta/_journal.json
- M backend/src/agents/director/reviews/executive-reviewer.ts
- M backend/src/agents/director/reviews/prompt.ts
- M backend/src/agents/director/reviews/review-service.test.ts
- M backend/src/agents/director/reviews/review-service.ts
- M backend/src/agents/errors.ts
- M backend/src/db/schema/index.ts
+ M backend/src/config/env.ts
+ M backend/src/db/seed.ts
  M backend/src/routes/agents/index.ts
  M correio.md
  M executed.md
  M frontend/components/agents/agents-sub-nav.tsx
- M frontend/components/agents/director/goals/initiative-detail.tsx
  M frontend/components/agents/status-badge.tsx
  M frontend/lib/agents/derived.test.ts
  M frontend/lib/agents/derived.ts
  M frontend/lib/query/keys.ts
  M frontend/services/agents.ts
  M frontend/types/agents.ts
-?? backend/drizzle/0017_agent_strategic_memories.sql
-?? backend/drizzle/meta/0017_snapshot.json
-?? backend/src/agents/director/memory/
-?? backend/src/db/schema/agent-strategic-memories.ts
-?? backend/src/routes/agents/director-memories.test.ts
-?? backend/src/routes/agents/director-memories.ts
-?? frontend/app/(dashboard)/agents/director/memories/
-?? frontend/app/api/agents/director/memories/
-?? frontend/app/api/agents/director/reviews/
-?? frontend/components/agents/director/memory/
-?? frontend/hooks/agents/use-director-memories.ts
+?? backend/src/agents/recovery/
+?? backend/src/routes/agents/recovery.test.ts
+?? backend/src/routes/agents/recovery.ts
+?? frontend/app/(dashboard)/agents/recovery/
+?? frontend/app/api/agents/recovery/
+?? frontend/components/agents/recovery/
+?? frontend/hooks/agents/use-recovery.ts
 ```
 
-## 28. Limitações ou pendências reais encontradas
+## 30. Bugs/limitações reais encontradas
 
-1. **Bug real encontrado e corrigido durante a implementação:**
-   `listStrategicMemories` não excluía linhas `draft` por padrão (o
-   filtro `status` só era aplicado quando explicitamente passado pelo
-   caller) — a documentação da função já afirmava esse comportamento,
-   mas o código não o implementava. Corrigido (`ne(status, 'draft')`
-   quando `status` não é informado) e coberto por um teste novo dedicado
-   (`listStrategicMemories nunca inclui draft por padrão`). A suíte
-   completa (491/491) já reflete o código corrigido — o run anterior
-   (com o bug) foi descartado e a suíte foi re-executada do zero após o
-   fix, nunca apenas re-rodada parcialmente.
-2. **Falha de processo (crash) entre claim e revert** — mesma limitação
-   estrutural já documentada na v2.1 (`startInitiativeExecution`) e v2.2
-   (`generateExecutiveReview`): um crash real do processo Node entre o
-   claim e o `catch` de reversão deixaria uma linha `draft` presa. Fora
-   do escopo pedido pelo correio.md (que pede "falha de provider", não
-   "crash de processo" — tratado corretamente).
-3. **Arquivamento (`archiveStrategicMemory`) não tem endpoint HTTP
-   próprio nesta versão** — decisão deliberada (correio.md seção 18:
-   "não criar CRUD administrativo gigantesco", escopo pedido é
-   "criar; consultar; recuperar memórias relevantes"). A função de
-   serviço existe, é auditada (`agents.director.memory.archived`) e
-   testada diretamente — pronta para ganhar rota quando houver
-   necessidade real comprovada.
-4. **Recuperação por importância/confiança é feita em memória (JS), não
-   em SQL** — decisão documentada em `retrieval-service.ts`: o volume
-   esperado de memórias `active` por domínio (uma por Executive Review)
-   é pequeno o bastante para não justificar um `ORDER BY` com `CASE`
-   só para mapear enum→rank. Se o volume crescer ordens de magnitude,
-   vale revisitar.
-5. **`memory_type` só produz `initiative_outcome` nesta versão** — os
-   outros 3 tipos do vocabulário (`strategic_lesson`, `decision_outcome`,
-   `recurring_pattern`) existem no schema/tipos mas não têm nenhum fluxo
-   de geração real ainda (correio.md seção 2: "não criar dezenas de
-   tipos nesta versão" — cumprido deliberadamente).
-6. **`sourceReviewId` nullable no schema, mas sempre preenchido na
-   prática** — só um `memory_type` (`initiative_outcome`) é gerado nesta
-   versão, e ele sempre nasce de uma review real. A nulidade é só para
-   suportar evolução futura (item 5), não um estado alcançável hoje via
-   nenhum fluxo real do sistema.
+1. **Erro corrigido durante a implementação (routes/agents/recovery.ts):**
+   a primeira versão de `GET /recovery/stale` continha uma expressão
+   incoerente (`query.data.thresholdSeconds ?? (await getRecoveryStatus()).staleTotal
+   >= 0 ? undefined! : undefined!`), resíduo de uma reformulação
+   incompleta enquanto o handler era escrito — corrigida por
+   autorrevisão (não por typecheck: a expressão era sintaticamente
+   válida, só semanticamente sem sentido) para
+   `query.data.thresholdSeconds ?? env.AGENT_WORKFLOW_STALE_AFTER_SECONDS`
+   antes de qualquer typecheck/teste rodar contra o arquivo — nunca
+   chegou a ser executada. Validada depois pelos 7 testes de
+   `routes/agents/recovery.test.ts`.
+2. **Limitação estrutural conhecida (Initiative recovery, Caso B vs.
+   crash no vínculo final):** já documentada no item 8 — um crash
+   exatamente entre `executeActionPlan()` terminar e o `UPDATE` final de
+   `action_plan_id` produz um Action Plan órfão (nunca religado
+   automaticamente) quando a Initiative é revertida para `approved`.
+   Deliberado — a alternativa seria "adivinhar" qual plano pertence a
+   qual Initiative, proibido pela seção 7. Uma nova tentativa de
+   `POST .../propose` cria um Action Plan NOVO; o antigo fica órfão mas
+   inofensivo (nunca é executado de novo, nunca aparece em nenhuma
+   consulta de "Action Plan desta Initiative").
+3. **`marked_failed`/`recovered`/`retried` não são produzidos por
+   nenhum adapter desta versão** — mantidos no vocabulário
+   (`RECOVERY_RESULTS`) para adapters futuros, mas nenhum fluxo real
+   hoje os gera (só `reverted`, `manual_attention`, `skipped`). Reflete
+   fielmente o escopo pedido (seção 6 pede o vocabulário completo, não
+   que todos os valores sejam alcançáveis nesta versão).
+4. **`GET /recovery/stale` e `GET /recovery/status` fazem 2 varreduras
+   completas independentes quando chamados em sequência** (cada um roda
+   `scanStaleWorkflows` do zero) — aceitável no volume esperado (poucas
+   entidades stale por vez, cada adapter é uma query simples), mas se o
+   volume de workflows crescer ordens de magnitude, vale considerar
+   cache de curta duração entre as duas chamadas do frontend (que hoje
+   rodam em paralelo via TanStack Query, uma para status, outra para a
+   lista completa).
+5. **Nenhuma integração automática com o scheduler existente foi feita
+   nesta versão** (correio.md seção 19: "não implementar recorrência
+   automática nesta versão salvo necessidade técnica comprovada") —
+   `runRecovery()` só é chamado manualmente via `POST /run`. A
+   arquitetura já permite chamar essa mesma função de dentro do
+   scheduler de Jobs existente (`agents/jobs/job-runner.ts`) no futuro,
+   sem nenhuma mudança de contrato.
 
 ---
 
 ## Conclusão
 
-Todos os 22 critérios da seção 28 do correio.md foram atendidos: memória
-estratégica persistida; provenance rastreável (testado); evidência e
-interpretação separadas (testado); Executive Review alimenta memória;
-criação idempotente (testado); concorrência protegida (testado); falha
-de provider com retry seguro (testado); nenhum lock/transaction durante
-I/O externo (provado via `pg_stat_activity`); recuperação com limite
-(testado); memórias arquivadas não contaminam contexto (testado);
-evidência atual com precedência explícita (documentado + testado); LLM
-sem poder de autorização (estrutural); memória nunca modifica Goals/
-Initiatives (testado); memória nunca executa nada (testado); uso
-auditável (testado); frontend distingue aprendizado histórico de decisão
-obrigatória; backend completo passa (491/491); frontend completo passa
-(82/82); typechecks limpos; build de produção passa; nenhuma arquitetura
-paralela foi criada (Executor/Planner/Approval/Policy únicos, reaproveitados
-em toda a extensão).
+Todos os 21 critérios da seção 30 do correio.md foram atendidos:
+workflows stale detectados com threshold temporal (testado); registros
+recentes nunca confundidos com stale (testado); recuperação idempotente
+(testado); concorrência protegida (testado, via `UPDATE`/`DELETE ...
+RETURNING` condicional); Executive Review e Strategic Memory draft
+órfãs recuperáveis (testado); Initiative órfã reconciliada com
+segurança nos 3 casos reais (A/B/C, testados); recovery nunca cria
+segundo Action Plan, nunca executa tool, nunca cria approval, nunca
+modifica permissions (todos testados); inconsistências perigosas
+escaladas para atenção humana via Decision Queue reaproveitada
+(testado); dry-run sem side effects (testado); operações auditáveis
+(testado); status agregado existe (calculado sob demanda a partir de
+dados já existentes); permission administrativa protege a execução
+(`agents.recovery.manage`, testada); nenhuma arquitetura paralela foi
+criada; backend completo passa (526/526); frontend completo passa
+(87/87); typechecks limpos; build de produção passa.
 
-**NENHUM COMMIT foi realizado nesta sessão.** Todas as alterações desta
-entrega permanecem no working tree, aguardando autorização final do
-Diretor/CEO.
+**NENHUM COMMIT foi realizado.** Todas as alterações permanecem no
+working tree, aguardando autorização final do Diretor/CEO.

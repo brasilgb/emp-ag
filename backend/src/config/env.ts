@@ -152,4 +152,24 @@ export const env = {
   get AGENT_AUTONOMY_CIRCUIT_COOLDOWN_SECONDS(): number {
     return positiveIntEnv('AGENT_AUTONOMY_CIRCUIT_COOLDOWN_SECONDS', 300);
   },
+
+  // Agentes v2.4 — Workflow Recovery (correio.md seção 4). Idade mínima
+  // (em segundos) de um estado transitório (`Initiative.status='active'`
+  // sem Action Plan, `agent_executive_reviews.status='draft'`,
+  // `agent_strategic_memories.status='draft'`) para ser considerado
+  // "stale" — nunca um workflow em andamento normal, só um claim que
+  // sobreviveu ao processo que o criou. Default 900s (15min): folgado o
+  // bastante para nunca colidir com o pior caso real do próprio sistema
+  // (AGENT_LLM_TIMEOUT_MS=5s + polling de até 30s em qualquer claim —
+  // ver `initiatives-execution-service.ts`/`reviews/review-service.ts`/
+  // `memory/memory-service.ts` — então 900s tem margem de ~18x mesmo no
+  // pior caso). Limite mínimo de 60s (`min=60`): nunca tão curto a ponto
+  // de confundir um claim genuinamente em andamento com um órfão.
+  // getter (não valor capturado no import) pelo mesmo motivo de
+  // AGENT_LLM_ENABLED: os testes de `agents/recovery/*.test.ts` precisam
+  // de um threshold curto, mutando `process.env` por teste, sem reiniciar
+  // o processo.
+  get AGENT_WORKFLOW_STALE_AFTER_SECONDS(): number {
+    return positiveIntEnv('AGENT_WORKFLOW_STALE_AFTER_SECONDS', 900, 60);
+  },
 };

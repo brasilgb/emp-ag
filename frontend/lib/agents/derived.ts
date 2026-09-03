@@ -25,7 +25,9 @@ import type {
   MemoryStatus,
   MemoryType,
   RecommendationType,
+  RecoveryResult,
   ReviewOutcome,
+  WorkflowType,
   InitiativeStatus,
   InterpretationCategory,
   InterpretationErrorType,
@@ -694,4 +696,35 @@ export const MEMORY_IMPORTANCE_LABELS: Record<MemoryImportance, string> = {
 
 export function memoryImportanceLabel(importance: MemoryImportance): string {
   return MEMORY_IMPORTANCE_LABELS[importance] ?? importance;
+}
+
+// Agentes v2.4 — Workflow Recovery, Reconciliation & Operational Resilience.
+export const RECOVERY_RESULT_LABELS: Record<RecoveryResult, string> = {
+  recovered: "Recuperado",
+  retried: "Nova tentativa",
+  reverted: "Revertido",
+  marked_failed: "Marcado como falho",
+  manual_attention: "Atenção manual",
+  skipped: "Ignorado (nada a fazer)",
+};
+
+export function recoveryResultLabel(result: RecoveryResult): string {
+  return RECOVERY_RESULT_LABELS[result] ?? result;
+}
+
+export const WORKFLOW_TYPE_LABELS: Record<WorkflowType, string> = {
+  initiative: "Initiative",
+  executive_review: "Executive Review",
+  strategic_memory: "Strategic Memory",
+};
+
+export function workflowTypeLabel(type: WorkflowType): string {
+  return WORKFLOW_TYPE_LABELS[type] ?? type;
+}
+
+export function formatAgeSeconds(ageSeconds: number): string {
+  if (ageSeconds < 60) return `${ageSeconds}s`;
+  if (ageSeconds < 3600) return `${Math.floor(ageSeconds / 60)}min`;
+  if (ageSeconds < 86400) return `${Math.floor(ageSeconds / 3600)}h`;
+  return `${Math.floor(ageSeconds / 86400)}d`;
 }

@@ -27,6 +27,7 @@ import {
   memoryImportanceLabel,
   memoryStatusLabel,
   recommendationTypeLabel,
+  recoveryResultLabel,
   reviewOutcomeLabel,
   signalSeverityLabel,
   type DerivedApprovalState,
@@ -56,6 +57,7 @@ import type {
   MemoryImportance,
   MemoryStatus,
   RecommendationType,
+  RecoveryResult,
   ReviewOutcome,
   SignalSeverity,
 } from "@/types/agents";
@@ -514,6 +516,24 @@ export function MemoryImportanceBadge({ importance }: { importance: MemoryImport
   return (
     <Badge variant="secondary" className={cn("border-transparent", MEMORY_IMPORTANCE_STYLES[importance])}>
       {memoryImportanceLabel(importance)}
+    </Badge>
+  );
+}
+
+// Agentes v2.4 — Workflow Recovery, Reconciliation & Operational Resilience.
+const RECOVERY_RESULT_STYLES: Record<RecoveryResult, string> = {
+  recovered: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  retried: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  reverted: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  marked_failed: "bg-red-500/10 text-red-700 dark:text-red-400",
+  manual_attention: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  skipped: "bg-muted text-muted-foreground",
+};
+
+export function RecoveryResultBadge({ result }: { result: RecoveryResult }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", RECOVERY_RESULT_STYLES[result])}>
+      {recoveryResultLabel(result)}
     </Badge>
   );
 }

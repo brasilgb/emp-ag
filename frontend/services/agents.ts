@@ -32,7 +32,12 @@ import type {
   ExecutiveReview,
   MemoryStatus,
   MemoryType,
+  RecoveryItemResult,
+  RecoveryReport,
+  RecoveryStatus,
+  StaleCandidate,
   StrategicMemory,
+  WorkflowType,
   GlobalAutonomyState,
   GoalDetail,
   GoalHealth,
@@ -659,4 +664,25 @@ export function getStrategicMemory(id: number): Promise<{ data: StrategicMemory 
 
 export function generateMemoryFromReview(reviewId: number): Promise<{ data: StrategicMemory }> {
   return apiFetch(`/api/agents/director/reviews/${reviewId}/memory`, { method: "POST", body: JSON.stringify({}) });
+}
+
+// Agentes v2.4 — Workflow Recovery, Reconciliation & Operational Resilience (correio.md).
+export function getRecoveryStatus(): Promise<{ data: RecoveryStatus }> {
+  return apiFetch(`/api/agents/recovery/status`);
+}
+
+export function getStaleWorkflows(): Promise<{ data: StaleCandidate[]; errors: { workflowType: string; message: string }[] }> {
+  return apiFetch(`/api/agents/recovery/stale`);
+}
+
+export function runWorkflowRecovery(dryRun: boolean): Promise<{ data: RecoveryReport }> {
+  return apiFetch(`/api/agents/recovery/run${toQueryString({ dryRun })}`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function reconcileWorkflow(
+  type: WorkflowType,
+  id: number,
+  dryRun: boolean,
+): Promise<{ data: RecoveryItemResult }> {
+  return apiFetch(`/api/agents/recovery/${type}/${id}${toQueryString({ dryRun })}`, { method: "POST", body: JSON.stringify({}) });
 }

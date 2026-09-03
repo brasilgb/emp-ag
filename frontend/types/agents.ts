@@ -987,3 +987,51 @@ export interface StrategicMemory {
   createdAt: string;
   updatedAt: string;
 }
+
+// Agentes v2.4 — Workflow Recovery, Reconciliation & Operational Resilience (correio.md).
+export const RECOVERY_RESULTS = ["recovered", "retried", "reverted", "marked_failed", "manual_attention", "skipped"] as const;
+export type RecoveryResult = (typeof RECOVERY_RESULTS)[number];
+
+export const WORKFLOW_TYPES = ["initiative", "executive_review", "strategic_memory"] as const;
+export type WorkflowType = (typeof WORKFLOW_TYPES)[number];
+
+export interface StaleCandidate {
+  workflowType: WorkflowType;
+  entityId: number;
+  previousState: string;
+  ageSeconds: number;
+  problem: string;
+}
+
+export interface RecoveryItemResult {
+  workflowType: WorkflowType;
+  entityId: number;
+  previousState: string;
+  result: RecoveryResult;
+  reason: string;
+  timestamp: string;
+}
+
+export interface RecoveryReport {
+  startedAt: string;
+  finishedAt: string;
+  dryRun: boolean;
+  thresholdSeconds: number;
+  scanned: number;
+  stale: number;
+  recovered: number;
+  reverted: number;
+  manualAttention: number;
+  skipped: number;
+  items: RecoveryItemResult[];
+  errors: { workflowType: string; message: string }[];
+}
+
+export interface RecoveryStatus {
+  staleTotal: number;
+  byType: Record<WorkflowType, number>;
+  oldest: StaleCandidate | null;
+  manualAttentionPending: number;
+  lastScanAt: string | null;
+  lastReconciledAt: string | null;
+}

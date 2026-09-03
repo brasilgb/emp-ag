@@ -1,752 +1,814 @@
-# Execução — Agentes v2.3: Strategic Learning & Organizational Memory
+# Execução — Agentes v2.4: Workflow Recovery, Reconciliation & Operational Resilience
 
 ## Objetivo
 
-Implementar uma camada de **memória organizacional estratégica** para o Diretor Virtual.
+Implementar um mecanismo genérico e seguro de recuperação/reconciliação para workflows dos agentes que utilizam o padrão:
 
-O sistema deve passar a aprender com:
+```text
+claim persistido
+→ I/O externo / processamento
+→ conclusão
+→ compensação via catch em falha normal
+```
 
-* Goals anteriores;
-* Initiatives anteriores;
-* Action Plans executados;
-* Executive Reviews da v2.2;
-* resultados obtidos;
-* recomendações anteriores;
-* decisões humanas relevantes;
-* evidências de execução já persistidas.
+Hoje esse padrão aparece em pelo menos:
 
-A memória servirá exclusivamente como **contexto consultivo para análise e planejamento**.
-
-Ela NUNCA deverá:
-
-* conceder permissão;
-* alterar authorization;
-* aprovar uma ação;
-* executar tools;
-* modificar Policy Evaluator;
-* modificar autonomia;
-* substituir evidência atual;
-* modificar diretamente Goals ou Initiatives;
-* ser tratada como verdade absoluta.
-
-O princípio obrigatório é:
-
-> Histórico pode orientar uma decisão futura, mas nunca autorizar sua execução.
-
----
-
-# 1. Arquitetura obrigatória
-
-Não criar um novo mecanismo de execução, planner, approval ou policy.
-
-A cadeia existente deve continuar sendo:
-
-CEO Goal
-→ Director Analysis
-→ Initiative
-→ Action Plan
-→ Policy Evaluator
-→ Executor
-→ Execution Evidence
-→ Executive Review
-→ Recommendation
-
-A v2.3 adicionará uma camada transversal:
-
+```text
+Initiative execution
+Executive Review
 Strategic Memory
-→ utilizada como contexto pelo Diretor
-
-Portanto:
-
-```text
-Historical Goals
-Historical Initiatives
-Historical Reviews
-Historical Decisions
-Historical Evidence
-        ↓
-Strategic Memory Retrieval
-        ↓
-Director Context
-        ↓
-Director Analysis / Recommendation
 ```
 
-A memória nunca entra diretamente no Executor.
+Em exceções JavaScript normais os serviços já compensam corretamente.
+
+O problema desta versão é outro:
+
+> Se o processo Node/container morrer depois do claim persistido e antes da conclusão/compensação, o estado transitório pode permanecer órfão indefinidamente.
+
+A v2.4 deverá detectar e reconciliar esses estados sem criar arquitetura paralela.
 
 ---
 
-# 2. Conceito de Strategic Memory
+# 1. Princípio arquitetural
 
-Criar uma representação persistente e auditável de aprendizados organizacionais.
+Não criar:
 
-Sugestão de entidade:
+* segundo Executor;
+* segundo Scheduler de negócio;
+* segundo Planner;
+* segundo Policy Evaluator;
+* segundo Approval Workflow;
+* sistema paralelo de jobs;
+* mecanismo de execução direta durante recovery.
 
-`agent_strategic_memories`
+A recuperação deve operar SOBRE os workflows existentes.
 
-Campos mínimos:
-
-```text
-id
-memory_type
-domain
-title
-summary
-lesson
-outcome
-confidence
-importance
-source_goal_id
-source_initiative_id
-source_review_id
-source_decision_id
-evidence
-status
-created_by
-created_at
-updated_at
-```
-
-Os nomes finais podem ser adaptados ao padrão atual do repositório.
-
-## memory_type
-
-Inicialmente:
+Fluxo conceitual:
 
 ```text
-initiative_outcome
-strategic_lesson
-decision_outcome
-recurring_pattern
+Existing Workflow
+      ↓
+Persistent Transitional State
+      ↓
+Process crash / interruption
+      ↓
+Stale Workflow Detection
+      ↓
+Recovery/Reconciliation
+      ↓
+safe_retry | revert | mark_failed | manual_attention
+      ↓
+Official existing pipeline
 ```
 
-Não criar dezenas de tipos nesta versão.
+Recovery nunca deve significar:
 
-## status
+```text
+"execute qualquer coisa para consertar"
+```
+
+---
+
+# 2. Estados atualmente relevantes
+
+Levantar no código real todos os estados transitórios que podem ficar presos.
+
+No mínimo revisar:
+
+## Initiative
+
+Exemplo esperado:
+
+```text
+active
+```
+
+quando existe claim/início mas Action Plan ou conclusão não foi produzida corretamente.
+
+## Executive Review
+
+```text
+draft
+```
+
+## Strategic Memory
+
+```text
+draft
+```
+
+Não assumir esses como os únicos estados.
+
+Antes de implementar, mapear os workflows reais e documentar:
+
+```text
+entity
+transitional state
+terminal states
+claim timestamp
+expected next transition
+existing retry behavior
+```
+
+---
+
+# 3. Conceito de stale workflow
+
+Não usar apenas:
+
+```text
+status == draft
+```
+
+como prova de problema.
+
+Um workflow em execução normal também pode estar temporariamente em estado transitório.
+
+Definir stale usando tempo.
 
 Sugestão:
 
 ```text
-active
-superseded
-archived
+updated_at < now() - stale_threshold
 ```
 
-Nunca deletar silenciosamente memória estratégica relevante.
+ou timestamp específico de claim caso o schema atual permita.
+
+Preferir utilizar timestamps já existentes.
+
+Só adicionar coluna nova se houver justificativa concreta.
 
 ---
 
-# 3. Proveniência obrigatória
+# 4. Threshold configurável
 
-Toda memória deve possuir origem rastreável.
+Criar configuração explícita.
 
-Uma memória NÃO pode simplesmente afirmar:
-
-> campanhas desse tipo não funcionam.
-
-Ela precisa conseguir responder:
+Exemplo conceitual:
 
 ```text
-sourceGoalId
-sourceInitiativeId
-sourceReviewId
-sourceDecisionId
-evidence
+AGENT_WORKFLOW_STALE_AFTER_SECONDS
 ```
 
-conforme o tipo de memória.
+ou configuração equivalente consistente com o projeto.
 
-O LLM nunca poderá inventar provenance.
+Deve possuir:
 
-IDs e evidências devem ser anexados deterministicamente pelo backend.
+* valor default seguro;
+* validação;
+* limite mínimo razoável;
+* documentação.
+
+Não espalhar números mágicos pelo código.
+
+Para testes, permitir threshold curto.
 
 ---
 
-# 4. Criação da memória
+# 5. Recovery Registry
 
-A principal fonte inicial deverá ser a `Executive Review` criada na v2.2.
+Criar um mecanismo central pequeno que conheça os workflows recuperáveis.
 
-Após uma Executive Review `completed`, o sistema poderá gerar um aprendizado estratégico.
-
-Criar um serviço explícito, por exemplo:
+Exemplo conceitual:
 
 ```text
-createStrategicMemoryFromReview()
+agents/recovery/
 ```
 
-ou equivalente consistente com a arquitetura existente.
+Possíveis arquivos:
 
-Não criar um novo daemon nesta versão.
+```text
+types.ts
+registry.ts
+detector.ts
+recovery-service.ts
+initiative-recovery.ts
+executive-review-recovery.ts
+strategic-memory-recovery.ts
+```
 
-Pode ser utilizado endpoint explícito ou integração segura imediatamente após conclusão da review, desde que:
+Não é obrigatório usar exatamente estes nomes.
 
-* seja idempotente;
-* não segure transaction durante chamada ao LLM;
-* não provoque execução;
-* não altere automaticamente outras entidades.
+Cada adapter deverá saber:
+
+```text
+como detectar
+como validar
+como reconciliar
+```
+
+sua própria entidade.
+
+O core de recovery não deve conhecer detalhes internos de todas as tabelas.
 
 ---
 
-# 5. Separar fatos de interpretação
+# 6. Tipos de resultado da reconciliação
 
-Esta é uma exigência central da v2.3.
+Usar resultado estruturado.
 
-A memória deverá distinguir:
+Exemplo:
 
-## Evidência
+```text
+recovered
+retried
+reverted
+marked_failed
+manual_attention
+skipped
+```
 
-Dados reais e determinísticos:
+Não usar apenas boolean.
 
-* Goal;
-* Initiative;
-* Action Plan;
-* execução;
-* Executive Review;
-* Decision;
-* métricas existentes.
+Cada tentativa deve explicar:
 
-## Lesson / Interpretation
+```text
+entityType
+entityId
+previousState
+result
+reason
+timestamp
+```
 
-Conclusão estratégica produzida pelo Diretor/LLM.
+---
 
-Nunca misturar os dois campos.
+# 7. Initiative Recovery
+
+Revisar exatamente como `startInitiativeExecution` funciona hoje.
+
+Não inventar comportamento sem ler o fluxo real.
+
+Para Initiative stale:
+
+O recovery deve primeiro verificar fatos existentes.
+
+Exemplos:
+
+### Caso A
+
+Initiative `active`, mas Action Plan válido já existe.
+
+Então não criar outro Action Plan.
+
+Reconstruir/reconciliar a visão da Initiative a partir do estado real.
+
+### Caso B
+
+Initiative `active`, sem Action Plan, claim claramente stale.
+
+Permitir voltar a um estado seguro que possibilite retry através do serviço oficial.
+
+Não criar plano diretamente dentro do recovery.
+
+### Caso C
+
+Existem evidências contraditórias/corrompidas.
+
+Não tentar adivinhar.
+
+Marcar necessidade de atenção humana ou registrar falha operacional adequada.
+
+---
+
+# 8. Executive Review Recovery
+
+Review `draft` stale:
+
+Verificar se a review possui conteúdo completo compatível com `completed`.
+
+Se não possuir, o comportamento preferencial é permitir retry seguro.
+
+Exemplo:
+
+```text
+draft stale
+→ remover/reverter claim
+→ próxima chamada normal pode gerar novamente
+```
+
+Não chamar LLM automaticamente durante reconciliação, salvo justificativa extremamente clara.
+
+Preferência desta versão:
+
+> recovery torna o workflow novamente executável; não executa o workflow cognitivo sozinho.
+
+---
+
+# 9. Strategic Memory Recovery
+
+Mesmo princípio da Executive Review.
+
+```text
+draft stale
+→ validar
+→ limpar/reverter claim
+→ permitir criação normal posteriormente
+```
+
+Nunca fabricar uma memória incompleta como `active`.
+
+Nunca copiar `lesson` ou interpretação de outro registro para “consertar”.
+
+---
+
+# 10. Recovery deve ser idempotente
+
+Executar recovery duas vezes sobre o mesmo estado não pode causar dano.
+
+Exemplo:
+
+Primeira execução:
+
+```text
+draft stale → removed
+```
+
+Segunda:
+
+```text
+registro não existe → skipped
+```
+
+e não erro destrutivo.
+
+Adicionar testes explícitos.
+
+---
+
+# 11. Concorrência no recovery
+
+Dois processos podem tentar reconciliar a mesma entidade.
+
+Proteger a operação.
+
+Evitar:
+
+```text
+SELECT
+→ decidir
+→ UPDATE/DELETE
+```
+
+sem condição de corrida protegida.
+
+Preferir operações condicionais:
+
+```text
+DELETE ... WHERE id=? AND status='draft' AND updated_at < threshold
+```
+
+ou:
+
+```text
+UPDATE ... WHERE ... RETURNING
+```
+
+Assim apenas um reconciliador vence.
+
+Não segurar locks enquanto executa I/O externo.
+
+Idealmente recovery desta versão nem precisa fazer I/O externo.
+
+---
+
+# 12. Recovery nunca deve elevar privilégios
+
+O reconciliador é infraestrutura interna.
+
+Mas isso não significa que ele possa:
+
+* aprovar ações;
+* mudar owner;
+* conceder permission;
+* alterar Policy Evaluator;
+* ignorar Approval;
+* executar tool em nome de usuário;
+* criar Action Plan diretamente.
+
+Quando o workflow precisar continuar, ele deve voltar a um estado no qual o pipeline oficial possa continuar normalmente.
+
+---
+
+# 13. Manual attention
+
+Há casos em que recuperação automática seria perigosa.
+
+Criar conceito de:
+
+```text
+manual_attention
+```
+
+Quando houver inconsistência real.
+
+Preferencialmente reutilizar a infraestrutura existente de:
+
+```text
+Director Decision Queue
+```
+
+ou mecanismo operacional já existente, SE semanticamente apropriado.
+
+Não criar uma segunda “fila de incidentes” sem necessidade.
+
+Se reutilizar Decision Queue, diferenciar claramente:
+
+```text
+operational recovery issue
+```
+
+de uma decisão estratégica normal.
+
+---
+
+# 14. Auditoria
+
+Adicionar eventos coerentes.
+
+Sugestão:
+
+```text
+agents.recovery.scan.started
+agents.recovery.stale_detected
+agents.recovery.reconciled
+agents.recovery.manual_attention
+```
+
+Não registrar evento para cada entidade saudável examinada.
+
+Evitar ruído excessivo.
+
+Metadata útil:
+
+```text
+workflowType
+entityId
+previousState
+ageSeconds
+action
+result
+reason
+```
+
+Nunca secrets.
+
+---
+
+# 15. Observabilidade
+
+Criar uma visão agregada do estado de recovery.
+
+No mínimo o backend deve conseguir informar:
+
+```text
+stale workflows total
+por tipo
+mais antigo
+último scan
+última reconciliação
+manual attention pendente
+```
+
+Pode ser calculado sob demanda nesta versão.
+
+Não precisa criar Prometheus/Grafana se o projeto ainda não usa.
+
+---
+
+# 16. API operacional
+
+Criar endpoints administrativos mínimos.
+
+Sugestão:
+
+```text
+GET  /agents/recovery/status
+GET  /agents/recovery/stale
+POST /agents/recovery/run
+```
+
+Possivelmente:
+
+```text
+POST /agents/recovery/:type/:id
+```
+
+somente se houver necessidade clara para recuperação manual de um item.
+
+`POST /run` deve executar apenas a reconciliação segura definida nesta versão.
+
+Não disparar execução arbitrária de agentes.
+
+---
+
+# 17. Permissions
+
+Recovery é operação administrativa sensível.
+
+Não usar apenas `agents.read` para executar reconciliação.
+
+Reaproveitar uma permission administrativa existente se semanticamente correta.
+
+Se nenhuma permission existente representar adequadamente essa capacidade, aí sim justificar uma permission nova, como:
+
+```text
+agents.recovery.manage
+```
+
+Não criar permission nova automaticamente; primeiro avaliar o modelo atual.
+
+Leitura de status pode usar permission mais ampla de observabilidade/admin, conforme arquitetura real.
+
+Authorization sempre backend.
+
+---
+
+# 18. Execução manual primeiro
+
+Nesta versão, preferir:
+
+```text
+POST /agents/recovery/run
+```
+
+manual/administrativo.
+
+Não criar daemon automaticamente de início.
+
+Depois que o mecanismo estiver comprovado, podemos integrá-lo ao scheduler existente.
+
+Isso reduz risco enquanto validamos as regras.
+
+---
+
+# 19. Integração futura com scheduler
+
+A arquitetura deve permitir posteriormente algo como:
+
+```text
+reconcileStaleAgentWorkflows()
+```
+
+ser chamado pelo scheduler existente.
+
+Não criar scheduler novo.
+
+Não implementar recorrência automática nesta versão salvo necessidade técnica comprovada.
+
+---
+
+# 20. Dry-run
+
+Adicionar capacidade de dry-run se for simples e limpa.
+
+Exemplo:
+
+```text
+POST /agents/recovery/run?dryRun=true
+```
+
+Retorna:
+
+```text
+o que seria reconciliado
+por quê
+qual ação seria aplicada
+```
+
+sem alterar banco.
+
+Isso é muito útil operacionalmente.
+
+Se implementado, garantir que dry-run não produza efeitos colaterais.
+
+---
+
+# 21. Recovery report
+
+O serviço deve retornar relatório estruturado.
 
 Exemplo:
 
 ```json
 {
-  "evidence": {
-    "initiativeOutcome": "unsuccessful",
-    "expectedResult": "...",
-    "actualResult": "..."
-  },
-  "lesson": "A estratégia X apresentou baixo resultado quando aplicada no contexto Y."
+  "startedAt": "...",
+  "finishedAt": "...",
+  "dryRun": false,
+  "scanned": 12,
+  "stale": 3,
+  "recovered": 2,
+  "manualAttention": 1,
+  "items": [...]
 }
 ```
 
----
+Nunca esconder erros individuais.
 
-# 6. Isolamento do LLM
-
-Criar módulo específico de geração de memória, seguindo o padrão atual:
-
-```text
-agents/director/memory/
-```
-
-Sugestão:
-
-```text
-types.ts
-schemas.ts
-context.ts
-prompt.ts
-memory-extractor.ts
-memory-service.ts
-retrieval-service.ts
-```
-
-Não é obrigatório usar exatamente estes nomes.
-
-O componente que chama o LLM:
-
-* não importa `executor`;
-* não importa `policy`;
-* não importa mecanismo de permission;
-* não escreve diretamente no banco;
-* recebe DTO preparado;
-* retorna apenas saída Zod validada.
-
----
-
-# 7. Schema de saída do LLM
-
-Usar `.strict()`.
-
-Exemplo conceitual:
-
-```text
-title
-summary
-lesson
-confidence
-importance
-tags
-```
-
-Não permitir campos como:
-
-```text
-tool
-action
-execute
-permission
-approval
-autonomy
-sql
-command
-```
-
-Preferencialmente a própria estrutura não deve oferecer qualquer possibilidade de execução.
-
----
-
-# 8. Memória não é verdade absoluta
-
-A memória deve conter `confidence`.
-
-Além disso, o prompt de uso da memória deve dizer explicitamente:
-
-* experiências anteriores podem não se aplicar ao contexto atual;
-* conflito entre memória histórica e evidência atual deve favorecer a evidência atual;
-* memória serve como orientação;
-* memória jamais sobrepõe regras atuais;
-* memória jamais sobrepõe Policy Evaluator;
-* memória jamais sobrepõe decisão humana atual.
-
----
-
-# 9. Recuperação de memória
-
-Implementar uma primeira versão simples e determinística.
-
-Não introduzir vector database nesta etapa sem necessidade comprovada.
-
-Preferência nesta versão:
-
-```text
-domain
-memory_type
-importance
-confidence
-recency
-source relationships
-```
-
-Criar função semelhante a:
-
-```text
-getRelevantStrategicMemories(context)
-```
-
-Deve possuir limite explícito de resultados.
-
-Exemplo:
-
-```text
-max 5 ou max 10 memories
-```
-
-Evitar enviar histórico ilimitado ao LLM.
-
----
-
-# 10. Não implementar embeddings prematuramente
-
-Nesta versão NÃO introduzir obrigatoriamente:
-
-* pgvector;
-* embeddings;
-* vector store externo;
-* RAG infrastructure;
-* reranker;
-* knowledge graph.
-
-Primeiro validar o modelo de memória e provenance.
-
-A arquitetura deve permitir evolução futura para busca semântica, mas não precisamos pagar essa complexidade agora.
-
----
-
-# 11. Integração com Director Analysis
-
-O Diretor poderá consultar memórias estratégicas relevantes antes de produzir análises ou recomendações.
-
-Mas o prompt deverá separar claramente:
-
-```text
-CURRENT EVIDENCE
-```
-
-de:
-
-```text
-HISTORICAL ORGANIZATIONAL MEMORY
-```
-
-Essa separação é obrigatória.
-
-O modelo deverá receber instrução explícita:
-
-> A evidência atual possui precedência sobre padrões históricos.
-
----
-
-# 12. Integração com Goals
-
-Ao analisar um novo Goal, o Diretor poderá receber memórias relacionadas ao mesmo domínio.
-
-Exemplo:
-
-Novo Goal:
-
-```text
-Aumentar conversão comercial em 15%.
-```
-
-Memória histórica:
-
-```text
-Iniciativa anterior de aumento de contatos melhorou volume,
-mas não elevou conversão por falta de qualificação dos leads.
-```
-
-Isso pode influenciar a análise.
-
-Mas NÃO pode automaticamente:
-
-* rejeitar o Goal;
-* criar Initiative;
-* executar Action Plan;
-* bloquear uma estratégia.
-
-Todas essas ações continuam no pipeline oficial.
-
----
-
-# 13. Integração com Executive Review
-
-Executive Review deverá ser uma das principais fontes de aprendizado.
-
-Uma review pode gerar:
-
-```text
-0 ou 1 memória canônica nesta versão
-```
-
-Preferimos simplicidade e idempotência.
-
-Se for adotada relação 1:1 inicial, documentar claramente a decisão e preparar evolução futura.
-
-Criar constraint ou chave idempotente apropriada.
-
-Nunca usar:
-
-```text
-find → depois insert
-```
-
-sem proteção concorrente.
-
----
-
-# 14. Idempotência e concorrência
-
-Seguir o padrão seguro já adotado nas versões anteriores.
-
-Deve existir claim ou constraint no banco capaz de impedir duas memórias canônicas para a mesma origem.
-
-Exemplo conceitual:
-
-```text
-UNIQUE(source_review_id, memory_type)
-```
-
-quando aplicável.
-
-Chamadas concorrentes devem produzir:
-
-```text
-1 memória
-```
-
-e não duas.
-
-Adicionar teste concorrente real.
-
----
-
-# 15. Falha de provider
-
-Se houver chamada ao LLM para extração da memória:
-
-* não deixar registro permanentemente em estado transitório em exceção normal;
-* permitir retry seguro;
-* não abrir transaction durante chamada externa.
-
-Repetir a prova de:
-
-```sql
-pg_stat_activity
-```
-
-se o padrão utilizado envolver claim + chamada externa.
-
-Esperado durante delay artificial do provider:
-
-```text
-idle in transaction = 0
-```
-
----
-
-# 16. Auditoria
-
-Auditar pelo menos:
-
-```text
-agents.director.memory.requested
-agents.director.memory.created
-agents.director.memory.reused
-agents.director.memory.archived
-```
-
-Ajustar aos fluxos realmente implementados.
-
-Não inventar eventos que nunca ocorrem.
-
-Registrar:
-
-```text
-actor
-memoryId
-sourceReviewId
-sourceGoalId
-sourceInitiativeId
-timestamp
-metadata necessária
-```
-
-Não registrar secrets nem conteúdo sensível desnecessário.
-
----
-
-# 17. Segurança
-
-Reutilizar permissions existentes quando semanticamente corretas.
+Se uma entidade falhar na reconciliação, avaliar se o scan pode continuar nas demais.
 
 Preferência:
 
-Leitura:
-
 ```text
-agents.read
+best-effort por item
 ```
 
-Administração/criação estratégica:
-
-```text
-agents.director.initiatives.manage
-```
-
-ou permission de Diretor já existente que seja realmente adequada.
-
-Não criar permission nova apenas para inflar granularidade.
-
-Authorization sempre no backend.
-
-Frontend nunca é barreira de segurança.
+com relatório completo.
 
 ---
 
-# 18. API
+# 22. Tratamento de erro
 
-Criar endpoints mínimos.
-
-Sugestão:
+Distinguir:
 
 ```text
-GET /agents/director/memories
-GET /agents/director/memories/:id
-POST /agents/director/reviews/:id/memory
+workflow não stale
+workflow já reconciliado
+workflow inconsistente
+erro operacional do DB
+erro inesperado
 ```
 
-ou estrutura coerente com as rotas existentes.
+Não transformar tudo em 500 genérico internamente.
 
-Filtros úteis:
-
-```text
-domain
-memoryType
-status
-goalId
-initiativeId
-```
-
-Não criar CRUD administrativo gigantesco.
-
-Nesta versão precisamos principalmente:
-
-* criar;
-* consultar;
-* recuperar memórias relevantes.
+API pode mapear conforme padrão atual de `AgentError`.
 
 ---
 
-# 19. Frontend
+# 23. Segurança contra deleção indevida
 
-Criar visualização clara para o CEO/Diretor.
+Qualquer DELETE usado para limpar claims deve possuir predicados fortes.
 
-Uma memória deve mostrar:
-
-```text
-Título
-Tipo
-Domínio
-Aprendizado
-Confidence
-Importância
-Origem
-Data
-```
-
-Quando possível, permitir navegar para:
+Exemplo conceitual:
 
 ```text
-Goal de origem
-Initiative de origem
-Executive Review
+id = ?
+AND status = 'draft'
+AND updated_at < staleBefore
 ```
 
-Não apresentar memória como “regra”.
-
-Usar linguagem visual semelhante a:
+Nunca:
 
 ```text
-Aprendizado histórico
+DELETE WHERE status='draft'
 ```
 
-e não:
+como operação cega.
 
-```text
-Decisão obrigatória
-```
+Preferir `RETURNING`.
+
+Adicionar teste garantindo que registro recente não seja removido.
 
 ---
 
-# 20. Strategic Memory no contexto do Diretor
+# 24. Testes obrigatórios
 
-Quando uma memória for utilizada numa análise, deve ser possível saber quais memórias entraram no contexto.
+Adicionar no mínimo:
 
-Persistir ou auditar IDs utilizados.
+### Detection
 
-Exemplo:
+1. Initiative stale é detectada.
+2. Initiative recente não é stale.
+3. Executive Review draft stale é detectada.
+4. Review draft recente não é stale.
+5. Strategic Memory draft stale é detectada.
+6. Memory draft recente não é stale.
 
-```text
-memoryIdsUsed: [...]
-```
+### Recovery
 
-Não precisamos armazenar o prompt inteiro.
+7. Review draft stale volta a permitir retry.
+8. Memory draft stale volta a permitir retry.
+9. Recovery não remove review completed.
+10. Recovery não remove memory active.
+11. Initiative com Action Plan existente não cria segundo plano.
+12. Initiative stale sem plano volta a estado seguro conforme fluxo real.
+13. Inconsistência relevante gera manual_attention.
 
-Precisamos garantir auditabilidade suficiente para responder:
+### Idempotência/concorrência
 
-> Por que o Diretor considerou essa experiência anterior?
+14. Duas reconciliações concorrentes produzem um único efeito.
+15. Recovery repetido é idempotente.
+16. Entidade alterada por outro processo antes do recovery é skipped com segurança.
 
----
+### Segurança
 
-# 21. Não criar aprendizado autônomo irrestrito
+17. Recovery nunca cria approval.
+18. Recovery nunca executa tool.
+19. Recovery nunca modifica permission.
+20. Recovery nunca altera Policy Evaluator.
+21. Usuário sem permission não executa `/recovery/run`.
 
-Não implementar nesta versão:
+### Dry-run
 
-* alteração automática das próprias policies;
-* autoedição de prompts;
-* mudança automática de thresholds;
-* criação automática de permissions;
-* “self-improving agent”;
-* treinamento de modelo;
-* fine-tuning;
-* alteração autônoma das regras do sistema.
+22. Dry-run detecta os mesmos stale items.
+23. Dry-run não altera banco.
+24. Dry-run não gera side effects.
 
-A memória é **contexto**, não alteração de comportamento estrutural.
+### Observabilidade/auditoria
 
----
+25. stale_detected é auditado quando apropriado.
+26. reconciled contém entity/type/reason.
+27. manual_attention fica visível.
+28. status agregado retorna contagens corretas.
 
-# 22. Regras de precedência
-
-Documentar e aplicar esta ordem:
-
-```text
-1. Permissions / Authorization
-2. Policy / Safety rules
-3. Human decisions / approvals
-4. Current deterministic evidence
-5. Current business context
-6. Historical strategic memory
-7. LLM interpretation
-```
-
-Nenhuma memória pode ultrapassar os níveis anteriores.
-
----
-
-# 23. Testes obrigatórios
-
-Adicionar testes cobrindo no mínimo:
-
-1. Executive Review gera memória válida.
-2. Memória contém provenance real.
-3. Evidência persistida é separada do lesson produzido pelo LLM.
-4. Duas chamadas concorrentes geram apenas uma memória.
-5. Segunda chamada normal é idempotente.
-6. Falha do provider permite retry.
-7. Nenhuma transaction permanece aberta durante chamada ao LLM.
-8. Memória nunca altera Goal original.
-9. Memória nunca altera Initiative original.
-10. Memória nunca cria Action Plan.
-11. Memória nunca executa tool.
-12. Memória nunca cria approval.
-13. Memória histórica pode ser recuperada por domínio.
-14. Limite de quantidade recuperada é respeitado.
-15. Memória arquivada não entra em contexto normal.
-16. Evidência atual é apresentada separadamente da memória histórica.
-17. Usuário sem permission não cria memória.
-18. Usuário sem permission apropriada não acessa endpoint protegido.
-19. IDs das memórias utilizadas ficam auditáveis.
-20. Frontend apresenta labels corretamente.
-
-Adicionar testes adicionais se necessários.
+Adicionar outros testes conforme o código real exigir.
 
 ---
 
-# 24. Regressão
+# 25. Regressão
 
-Rodar a suíte COMPLETA.
-
-Baseline atual após v2.2:
+Baseline atual após v2.3:
 
 Backend:
 
 ```text
-472 tests
-472 pass
+491 tests
+491 pass
 0 fail
 ```
 
 Frontend:
 
 ```text
-76 tests
-76 pass
+82 tests
+82 pass
 0 fail
 ```
 
-Não aceitar apenas testes novos isoladamente.
+Executar suíte completa.
 
-No relatório final informar:
+Reconciliar matematicamente:
 
 ```text
 baseline
-novos testes
-total final
-pass
-fail
++ novos testes
+= total final
 ```
 
-e reconciliar matematicamente os números.
+Não aceitar somente suítes novas.
 
 ---
 
-# 25. Typecheck/build
+# 26. Frontend
+
+Criar tela operacional simples.
+
+Sugestão:
+
+```text
+/agents/recovery
+```
+
+Mostrar:
+
+```text
+Saúde dos workflows
+Stale total
+Initiatives
+Executive Reviews
+Strategic Memories
+Mais antigo
+Manual attention
+Última execução
+```
+
+Ações:
+
+```text
+Simular recuperação
+Executar recuperação
+```
+
+Exibir confirmação adequada antes de operação real.
+
+Não apresentar isso como ferramenta diária do usuário comum.
+
+É tela administrativa/operacional.
+
+---
+
+# 27. UX do dry-run
+
+Após simular:
+
+Mostrar tabela/lista:
+
+```text
+Tipo
+ID
+Estado
+Idade
+Problema
+Ação proposta
+```
+
+Somente depois permitir executar recovery real.
+
+Não é obrigatório forçar dry-run antes da operação real no backend, mas a UI pode privilegiar esse fluxo.
+
+---
+
+# 28. Typecheck/build
 
 Executar:
 
@@ -763,118 +825,100 @@ npx tsc --noEmit
 npm run build
 ```
 
-Se lint continuar inexistente, apenas registrar isso.
-
-Não adicionar ferramenta de lint fora do escopo.
+Se lint continuar inexistente, apenas registrar.
 
 ---
 
-# 26. Migration
+# 29. Migration
 
-Usar o fluxo oficial Drizzle:
+Evitar migration se timestamps/estados atuais forem suficientes.
+
+Se for necessária migration, usar:
 
 ```text
 drizzle-kit generate
 drizzle-kit migrate
 ```
 
-Confirmar consistência entre:
+e validar:
 
 ```text
-migration SQL
-drizzle/meta/_journal.json
+SQL
+_journal.json
 snapshot
 __drizzle_migrations
 ```
 
-Não editar tracking manualmente salvo necessidade comprovada.
-
-Se houver desvio, documentar exatamente.
+Não criar colunas apenas por conveniência.
 
 ---
 
-# 27. Restrições arquiteturais absolutas
+# 30. Critérios de aprovação
 
-É proibido criar:
+A v2.4 só estará aprovada se:
 
-* segundo Planner;
-* segundo Executor;
-* segundo Approval Workflow;
-* segundo Policy Evaluator;
-* acesso SQL pelo LLM;
-* shell para LLM;
-* credenciais no prompt;
-* execução direta originada de Strategic Memory;
-* autoaprovação baseada em memória;
-* bypass de permissions.
-
----
-
-# 28. Critérios de aprovação
-
-A v2.3 somente poderá ser considerada concluída se:
-
-1. memória estratégica estiver persistida;
-2. provenance estiver rastreável;
-3. evidência e interpretação estiverem separadas;
-4. Executive Review puder alimentar memória;
-5. criação for idempotente;
-6. concorrência estiver protegida;
-7. falha de provider tiver retry seguro;
-8. nenhum lock/transaction permanecer durante I/O externo;
-9. recuperação tiver limite;
-10. memórias arquivadas não contaminarem contexto;
-11. evidência atual tiver precedência explícita;
-12. LLM continuar sem poder de autorização;
-13. memória não modificar Goals;
-14. memória não modificar Initiatives;
-15. memória não executar nada;
-16. uso da memória for auditável;
-17. frontend distinguir aprendizado histórico de decisão;
+1. workflows stale forem detectados com threshold temporal;
+2. registros recentes não forem confundidos com stale;
+3. recuperação for idempotente;
+4. concorrência estiver protegida;
+5. Executive Review draft órfã puder ser recuperada;
+6. Strategic Memory draft órfã puder ser recuperada;
+7. Initiative órfã puder ser reconciliada com segurança;
+8. recovery nunca criar segundo Action Plan;
+9. recovery nunca executar tool;
+10. recovery nunca criar approval;
+11. recovery nunca modificar permissions;
+12. inconsistências perigosas forem escaladas para atenção humana;
+13. dry-run não tiver side effects;
+14. operações forem auditáveis;
+15. status agregado existir;
+16. permission administrativa proteger execução;
+17. nenhuma arquitetura paralela tiver sido criada;
 18. backend completo passar;
 19. frontend completo passar;
 20. typechecks passarem;
-21. build de produção passar;
-22. nenhuma arquitetura paralela tiver sido criada.
+21. build passar.
 
 ---
 
-# 29. Relatório final obrigatório
+# 31. Relatório final obrigatório
 
 Ao concluir, NÃO faça commit.
 
 Entregar `executed.md` contendo:
 
-1. resumo da implementação;
-2. arquitetura adotada;
-3. schema/migrations;
-4. modelo da Strategic Memory;
-5. tipos de memória implementados;
-6. como provenance funciona;
-7. como evidência é separada da interpretação;
-8. como o LLM foi isolado;
-9. fluxo de criação da memória;
-10. fluxo de recuperação;
-11. regras de precedência;
-12. integração com Executive Review;
-13. integração com Goals/Director;
-14. estratégia de concorrência/idempotência;
-15. comportamento em falha do provider;
-16. prova de ausência de transaction/lock durante LLM;
-17. auditoria;
-18. segurança/permissions;
-19. frontend implementado;
-20. arquivos criados;
-21. arquivos alterados;
-22. testes adicionados;
-23. números exatos da suíte backend;
-24. números exatos da suíte frontend;
-25. typecheck/build;
-26. `git diff --stat`;
-27. `git status`;
-28. limitações ou pendências reais encontradas.
+1. resumo;
+2. problema estrutural resolvido;
+3. workflows mapeados;
+4. arquitetura de recovery;
+5. definição de stale;
+6. configuração/threshold;
+7. registry/adapters;
+8. Initiative recovery;
+9. Executive Review recovery;
+10. Strategic Memory recovery;
+11. regras de idempotência;
+12. proteção concorrente;
+13. dry-run;
+14. manual attention;
+15. integração com Decision Queue, se usada;
+16. auditoria;
+17. observabilidade/status;
+18. API;
+19. permissions;
+20. frontend;
+21. migrations, se houver;
+22. arquivos criados;
+23. arquivos alterados;
+24. testes adicionados;
+25. números exatos backend;
+26. números exatos frontend;
+27. typecheck/build;
+28. `git diff --stat`;
+29. `git status`;
+30. bugs/limitações reais encontradas.
 
-Não esconder falhas ou limitações.
+Não esconder limitações.
 
 **NÃO REALIZAR COMMIT.**
 
