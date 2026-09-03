@@ -52,3 +52,4 @@ export * from './agent-executive-reviews.js';
 export * from './agent-strategic-memories.js';
 export * from './agent-responsibilities.js';
 export * from './agent-operational-escalations.js';
+export * from './agent-operational-follow-ups.js';

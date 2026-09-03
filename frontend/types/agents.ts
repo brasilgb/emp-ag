@@ -1206,3 +1206,44 @@ export interface OperationalEscalation {
   dismissedBy: number | null;
   dismissReason: string | null;
 }
+
+// Agentes v2.7 — Operational Follow-up & Coordinated Workflows (correio.md).
+export const FOLLOW_UP_STATUSES = ["open", "in_progress", "waiting", "completed", "dismissed"] as const;
+export type FollowUpStatus = (typeof FOLLOW_UP_STATUSES)[number];
+
+// Mesmo vocabulário de ResponsibilityPriority/EscalationSeverity — nunca
+// um quinto conjunto de valores de prioridade no projeto.
+export const FOLLOW_UP_PRIORITIES = ["low", "medium", "high", "critical"] as const;
+export type FollowUpPriority = (typeof FOLLOW_UP_PRIORITIES)[number];
+
+export const FOLLOW_UP_SOURCE_TYPES = ["escalation", "responsibility"] as const;
+export type FollowUpSourceType = (typeof FOLLOW_UP_SOURCE_TYPES)[number];
+
+export interface OperationalFollowUp {
+  id: number;
+  responsibilityId: number;
+  escalationId: number | null;
+  sourceType: FollowUpSourceType;
+  sourceId: number | null;
+  ownerAgentId: number;
+  assignedUserId: number | null;
+  title: string;
+  description: string | null;
+  status: FollowUpStatus;
+  priority: FollowUpPriority;
+  dueAt: string | null;
+  nextReviewAt: string | null;
+  waitingReason: string | null;
+  waitingUntil: string | null;
+  metadata: Record<string, unknown>;
+  createdBy: number | null;
+  createdAt: string;
+  updatedAt: string;
+  acknowledgedAt: string | null;
+  completedAt: string | null;
+  completedBy: number | null;
+  resolution: string | null;
+  dismissedAt: string | null;
+  dismissedBy: number | null;
+  dismissReason: string | null;
+}

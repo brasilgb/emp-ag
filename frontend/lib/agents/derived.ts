@@ -15,6 +15,9 @@ import type {
   EscalationSeverity,
   EscalationStatus,
   EventDeliveryStatus,
+  FollowUpPriority,
+  FollowUpSourceType,
+  FollowUpStatus,
   EventStatus,
   ExecutionStatus,
   FilterOperator,
@@ -845,6 +848,39 @@ export const ESCALATION_STATUS_LABELS: Record<EscalationStatus, string> = {
 
 export function escalationStatusLabel(status: EscalationStatus): string {
   return ESCALATION_STATUS_LABELS[status] ?? status;
+}
+
+// Agentes v2.7 — Operational Follow-up & Coordinated Workflows.
+export const FOLLOW_UP_STATUS_LABELS: Record<FollowUpStatus, string> = {
+  open: "Aberto",
+  in_progress: "Em andamento",
+  waiting: "Aguardando",
+  completed: "Concluído",
+  dismissed: "Descartado",
+};
+
+export function followUpStatusLabel(status: FollowUpStatus): string {
+  return FOLLOW_UP_STATUS_LABELS[status] ?? status;
+}
+
+export const FOLLOW_UP_PRIORITY_LABELS: Record<FollowUpPriority, string> = {
+  low: "Baixa",
+  medium: "Média",
+  high: "Alta",
+  critical: "Crítica",
+};
+
+export function followUpPriorityLabel(priority: FollowUpPriority): string {
+  return FOLLOW_UP_PRIORITY_LABELS[priority] ?? priority;
+}
+
+export const FOLLOW_UP_SOURCE_TYPE_LABELS: Record<FollowUpSourceType, string> = {
+  escalation: "Escalation",
+  responsibility: "Responsibility",
+};
+
+export function followUpSourceTypeLabel(sourceType: FollowUpSourceType): string {
+  return FOLLOW_UP_SOURCE_TYPE_LABELS[sourceType] ?? sourceType;
 }
 
 export function formatAgeSeconds(ageSeconds: number): string {

@@ -6,6 +6,9 @@ import type { OperationalIncident } from '../operations/health-types.js';
 import { resolvePrimaryResponsibility } from '../responsibilities/ownership.js';
 import type { ResponsibilityRow } from '../responsibilities/service.js';
 
+import { audit } from '../../services/audit.js';
+import { createOrReopenFollowUpFromEscalation } from '../followups/service.js';
+
 import { createOrReopenEscalation } from './service.js';
 import type { EscalationRow } from './service.js';
 import type { EscalationSeverity } from './types.js';
@@ -137,6 +140,31 @@ export async function escalateSupervisorFinding(incident: OperationalIncident): 
     dedupKey,
     metadata: { incidentType: incident.type, incidentId: incident.id },
   });
+
+  // Agentes v2.7 (correio.md seção 7) — "ao criar/reabrir uma
+  // OperationalEscalation aplicável, avaliar a criação/reabertura de um
+  // FollowUp." Só quando a escalation É de fato nova/reaberta (nunca no
+  // no-op de uma escalation já ativa — evita reprocessamento redundante
+  // do FollowUp para a mesma condição). SEMPRE best-effort e com seu
+  // próprio try/catch — uma falha aqui nunca deve derrubar o fluxo de
+  // Escalation já testado e estável da v2.6 (mesmo racional do
+  // try/catch em supervisor-service.ts para a própria criação da
+  // escalation).
+  if (created || reopened) {
+    try {
+      await createOrReopenFollowUpFromEscalation({ escalation, responsibility });
+    } catch (error) {
+      await audit({
+        userId: null,
+        actorType: 'system',
+        actorId: null,
+        action: 'agents.followup.creation_failed',
+        entityType: 'agent_operational_escalation',
+        entityId: String(escalation.id),
+        metadata: { message: error instanceof Error ? error.message : 'Falha desconhecida ao criar FollowUp.' },
+      });
+    }
+  }
 
   return { escalation, responsibility, created, reopened };
 }

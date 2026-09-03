@@ -4,7 +4,7 @@ import { after, before, describe, test } from 'node:test';
 import { eq } from 'drizzle-orm';
 
 import { db } from '../../db/index.js';
-import { agentDirectorGoals, agentDirectorInitiatives, agentOperationalEscalations, agentResponsibilities, agents, auditLogs, users } from '../../db/schema/index.js';
+import { agentDirectorGoals, agentDirectorInitiatives, agentOperationalEscalations, agentOperationalFollowUps, agentResponsibilities, agents, auditLogs, users } from '../../db/schema/index.js';
 import { database } from '../../services/database.js';
 import { redis } from '../../services/redis.js';
 import type { OperationalIncident } from '../operations/health-types.js';
@@ -46,7 +46,10 @@ describe('Agentes v2.6 - integração Supervisor/Escalation', () => {
   });
 
   after(async () => {
-    for (const id of escalationIds) await db.delete(agentOperationalEscalations).where(eq(agentOperationalEscalations.id, id));
+    for (const id of escalationIds) {
+      await db.delete(agentOperationalFollowUps).where(eq(agentOperationalFollowUps.escalationId, id));
+      await db.delete(agentOperationalEscalations).where(eq(agentOperationalEscalations.id, id));
+    }
     for (const id of responsibilityIds) await db.delete(agentResponsibilities).where(eq(agentResponsibilities.id, id));
     for (const id of initiativeIds) await db.delete(agentDirectorInitiatives).where(eq(agentDirectorInitiatives.id, id));
     for (const id of goalIds) await db.delete(agentDirectorGoals).where(eq(agentDirectorGoals.id, id));
@@ -102,6 +105,24 @@ describe('Agentes v2.6 - integração Supervisor/Escalation', () => {
     assert.equal(outcome!.escalation.targetAgentId, directorAgentId);
     assert.equal(outcome!.responsibility.id, responsibility!.id);
     assert.equal(outcome!.created, true);
+  });
+
+  test('v2.7/22: escalation criada de verdade também gera um FollowUp automático (integração v2.7, seção 7)', async () => {
+    const initiative = await insertInitiative(`fu-${runId}`);
+    const [responsibility] = await db
+      .insert(agentResponsibilities)
+      .values({ agentId: salesAgentId, name: `Escala p/ FollowUp ${runId}`, domain: `fu-${runId}`, responsibilityType: 'monitor', priority: 'critical', escalationPolicy: 'agent', escalationTargetAgentId: directorAgentId, createdBy: ceoUserId })
+      .returning();
+    responsibilityIds.push(responsibility!.id);
+
+    const outcome = await escalateSupervisorFinding(incidentFor(initiative.id));
+    assert.ok(outcome);
+    escalationIds.push(outcome!.escalation.id);
+
+    const [followUp] = await db.select().from(agentOperationalFollowUps).where(eq(agentOperationalFollowUps.escalationId, outcome!.escalation.id));
+    assert.ok(followUp, 'a escalation recém-criada deveria ter gerado um FollowUp automático (v2.7)');
+    assert.equal(followUp!.ownerAgentId, responsibility!.agentId);
+    assert.equal(followUp!.status, 'open');
   });
 
   test('23: finding SEM Responsibility correspondente nunca inventa ownership (retorna null, nenhuma linha criada)', async () => {

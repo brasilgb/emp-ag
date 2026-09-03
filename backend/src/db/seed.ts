@@ -418,6 +418,16 @@ const defaultPermissions = [
     slug: 'agents.escalations.manage',
     description: 'Permite reconhecer/resolver/descartar Operational Escalations (Agentes v2.6). Leitura segue em agents.escalations.read.',
   },
+  {
+    name: 'Visualizar follow-ups operacionais',
+    slug: 'agents.followups.read',
+    description: 'Permite consultar Operational FollowUps — acompanhamento estruturado até conclusão (Agentes v2.7).',
+  },
+  {
+    name: 'Gerenciar follow-ups operacionais',
+    slug: 'agents.followups.manage',
+    description: 'Permite criar, transicionar e reatribuir Operational FollowUps (Agentes v2.7). Leitura segue em agents.followups.read.',
+  },
 
   {
     name: 'Visualizar usuários',

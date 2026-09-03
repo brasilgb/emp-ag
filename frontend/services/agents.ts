@@ -34,9 +34,12 @@ import type {
   EventStatus,
   ExecutionStatus,
   ExecutiveReview,
+  FollowUpPriority,
+  FollowUpStatus,
   MemoryStatus,
   MemoryType,
   OperationalEscalation,
+  OperationalFollowUp,
   OperationalHealth,
   OperationalIncident,
   OperationalSupervisionReport,
@@ -802,4 +805,63 @@ export function resolveEscalation(id: number): Promise<{ data: OperationalEscala
 
 export function dismissEscalation(id: number, reason: string): Promise<{ data: OperationalEscalation }> {
   return apiFetch(`/api/agents/escalations/${id}/dismiss`, { method: "POST", body: JSON.stringify({ reason }) });
+}
+
+// Agentes v2.7 — Operational Follow-up & Coordinated Workflows (correio.md).
+export interface ListFollowUpsParams {
+  page?: number;
+  limit?: number;
+  status?: FollowUpStatus;
+  priority?: FollowUpPriority;
+  ownerAgentId?: number;
+  assignedUserId?: number;
+  responsibilityId?: number;
+  escalationId?: number;
+  overdue?: boolean;
+}
+
+export function listFollowUps(params: ListFollowUpsParams = {}): Promise<Paginated<OperationalFollowUp>> {
+  return apiFetch(`/api/agents/follow-ups${toQueryString({ ...params })}`);
+}
+
+export function getFollowUp(id: number): Promise<{ data: OperationalFollowUp }> {
+  return apiFetch(`/api/agents/follow-ups/${id}`);
+}
+
+export interface CreateManualFollowUpInput {
+  responsibilityId: number;
+  title: string;
+  description?: string;
+  priority?: FollowUpPriority;
+  assignedUserId?: number;
+  dueAt?: string;
+  nextReviewAt?: string;
+}
+
+export function createManualFollowUp(input: CreateManualFollowUpInput): Promise<{ data: OperationalFollowUp }> {
+  return apiFetch(`/api/agents/follow-ups`, { method: "POST", body: JSON.stringify(input) });
+}
+
+export function startFollowUp(id: number): Promise<{ data: OperationalFollowUp }> {
+  return apiFetch(`/api/agents/follow-ups/${id}/start`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function waitFollowUp(id: number, waitingReason: string, waitingUntil?: string): Promise<{ data: OperationalFollowUp }> {
+  return apiFetch(`/api/agents/follow-ups/${id}/wait`, { method: "POST", body: JSON.stringify({ waitingReason, waitingUntil }) });
+}
+
+export function resumeFollowUp(id: number): Promise<{ data: OperationalFollowUp }> {
+  return apiFetch(`/api/agents/follow-ups/${id}/resume`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function completeFollowUp(id: number, resolution: string): Promise<{ data: OperationalFollowUp }> {
+  return apiFetch(`/api/agents/follow-ups/${id}/complete`, { method: "POST", body: JSON.stringify({ resolution }) });
+}
+
+export function dismissFollowUp(id: number, reason: string): Promise<{ data: OperationalFollowUp }> {
+  return apiFetch(`/api/agents/follow-ups/${id}/dismiss`, { method: "POST", body: JSON.stringify({ reason }) });
+}
+
+export function reassignFollowUp(id: number, assignedUserId: number | null): Promise<{ data: OperationalFollowUp }> {
+  return apiFetch(`/api/agents/follow-ups/${id}/reassign`, { method: "POST", body: JSON.stringify({ assignedUserId }) });
 }

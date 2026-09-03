@@ -14,6 +14,7 @@ import {
   escalationSeverityLabel,
   escalationStatusLabel,
   eventDeliveryStatusLabel,
+  followUpStatusLabel,
   eventStatusLabel,
   executionStatusLabel,
   goalHealthLabel,
@@ -51,6 +52,7 @@ import type {
   EscalationStatus,
   EventDeliveryStatus,
   EventStatus,
+  FollowUpStatus,
   ExecutionStatus,
   GoalHealth,
   GoalStatus,
@@ -630,6 +632,23 @@ export function EscalationSeverityBadge({ severity }: { severity: EscalationSeve
   return (
     <Badge variant="secondary" className={cn("border-transparent", ESCALATION_SEVERITY_STYLES[severity])}>
       {escalationSeverityLabel(severity)}
+    </Badge>
+  );
+}
+
+// Agentes v2.7 — Operational Follow-up & Coordinated Workflows.
+const FOLLOW_UP_STATUS_STYLES: Record<FollowUpStatus, string> = {
+  open: "bg-muted text-muted-foreground",
+  in_progress: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  waiting: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  completed: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  dismissed: "bg-muted text-muted-foreground line-through",
+};
+
+export function FollowUpStatusBadge({ status }: { status: FollowUpStatus }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", FOLLOW_UP_STATUS_STYLES[status])}>
+      {followUpStatusLabel(status)}
     </Badge>
   );
 }

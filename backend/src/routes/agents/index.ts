@@ -28,6 +28,7 @@ import { directorMemoriesRoutes } from './director-memories.js';
 import { recoveryRoutes } from './recovery.js';
 import { responsibilitiesRoutes } from './responsibilities.js';
 import { escalationsRoutes } from './escalations.js';
+import { followUpsRoutes } from './follow-ups.js';
 
 export async function agentsModuleRoutes(app: FastifyInstance) {
   registerAllTools();
@@ -58,4 +59,5 @@ export async function agentsModuleRoutes(app: FastifyInstance) {
   await app.register(recoveryRoutes);
   await app.register(responsibilitiesRoutes);
   await app.register(escalationsRoutes);
+  await app.register(followUpsRoutes);
 }

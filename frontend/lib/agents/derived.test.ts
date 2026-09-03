@@ -16,6 +16,9 @@ import {
   escalationSeverityLabel,
   escalationStatusLabel,
   executionStatusLabel,
+  followUpPriorityLabel,
+  followUpSourceTypeLabel,
+  followUpStatusLabel,
   formatChatResponse,
   goalHealthLabel,
   goalPriorityLabel,
@@ -519,5 +522,47 @@ describe("escalationStatusLabel", () => {
   test("valor desconhecido faz fallback para o próprio valor", () => {
     // @ts-expect-error — testando o fallback de valor não mapeado.
     assert.equal(escalationStatusLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+// Agentes v2.7 — Operational Follow-up & Coordinated Workflows.
+describe("followUpStatusLabel", () => {
+  test("todo status conhecido tem rótulo em pt-BR", () => {
+    assert.equal(followUpStatusLabel("open"), "Aberto");
+    assert.equal(followUpStatusLabel("in_progress"), "Em andamento");
+    assert.equal(followUpStatusLabel("waiting"), "Aguardando");
+    assert.equal(followUpStatusLabel("completed"), "Concluído");
+    assert.equal(followUpStatusLabel("dismissed"), "Descartado");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(followUpStatusLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+describe("followUpPriorityLabel", () => {
+  test("toda prioridade conhecida tem rótulo em pt-BR", () => {
+    assert.equal(followUpPriorityLabel("low"), "Baixa");
+    assert.equal(followUpPriorityLabel("medium"), "Média");
+    assert.equal(followUpPriorityLabel("high"), "Alta");
+    assert.equal(followUpPriorityLabel("critical"), "Crítica");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(followUpPriorityLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+describe("followUpSourceTypeLabel", () => {
+  test("toda origem conhecida tem rótulo em pt-BR", () => {
+    assert.equal(followUpSourceTypeLabel("escalation"), "Escalation");
+    assert.equal(followUpSourceTypeLabel("responsibility"), "Responsibility");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(followUpSourceTypeLabel("nunca_existiu"), "nunca_existiu");
   });
 });
