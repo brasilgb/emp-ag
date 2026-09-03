@@ -23,6 +23,7 @@ import {
 import { database } from '../../services/database.js';
 import { redis } from '../../services/redis.js';
 import { AgentError } from '../errors.js';
+import { approvePlanItem, rejectPlanItem } from '../executor/plan-approvals.js';
 import { setLLMProviderOverrideForTests } from '../llm/factory.js';
 import type { LLMProvider, LLMResponse } from '../llm/types.js';
 import { registerAllTools } from '../tools/index.js';
@@ -61,6 +62,57 @@ function pipelineSummaryPlan() {
         tool: 'sales.get_pipeline_summary',
         arguments: {},
         reason: 'Acompanhar o FollowUp operacional.',
+        confidence: 0.9,
+      },
+    ],
+  });
+}
+
+// v2.9 (correio.md "TESTES MÍNIMOS" #2) — `sales.prepare_lead_followup`
+// com um `leadId` inexistente lança `AgentError('validation_error', ...)`
+// de verdade (agents/tools/sales.ts) — o item falha na execução real, sem
+// precisar de nenhum mock de falha artificial.
+function failingPlan() {
+  return mockProvider({
+    objective: 'Preparar follow-up de lead inexistente',
+    summary: 'Deveria falhar na execução.',
+    actions: [
+      {
+        id: 'action-1',
+        agent: 'sales',
+        tool: 'sales.prepare_lead_followup',
+        arguments: { leadId: 999999999 },
+        reason: 'Forçar falha real de execução.',
+        confidence: 0.9,
+      },
+    ],
+  });
+}
+
+// v2.9 (correio.md "TESTES MÍNIMOS" #3) — duas ações independentes (sem
+// dependência entre si): uma completa de verdade, a outra falha de
+// verdade (mesmo tool/leadId inexistente de `failingPlan`) — produz um
+// Action Plan `partial` real (`finalizePlanStatus`: `anyFailed &&
+// anyCompleted`), não simulado.
+function mixedOutcomePlan() {
+  return mockProvider({
+    objective: 'Uma ação completa, outra falha',
+    summary: 'Deveria resultar em Action Plan partial.',
+    actions: [
+      {
+        id: 'action-1',
+        agent: 'sales',
+        tool: 'sales.get_pipeline_summary',
+        arguments: {},
+        reason: 'Ação que deveria completar.',
+        confidence: 0.9,
+      },
+      {
+        id: 'action-2',
+        agent: 'sales',
+        tool: 'sales.prepare_lead_followup',
+        arguments: { leadId: 999999999 },
+        reason: 'Ação que deveria falhar.',
         confidence: 0.9,
       },
     ],
@@ -502,6 +554,216 @@ describe('Agentes v2.8 - OperationalActionProposal service', () => {
       const { ACTION_PROPOSAL_TRANSITIONS } = await import('./action-proposals-types.js');
       assert.ok(!ACTION_PROPOSAL_TRANSITIONS.planned.includes('cancelled'));
       assert.deepEqual([...ACTION_PROPOSAL_TRANSITIONS.planned].sort(), ['completed', 'failed']);
+    });
+  });
+
+  /*
+   * v2.9 (correio.md "BLOQUEIO 1") — a sincronização deixou de ser
+   * chamada explicitamente em cada chamador de `executeActionPlan`
+   * (`submitActionProposal` aqui, e `approvePlanItem`/`rejectPlanItem` em
+   * `executor/plan-approvals.ts`) e passou a ser disparada de dentro do
+   * próprio `executeActionPlan` (agents/executor/action-plan-executor.ts),
+   * o único ponto do sistema que grava `agent_action_plans.status`. Estes
+   * testes provam essa centralização de ponta a ponta — inclusive pelo
+   * caminho da resolução de Approval, que esta suíte não testava
+   * diretamente antes (só via HTTP em `action-plans.test.ts`, sem checar
+   * a Proposal).
+   */
+  describe('v2.9 — BLOQUEIO 1: sincronização centralizada em executeActionPlan', () => {
+    before(() => {
+      process.env.AGENT_LLM_ENABLED = 'true';
+      process.env.AGENT_LLM_SHADOW_MODE = 'false';
+    });
+
+    test('Proposal acompanha Action Plan "failed" real (execução de tool falhou de verdade)', async () => {
+      setLLMProviderOverrideForTests(failingPlan());
+      const followUp = await getFollowUpRow();
+      const proposal = await createActionProposal(followUp, { title: `Plan failed ${runId}`, objective: 'Deve falhar de verdade.' }, ceoUserId);
+      createdProposalIds.push(proposal.id);
+
+      const submitted = await submitActionProposal(proposal, ceoUserId);
+      assert.ok(submitted.actionPlanId);
+      createdPlanIds.push(submitted.actionPlanId!);
+
+      const [plan] = await db.select().from(agentActionPlans).where(eq(agentActionPlans.id, submitted.actionPlanId!));
+      assert.equal(plan!.status, 'failed', 'setup: o Action Plan real deveria ter falhado (tool lançou validation_error)');
+
+      assert.equal(submitted.status, 'failed', 'a Proposal deveria refletir o Action Plan failed — sincronizado de dentro de executeActionPlan');
+      assert.ok(submitted.failureReason?.includes('failed'));
+    });
+
+    test('13 (correio.md "TESTES MÍNIMOS"): falha da Proposal nunca altera o FollowUp automaticamente', async () => {
+      setLLMProviderOverrideForTests(failingPlan());
+      const followUp = await getFollowUpRow();
+      const proposal = await createActionProposal(followUp, { title: `Falha não toca FollowUp ${runId}`, objective: 'Deve falhar de verdade.' }, ceoUserId);
+      createdProposalIds.push(proposal.id);
+
+      const submitted = await submitActionProposal(proposal, ceoUserId);
+      assert.ok(submitted.actionPlanId);
+      createdPlanIds.push(submitted.actionPlanId!);
+      assert.equal(submitted.status, 'failed', 'setup: a Proposal deveria ter falhado de verdade');
+
+      const [reloadedFollowUp] = await db.select().from(agentOperationalFollowUps).where(eq(agentOperationalFollowUps.id, followUpId));
+      assert.equal(reloadedFollowUp!.status, 'open', 'uma Proposal failed NUNCA altera o status do FollowUp — mesma regra já vigente para completed (seção 13/v2.8), agora também provada para failed');
+    });
+
+    test('comportamento documentado para Action Plan "partial": Proposal vira "failed" (mapeamento seção PLAN_STATUS_TO_PROPOSAL_STATUS)', async () => {
+      setLLMProviderOverrideForTests(mixedOutcomePlan());
+      const followUp = await getFollowUpRow();
+      const proposal = await createActionProposal(followUp, { title: `Plan partial ${runId}`, objective: 'Uma ação completa, outra falha.' }, ceoUserId);
+      createdProposalIds.push(proposal.id);
+
+      const submitted = await submitActionProposal(proposal, ceoUserId);
+      assert.ok(submitted.actionPlanId);
+      createdPlanIds.push(submitted.actionPlanId!);
+
+      const [plan] = await db.select().from(agentActionPlans).where(eq(agentActionPlans.id, submitted.actionPlanId!));
+      assert.equal(plan!.status, 'partial', 'setup: uma ação completou e a outra falhou de verdade — o Action Plan deveria ser partial');
+
+      // `partial` não é `completed`/`failed`/`cancelled` no vocabulário
+      // real da Proposal (action-proposals-types.ts) — mapeado
+      // deliberadamente para `failed` (nem toda ação planejada foi
+      // executada), decisão já documentada em
+      // PLAN_STATUS_TO_PROPOSAL_STATUS.
+      assert.equal(submitted.status, 'failed', '"partial" é mapeado para "failed" do ponto de vista da Proposal — nunca um estado novo inventado');
+    });
+
+    test('resolução de Approval (approve) atualiza corretamente o lifecycle final da Proposal — sem nenhuma chamada explícita a syncActionProposalStatus em plan-approvals.ts', async () => {
+      const [salesTool] = await db.select().from(agentTools).where(eq(agentTools.handler, 'sales.get_pipeline_summary')).limit(1);
+      const [toolPermission] = await db
+        .select()
+        .from(agentToolPermissions)
+        .where(and(eq(agentToolPermissions.agentId, salesAgentId), eq(agentToolPermissions.toolId, salesTool!.id)));
+      await db.update(agentToolPermissions).set({ requiresApprovalOverride: true }).where(eq(agentToolPermissions.id, toolPermission!.id));
+
+      try {
+        setLLMProviderOverrideForTests(pipelineSummaryPlan());
+        const followUp = await getFollowUpRow();
+        const proposal = await createActionProposal(followUp, { title: `Approval resolve ${runId}`, objective: 'Verificar pipeline (exige aprovação).' }, ceoUserId);
+        createdProposalIds.push(proposal.id);
+
+        const submitted = await submitActionProposal(proposal, ceoUserId);
+        assert.ok(submitted.actionPlanId);
+        createdPlanIds.push(submitted.actionPlanId!);
+        assert.equal(submitted.status, 'planned', 'setup: ainda aguardando aprovação — não terminal');
+
+        const { agentActionPlanItems } = await import('../../db/schema/index.js');
+        const [item] = await db.select().from(agentActionPlanItems).where(eq(agentActionPlanItems.planId, submitted.actionPlanId!));
+        const [approval] = await db.select().from(agentApprovals).where(eq(agentApprovals.planItemId, item!.id));
+        assert.ok(approval);
+
+        // Chama approvePlanItem diretamente (mesma função usada por
+        // POST /agents/approvals/:id/approve) — nenhuma chamada a
+        // syncActionProposalStatus é feita explicitamente aqui nem em
+        // plan-approvals.ts; se a Proposal atualizar mesmo assim, é
+        // porque executeActionPlan (chamado de dentro de approvePlanItem)
+        // sincronizou sozinho.
+        const outcome = await approvePlanItem(approval!.id, ceoUserId);
+        assert.ok(outcome.ok);
+
+        const [afterApproval] = await db.select().from(agentOperationalActionProposals).where(eq(agentOperationalActionProposals.id, proposal.id));
+        assert.equal(afterApproval!.status, 'completed', 'a resolução de Approval deveria ter levado a Proposal a completed, via sincronização automática');
+        assert.ok(afterApproval!.completedAt);
+      } finally {
+        await db.update(agentToolPermissions).set({ requiresApprovalOverride: false }).where(eq(agentToolPermissions.id, toolPermission!.id));
+      }
+    });
+
+    test('resolução de Approval (reject) também atualiza a Proposal automaticamente', async () => {
+      const [salesTool] = await db.select().from(agentTools).where(eq(agentTools.handler, 'sales.get_pipeline_summary')).limit(1);
+      const [toolPermission] = await db
+        .select()
+        .from(agentToolPermissions)
+        .where(and(eq(agentToolPermissions.agentId, salesAgentId), eq(agentToolPermissions.toolId, salesTool!.id)));
+      await db.update(agentToolPermissions).set({ requiresApprovalOverride: true }).where(eq(agentToolPermissions.id, toolPermission!.id));
+
+      try {
+        setLLMProviderOverrideForTests(pipelineSummaryPlan());
+        const followUp = await getFollowUpRow();
+        const proposal = await createActionProposal(followUp, { title: `Approval reject ${runId}`, objective: 'Verificar pipeline (exige aprovação).' }, ceoUserId);
+        createdProposalIds.push(proposal.id);
+
+        const submitted = await submitActionProposal(proposal, ceoUserId);
+        assert.ok(submitted.actionPlanId);
+        createdPlanIds.push(submitted.actionPlanId!);
+        assert.equal(submitted.status, 'planned');
+
+        const { agentActionPlanItems } = await import('../../db/schema/index.js');
+        const [item] = await db.select().from(agentActionPlanItems).where(eq(agentActionPlanItems.planId, submitted.actionPlanId!));
+        const [approval] = await db.select().from(agentApprovals).where(eq(agentApprovals.planItemId, item!.id));
+        assert.ok(approval);
+
+        const outcome = await rejectPlanItem(approval!.id, ceoUserId, 'rejeitado no teste');
+        assert.ok(outcome.ok);
+
+        const [rejectedPlan] = await db.select().from(agentActionPlans).where(eq(agentActionPlans.id, submitted.actionPlanId!));
+        // `finalizePlanStatus` (action-plan-executor.ts, comportamento
+        // pré-existente desde v1.2, já testado em
+        // `action-plan-executor.test.ts`: "item com decision=blocked
+        // nunca executa") trata `rejected` no mesmo grupo de
+        // `blocked`/`skipped` — nenhum deles conta em `anyFailed`, então
+        // um plano cujo único item foi rejeitado/bloqueado finaliza como
+        // `completed` (nada rodou, mas o plano terminou seu ciclo sem
+        // erro de execução), NUNCA `failed`. Não é uma regressão desta
+        // rodada — é o comportamento real já vigente, aqui só confirmado
+        // e propagado corretamente para a Proposal.
+        assert.equal(rejectedPlan!.status, 'completed', 'setup: comportamento pré-existente de finalizePlanStatus — item rejeitado sozinho finaliza o plano como completed, nunca failed');
+
+        const [afterReject] = await db.select().from(agentOperationalActionProposals).where(eq(agentOperationalActionProposals.id, proposal.id));
+        assert.equal(afterReject!.status, 'completed', 'a Proposal deveria refletir fielmente o Action Plan real (completed), sincronizado automaticamente — mesmo resultado sendo contraintuitivo, não é este bloqueio que deve reinterpretar o vocabulário existente');
+      } finally {
+        await db.update(agentToolPermissions).set({ requiresApprovalOverride: false }).where(eq(agentToolPermissions.id, toolPermission!.id));
+      }
+    });
+
+    test('sincronização repetida é idempotente — chamar syncActionProposalStatus várias vezes sobre uma Proposal já terminal não muda nada nem duplica audit', async () => {
+      setLLMProviderOverrideForTests(pipelineSummaryPlan());
+      const followUp = await getFollowUpRow();
+      const proposal = await createActionProposal(followUp, { title: `Idempotência ${runId}`, objective: 'Verificar pipeline.' }, ceoUserId);
+      createdProposalIds.push(proposal.id);
+
+      const submitted = await submitActionProposal(proposal, ceoUserId);
+      assert.ok(submitted.actionPlanId);
+      createdPlanIds.push(submitted.actionPlanId!);
+      assert.equal(submitted.status, 'completed');
+
+      const completedLogsBefore = await db
+        .select()
+        .from(auditLogs)
+        .where(and(eq(auditLogs.action, 'agents.operational_action.completed'), eq(auditLogs.entityId, String(proposal.id))));
+      assert.equal(completedLogsBefore.length, 1, 'setup: exatamente 1 audit de completed até aqui (o disparado de dentro de executeActionPlan)');
+
+      // Chama diretamente mais 3 vezes seguidas — simula o mesmo Action
+      // Plan sendo "recalculado" de novo por qualquer caminho futuro.
+      for (let i = 0; i < 3; i += 1) {
+        const result = await syncActionProposalStatus(submitted.actionPlanId!, ceoUserId);
+        assert.equal(result!.status, 'completed');
+      }
+
+      const [reloaded] = await db.select().from(agentOperationalActionProposals).where(eq(agentOperationalActionProposals.id, proposal.id));
+      assert.equal(reloaded!.status, 'completed');
+
+      const completedLogsAfter = await db
+        .select()
+        .from(auditLogs)
+        .where(and(eq(auditLogs.action, 'agents.operational_action.completed'), eq(auditLogs.entityId, String(proposal.id))));
+      assert.equal(completedLogsAfter.length, 1, 'chamadas repetidas sobre uma Proposal já terminal não devem gerar novo audit nem mudar nada — idempotente');
+    });
+
+    test('Action Plan sem Proposal (criado diretamente) continua funcionando normalmente — sincronização automática é no-op seguro', async () => {
+      setLLMProviderOverrideForTests(pipelineSummaryPlan());
+      const { planEvaluateAndPersistActionPlan } = await import('../orchestration/create-action-plan.js');
+      const { executeActionPlan } = await import('../executor/action-plan-executor.js');
+
+      const created = await planEvaluateAndPersistActionPlan({ requestedBy: ceoUserId, objective: 'Plano direto, sem Proposal nenhuma.' });
+      assert.ok(created.ok);
+      createdPlanIds.push(created.plan.id);
+
+      // Não deveria lançar nem se comportar diferente por não ter
+      // nenhuma Proposal apontando para este plano — syncActionProposalStatus
+      // interno faz um SELECT que não encontra nada e retorna.
+      const finalPlan = await executeActionPlan(created.plan.id, ceoUserId);
+      assert.equal(finalPlan.status, 'completed');
     });
   });
 });

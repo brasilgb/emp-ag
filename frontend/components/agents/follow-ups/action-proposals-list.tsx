@@ -10,11 +10,13 @@ import { PermissionGate } from "@/components/auth/permission-gate";
 import { EmptyState } from "@/components/states/empty-state";
 import { ErrorState } from "@/components/states/error-state";
 import { LoadingState } from "@/components/states/loading-state";
+import { useActionPlan } from "@/hooks/agents/use-action-plans";
 import { useActionProposals, useSubmitActionProposal } from "@/hooks/agents/use-action-proposals";
+import { useAuth } from "@/lib/auth/use-auth";
 import { toErrorMessage } from "@/services/http";
-import type { FollowUpStatus } from "@/types/agents";
+import type { ActionPlanItemStatus, ActionProposalStatus, FollowUpStatus } from "@/types/agents";
 
-import { ActionProposalStatusBadge } from "../status-badge";
+import { ActionPlanItemStatusBadge, ActionProposalStatusBadge } from "../status-badge";
 import { CancelActionProposalDialog } from "./cancel-action-proposal-dialog";
 import { CreateActionProposalDialog } from "./create-action-proposal-dialog";
 
@@ -81,6 +83,8 @@ export function ActionProposalsList({ followUpId, followUpStatus }: { followUpId
 
               {proposal.failureReason ? <p className="mt-2 text-xs text-red-700 dark:text-red-400">{proposal.failureReason}</p> : null}
 
+              {proposal.actionPlanId ? <ActionPlanEvidence actionPlanId={proposal.actionPlanId} proposalStatus={proposal.status} /> : null}
+
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 {proposal.actionPlanId ? (
                   <Link href={`/agents/plans/${proposal.actionPlanId}`} className="text-xs font-medium text-primary underline-offset-2 hover:underline">
@@ -117,5 +121,73 @@ export function ActionProposalsList({ followUpId, followUpStatus }: { followUpId
         <CancelActionProposalDialog followUpId={followUpId} proposalId={cancelTarget} open onOpenChange={(open) => !open && setCancelTarget(null)} />
       ) : null}
     </Card>
+  );
+}
+
+const EVIDENCE_BUCKETS: { label: string; statuses: ActionPlanItemStatus[] }[] = [
+  { label: "Executaram", statuses: ["completed"] },
+  { label: "Bloqueadas", statuses: ["blocked"] },
+  { label: "Exigiram aprovação", statuses: ["waiting_approval", "approved", "rejected"] },
+  { label: "Falharam", statuses: ["failed", "rejected"] },
+];
+
+/**
+ * Agentes v2.9 (correio.md "BLOQUEIO 2") — evidência real do Action Plan
+ * direto na página do FollowUp: quantos itens executaram, foram
+ * bloqueados, exigiram Approval, ou falharam. Vem 100% de
+ * `GET /agents/action-plans/:id` (já existente, mesma estrutura que a
+ * página de Action Plan usa) — nenhum resultado novo é duplicado em JSON
+ * próprio. Só busca quando o usuário tem `agents.plan.read` — sem essa
+ * permission, some silenciosamente (mesmo padrão de `PermissionGate`),
+ * nunca gera um ErrorState ruidoso por uma permission que boa parte dos
+ * operadores de FollowUp não precisa ter.
+ *
+ * Regra fundamental (correio.md): esta evidência é só leitura/contexto —
+ * nunca conclui o FollowUp sozinha. "Ação executada" aqui é sempre
+ * seguida por uma nota de que a conclusão do FollowUp continua sendo uma
+ * decisão humana (ver `FollowUpDetail`/`ActionProposalsList` acima, que
+ * nunca chama `useCompleteFollowUp` automaticamente a partir disto).
+ */
+function ActionPlanEvidence({ actionPlanId, proposalStatus }: { actionPlanId: number; proposalStatus: ActionProposalStatus }) {
+  const { can } = useAuth();
+  const canRead = can("agents.plan.read");
+  const plan = useActionPlan(canRead ? actionPlanId : null);
+
+  if (!canRead || plan.isLoading || plan.isError || !plan.data) return null;
+
+  const items = plan.data.data.items;
+  const total = items.length;
+
+  return (
+    <div className="mt-2 rounded-md bg-muted/50 p-2">
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        {EVIDENCE_BUCKETS.map(({ label, statuses }) => {
+          const count = items.filter((item) => statuses.includes(item.executionStatus)).length;
+          if (count === 0) return null;
+          return (
+            <span key={label}>
+              {label}: <span className="font-medium text-foreground">{count}</span>/{total}
+            </span>
+          );
+        })}
+      </div>
+
+      <div className="mt-1 flex flex-wrap gap-1">
+        {items.map((item) => (
+          <ActionPlanItemStatusBadge key={item.id} status={item.executionStatus} />
+        ))}
+      </div>
+
+      {/* Regra fundamental do BLOQUEIO 2 — "Action Plan completed" NÃO
+      significa "FollowUp completed": deixa isso explícito para o
+      operador, nunca sugere que a conclusão já aconteceu sozinha. */}
+      {proposalStatus === "completed" ? (
+        <p className="mt-2 text-xs text-blue-700 dark:text-blue-400">Ação executada — aguardando resolução do acompanhamento.</p>
+      ) : proposalStatus === "failed" ? (
+        <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+          Ação não foi concluída com sucesso — decida se propõe outra ação, ajusta o acompanhamento, ou resolve com justificativa.
+        </p>
+      ) : null}
+    </div>
   );
 }

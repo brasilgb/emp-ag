@@ -8,13 +8,16 @@ import { executeActionPlan } from './action-plan-executor.js';
 // mecanismo já existente, sincroniza o Run do Job dono do plano, se
 // houver — no-op para planos sem Job (v1.2 continua idêntico).
 import { syncJobRunStatus } from '../jobs/job-runner.js';
-// Agentes v2.8 (correio.md seção 14): mesmo racional de syncJobRunStatus
-// acima — sincroniza a Operational Action Proposal dona do plano, se
-// houver (no-op para planos sem proposta). Necessário aqui porque uma
-// aprovação/rejeição tardia é o ponto onde um Action Plan que ficou
-// `waiting_approval` no momento do `submit` finalmente chega a um
-// estado terminal.
-import { syncActionProposalStatus } from '../followups/action-proposals-service.js';
+// Agentes v2.8 (correio.md seção 14) chamava `syncActionProposalStatus`
+// explicitamente aqui também — removido na v2.9 (correio.md "BLOQUEIO
+// 1"): `executeActionPlan`, logo abaixo, agora dispara essa sincronização
+// internamente, sempre que recalcula o status do Action Plan (ver
+// docblock de `finalizePlanStatus`/`executeActionPlan` em
+// `action-plan-executor.ts`) — inclusive para o caso que motivou este
+// arquivo a chamá-la (aprovação/rejeição tardia levando um Action Plan
+// `waiting_approval` a um estado terminal). Manter uma segunda chamada
+// aqui seria exatamente o "espalhar novos syncActionProposalStatus() por
+// vários serviços" que o correio.md pede para evitar.
 
 export type PlanApprovalDecisionOutcome =
   | { ok: true; planId: number; itemId: number; approvalId: number }
@@ -49,9 +52,11 @@ export async function approvePlanItem(
     metadata: { planItemId: cas.item.id, planId: cas.item.planId },
   });
 
+  // v2.9 — `executeActionPlan` já sincroniza a Operational Action
+  // Proposal dona deste plano internamente (ver import acima); não
+  // chamar `syncActionProposalStatus` de novo aqui.
   await executeActionPlan(cas.item.planId, approverUserId);
   await syncJobRunStatus(cas.item.planId, approverUserId);
-  await syncActionProposalStatus(cas.item.planId, approverUserId);
 
   return { ok: true, planId: cas.item.planId, itemId: cas.item.id, approvalId };
 }
@@ -80,9 +85,11 @@ export async function rejectPlanItem(
   // Recalcula o status agregado do plano (o item já ficou 'rejected' —
   // executeActionPlan também serve para só reagregar, sem rodar nada
   // novo, já que nenhum item está 'pending'/'approved' além deste).
+  // v2.9 — `executeActionPlan` já sincroniza a Operational Action
+  // Proposal dona deste plano internamente (ver import acima); não
+  // chamar `syncActionProposalStatus` de novo aqui.
   await executeActionPlan(cas.item.planId, approverUserId);
   await syncJobRunStatus(cas.item.planId, approverUserId);
-  await syncActionProposalStatus(cas.item.planId, approverUserId);
 
   return { ok: true, planId: cas.item.planId, itemId: cas.item.id, approvalId };
 }

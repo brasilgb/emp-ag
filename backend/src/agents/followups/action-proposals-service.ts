@@ -127,6 +127,20 @@ export async function listActionProposalsForFollowUp(params: ListActionProposals
  * Agent automaticamente. Mesmo padrão já usado por
  * `agents/jobs/job-runner.ts` (`requestedBy: job.createdBy`) e pela rota
  * direta `POST /agents/action-plans` (`requestedBy: userId`).
+ *
+ * Fechamento v2.9 (correio.md "BLOQUEIO 1") — `status='planned'` +
+ * `actionPlanId` agora são gravados ANTES de `executeActionPlan` rodar
+ * (não depois). Motivo: `executeActionPlan` (agents/executor/
+ * action-plan-executor.ts) passou a ser o ÚNICO ponto que sincroniza a
+ * Proposal a partir do Action Plan, disparando `syncActionProposalStatus`
+ * internamente sempre que recalcula `agent_action_plans.status`. Para
+ * esse gatilho conseguir encontrar esta proposta (a busca é por
+ * `actionPlanId`), o vínculo precisa já existir quando `executeActionPlan`
+ * roda — nunca mais é preciso (nem correto) chamar
+ * `syncActionProposalStatus` explicitamente aqui: a chamada a
+ * `executeActionPlan` abaixo já cobre isso, para submissão inicial E
+ * para toda resolução de Approval futura (a mesma função é reusada por
+ * `executor/plan-approvals.ts`).
  */
 export async function submitActionProposal(proposal: ActionProposalRow, submittedByUserId: number): Promise<ActionProposalRow> {
   const now = new Date();
@@ -181,16 +195,14 @@ export async function submitActionProposal(proposal: ActionProposalRow, submitte
       return await markActionProposalFailed(claimed, created.message, submittedByUserId, created.code);
     }
 
-    // Seção 11 — o Executor não sabe (e não precisa saber) que este
-    // Action Plan nasceu de um FollowUp; a origem é rastreada só do lado
-    // da proposta (`actionPlanId`), nunca ao contrário.
-    const finalPlan = await executeActionPlan(created.plan.id, submittedByUserId);
-
     // `planned` e `actionPlanId` são gravados juntos, no mesmo UPDATE —
     // nunca um sem o outro (garantia dupla: aqui e no CHECK do banco).
+    // v2.9: isso agora acontece ANTES de `executeActionPlan` (ver
+    // docblock acima) — o vínculo precisa existir para o gatilho de
+    // sincronização interno ao Executor conseguir encontrar esta linha.
     const [planned] = await db
       .update(agentOperationalActionProposals)
-      .set({ status: 'planned', actionPlanId: finalPlan.id, plannedAt: now, updatedAt: new Date() })
+      .set({ status: 'planned', actionPlanId: created.plan.id, plannedAt: now, updatedAt: new Date() })
       .where(eq(agentOperationalActionProposals.id, proposal.id))
       .returning();
 
@@ -201,14 +213,23 @@ export async function submitActionProposal(proposal: ActionProposalRow, submitte
       action: 'agents.operational_action.planned',
       entityType: 'agent_operational_action_proposal',
       entityId: String(proposal.id),
-      metadata: { followUpId: proposal.followUpId, actionPlanId: finalPlan.id },
+      metadata: { followUpId: proposal.followUpId, actionPlanId: created.plan.id },
     });
 
-    // Seção 14 — o Action Plan pode já ter chegado a um estado terminal
-    // dentro do próprio `executeActionPlan` acima (ex.: nenhum item
-    // exigia approval) — reflete isso imediatamente em vez de deixar a
-    // proposta presa em "planned" até a próxima sincronização.
-    return (await syncActionProposalStatus(finalPlan.id, submittedByUserId)) ?? planned!;
+    // Seção 11 — o Executor não sabe (e não precisa saber) que este
+    // Action Plan nasceu de um FollowUp; a origem é rastreada só do lado
+    // da proposta (`actionPlanId`), nunca ao contrário. Seção 14/v2.9 —
+    // `executeActionPlan` já sincroniza esta proposta internamente
+    // (agents/executor/action-plan-executor.ts) assim que recalcula o
+    // status do Action Plan — inclusive quando ele já chega a um estado
+    // terminal dentro desta mesma chamada (ex.: nenhum item exigia
+    // approval). Por isso, releio a proposta em vez de confiar no
+    // retorno de `executeActionPlan` (que é o Action Plan, não a
+    // Proposal) ou de chamar `syncActionProposalStatus` de novo aqui —
+    // faria exatamente o mesmo trabalho que o Executor já fez.
+    await executeActionPlan(created.plan.id, submittedByUserId);
+
+    return (await getActionProposalById(proposal.id)) ?? planned!;
   } catch (error) {
     // Nem `planEvaluateAndPersistActionPlan` nem `executeActionPlan`
     // lançam `AgentError` hoje — qualquer exceção aqui (Planner,

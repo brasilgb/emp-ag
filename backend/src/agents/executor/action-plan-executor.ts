@@ -6,6 +6,20 @@ import { audit } from '../../services/audit.js';
 import { getTool } from '../tool-registry.js';
 import type { ToolContext, ToolResult } from '../types.js';
 import type { AgentErrorCode } from '../errors.js';
+// Agentes v2.9 (correio.md "BLOQUEIO 1") — ver docblock de
+// `finalizePlanStatus()` mais abaixo: este é o ÚNICO ponto do sistema
+// inteiro que grava `agent_action_plans.status` (confirmado revisando
+// TODOS os `.update(agentActionPlans)` do código-fonte), então é o único
+// lugar onde dá para garantir, estruturalmente, que uma Operational
+// Action Proposal nunca fica desatualizada em relação ao Action Plan que
+// ela mesma gerou — não importa qual dos vários chamadores reais de
+// `executeActionPlan()` (submissão de Proposal, resolução de Approval,
+// Job Runner, Director Decisions/Initiatives, criação direta de Action
+// Plan) tenha disparado a execução. `syncActionProposalStatus` é um
+// no-op puro e barato quando o Action Plan não tem nenhuma Proposal
+// vinculada (a maioria dos chamadores) — só faz um SELECT que não
+// encontra linha.
+import { syncActionProposalStatus } from '../followups/action-proposals-service.js';
 
 type ActionPlanItemRow = typeof agentActionPlanItems.$inferSelect;
 type ActionPlanRow = typeof agentActionPlans.$inferSelect;
@@ -27,6 +41,10 @@ const RUNNABLE_STATUSES = new Set(['pending', 'approved']);
  * persistida em `decision` no momento da criação do plano
  * (routes/agents/action-plans.ts). Idempotente: reexecutar um plano pula
  * itens já `completed`/`failed`/`blocked`/`rejected`/`skipped`.
+ *
+ * v2.9 (correio.md "BLOQUEIO 1"): ao final, sincroniza a Operational
+ * Action Proposal dona deste plano, se houver — ver `syncActionProposalStatus`
+ * import acima e o comentário logo antes do `return`.
  */
 export async function executeActionPlan(planId: number, userId: number): Promise<ActionPlanRow> {
   const items = await db
@@ -97,7 +115,31 @@ export async function executeActionPlan(planId: number, userId: number): Promise
     }
   }
 
-  return finalizePlanStatus(planId);
+  const finalPlan = await finalizePlanStatus(planId);
+
+  // v2.9 — ponto único de sincronização (ver import acima): dispara
+  // depois que `agent_action_plans.status` já está persistido/final para
+  // esta chamada, nunca antes. `executeActionPlan()` continua retornando
+  // o Action Plan (nunca a Proposta) — o Executor não devolve nem
+  // depende do resultado da sincronização, só a dispara.
+  // `executeActionPlan` é chamado por Jobs/Director Decisions/
+  // Initiatives/criação direta de Action Plan — nenhum desses tem
+  // qualquer relação com Operational Action Proposals; uma falha de
+  // infraestrutura neste `await` nunca pode quebrar esses fluxos, que já
+  // persistiram corretamente o Action Plan. `catch` silencioso é seguro
+  // aqui porque não há nenhum estado a reverter: o pior caso é a mesma
+  // situação "presa em planned" que o próximo gatilho real (a próxima
+  // chamada a `executeActionPlan` para este plano, ex.: resolução de uma
+  // Approval) corrige normalmente.
+  try {
+    await syncActionProposalStatus(planId, userId);
+  } catch {
+    // Intencionalmente engolido — ver comentário acima. O Action Plan em
+    // si já está corretamente persistido nesta chamada e continua sendo
+    // a fonte de verdade para qualquer sincronização futura.
+  }
+
+  return finalPlan;
 }
 
 async function runItem(
@@ -192,6 +234,12 @@ async function failItem(
   return updated;
 }
 
+// v2.9 (correio.md "BLOQUEIO 1") — confirmado revisando todo o
+// código-fonte: este `db.update(agentActionPlans)` é o ÚNICO lugar do
+// sistema inteiro que grava `agent_action_plans.status`. É por isso que
+// `executeActionPlan()` dispara `syncActionProposalStatus` logo depois de
+// chamar esta função (nunca antes) — este é o ponto canônico onde o
+// status agregado do plano é persistido/recalculado.
 async function finalizePlanStatus(planId: number): Promise<ActionPlanRow> {
   const items = await db
     .select()
