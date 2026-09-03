@@ -39,6 +39,7 @@ import type {
   MemoryStatus,
   MemoryType,
   OperationalEscalation,
+  OperationalActionProposal,
   OperationalFollowUp,
   OperationalHealth,
   OperationalIncident,
@@ -864,4 +865,31 @@ export function dismissFollowUp(id: number, reason: string): Promise<{ data: Ope
 
 export function reassignFollowUp(id: number, assignedUserId: number | null): Promise<{ data: OperationalFollowUp }> {
   return apiFetch(`/api/agents/follow-ups/${id}/reassign`, { method: "POST", body: JSON.stringify({ assignedUserId }) });
+}
+
+// Agentes v2.8 — Operational Actions & Governed Resolution (correio.md).
+export function listActionProposals(followUpId: number, params: { page?: number; limit?: number } = {}): Promise<Paginated<OperationalActionProposal>> {
+  return apiFetch(`/api/agents/follow-ups/${followUpId}/action-proposals${toQueryString({ ...params })}`);
+}
+
+export function getActionProposal(id: number): Promise<{ data: OperationalActionProposal }> {
+  return apiFetch(`/api/agents/action-proposals/${id}`);
+}
+
+export interface CreateActionProposalInput {
+  title: string;
+  objective: string;
+  description?: string;
+}
+
+export function createActionProposal(followUpId: number, input: CreateActionProposalInput): Promise<{ data: OperationalActionProposal }> {
+  return apiFetch(`/api/agents/follow-ups/${followUpId}/action-proposals`, { method: "POST", body: JSON.stringify(input) });
+}
+
+export function submitActionProposal(id: number): Promise<{ data: OperationalActionProposal }> {
+  return apiFetch(`/api/agents/action-proposals/${id}/submit`, { method: "POST", body: JSON.stringify({}) });
+}
+
+export function cancelActionProposal(id: number, reason: string): Promise<{ data: OperationalActionProposal }> {
+  return apiFetch(`/api/agents/action-proposals/${id}/cancel`, { method: "POST", body: JSON.stringify({ reason }) });
 }

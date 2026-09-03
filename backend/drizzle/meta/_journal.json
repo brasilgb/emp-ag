@@ -141,6 +141,20 @@
       "when": 1788445764506,
       "tag": "0019_agent_operational_follow_ups",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1788448025758,
+      "tag": "0020_agent_operational_action_proposals",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1788452465846,
+      "tag": "0021_action_proposals_planned_requires_plan_check",
+      "breakpoints": true
     }
   ]
 }

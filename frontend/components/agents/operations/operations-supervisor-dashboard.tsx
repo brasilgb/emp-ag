@@ -140,6 +140,11 @@ function StatBox({ label, value, small, highlight }: { label: string; value: str
 }
 
 function IncidentsTable({ incidents, results }: { incidents: OperationalIncident[]; results: OperationalIncidentResult[] | null }) {
+  // Fechamento v2.8 (lint react-hooks/purity) — `Date.now()` nunca é
+  // chamado diretamente no corpo do render; `useState` com inicializador
+  // lazy roda uma única vez, na montagem, nunca durante um re-render.
+  const [now] = useState(() => Date.now());
+
   function resultFor(incident: OperationalIncident): OperationalIncidentResult | undefined {
     return results?.find((result) => result.incidentId === incident.id);
   }
@@ -171,7 +176,7 @@ function IncidentsTable({ incidents, results }: { incidents: OperationalIncident
                   {incident.entityType} #{incident.entityId}
                 </TableCell>
                 <TableCell className="max-w-80 text-xs text-muted-foreground">{incident.problem}</TableCell>
-                <TableCell className="text-xs">{formatAgeSeconds(Math.floor((Date.now() - new Date(incident.detectedAt).getTime()) / 1000))}</TableCell>
+                <TableCell className="text-xs">{formatAgeSeconds(Math.floor((now - new Date(incident.detectedAt).getTime()) / 1000))}</TableCell>
                 <TableCell>{result ? <OperationalResponseBadge response={result.response} /> : <span className="text-xs text-muted-foreground">--</span>}</TableCell>
                 <TableCell className="text-xs text-muted-foreground">{result?.outcome ?? "--"}</TableCell>
               </TableRow>

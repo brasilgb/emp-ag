@@ -190,7 +190,7 @@ export function ResponsibilitiesList() {
 
       <CreateResponsibilityDialog open={createOpen} onOpenChange={setCreateOpen} />
       {editTarget ? (
-        <EditResponsibilityDialog responsibility={editTarget} open onOpenChange={(open) => !open && setEditTarget(null)} />
+        <EditResponsibilityDialog key={editTarget.id} responsibility={editTarget} open onOpenChange={(open) => !open && setEditTarget(null)} />
       ) : null}
     </div>
   );

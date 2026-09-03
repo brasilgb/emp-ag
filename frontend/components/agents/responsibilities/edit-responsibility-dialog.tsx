@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -40,6 +40,13 @@ import {
  * (backend) aceita. `agentId`/`domain`/`responsibilityType`/`createdBy`/
  * timestamps são deliberadamente imutáveis aqui, mesmo protegidos pelo
  * schema Zod do backend (que nem aceita esses campos em PATCH).
+ *
+ * Fechamento v2.8 (lint react-hooks/set-state-in-effect) — o estado
+ * local é inicializado diretamente a partir de `responsibility` nos
+ * `useState`, sem nenhum `useEffect` de sincronização; o chamador
+ * (`ResponsibilitiesList`) passa `key={responsibility.id}` para forçar
+ * uma montagem nova sempre que o alvo de edição muda, o que já garante
+ * o estado sempre atualizado sem precisar de um efeito.
  */
 export function EditResponsibilityDialog({
   responsibility,
@@ -66,22 +73,6 @@ export function EditResponsibilityDialog({
   const [escalationTargetUserId, setEscalationTargetUserId] = useState<string>(
     responsibility.escalationTargetUserId ? String(responsibility.escalationTargetUserId) : "",
   );
-
-  // Sempre que o diálogo é reaberto para uma Responsibility diferente
-  // (ou reaberto para a mesma após um refetch), realinha o formulário com
-  // os dados reais — nunca mantém um estado obsoleto de uma edição
-  // anterior.
-  useEffect(() => {
-    if (!open) return;
-    setName(responsibility.name);
-    setDescription(responsibility.description ?? "");
-    setPriority(responsibility.priority);
-    setConditionsText(JSON.stringify(responsibility.conditions, null, 2));
-    setEnabled(responsibility.enabled);
-    setEscalationPolicy(responsibility.escalationPolicy);
-    setEscalationTargetAgentId(responsibility.escalationTargetAgentId ? String(responsibility.escalationTargetAgentId) : "");
-    setEscalationTargetUserId(responsibility.escalationTargetUserId ? String(responsibility.escalationTargetUserId) : "");
-  }, [open, responsibility]);
 
   const needsAgentTarget = escalationPolicy === "agent" || escalationPolicy === "agent_then_human";
   const needsUserTarget = escalationPolicy === "human" || escalationPolicy === "agent_then_human";

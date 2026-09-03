@@ -176,7 +176,7 @@ export function JobDetail({ jobId }: { jobId: number }) {
         </CardHeader>
         <CardContent className="p-0">
           {!runsData || runsData.data.length === 0 ? (
-            <p className="p-6 text-sm text-muted-foreground">Nenhum Run ainda — clique em "Executar agora" para iniciar um.</p>
+            <p className="p-6 text-sm text-muted-foreground">Nenhum Run ainda — clique em &quot;Executar agora&quot; para iniciar um.</p>
           ) : (
             <div className="overflow-x-auto">
               <Table>

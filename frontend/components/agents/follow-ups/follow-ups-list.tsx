@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import Link from "next/link";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -62,10 +63,16 @@ export function FollowUpsList() {
   // endpoint de agregação novo (seção 19: "sem criar novo sistema de
   // analytics") calculando no cliente sobre uma janela ampla o
   // suficiente para ser representativa.
+  // Seção react-hooks/purity — `Date.now()` nunca é chamado diretamente
+  // no corpo do render (impuro, mesmo dentro de `useMemo`, cujo callback
+  // ainda roda durante o render). `useState` com inicializador lazy é a
+  // forma correta: roda uma única vez, na montagem, nunca durante um
+  // re-render.
+  const [now] = useState(() => Date.now());
+
   const attentionQuery = useFollowUps({ page: 1, limit: 100 });
   const attention = useMemo(() => {
     const rows = attentionQuery.data?.data ?? [];
-    const now = Date.now();
     return {
       open: rows.filter((row) => row.status === "open").length,
       inProgress: rows.filter((row) => row.status === "in_progress").length,
@@ -73,7 +80,7 @@ export function FollowUpsList() {
       overdue: rows.filter((row) => row.dueAt && new Date(row.dueAt).getTime() < now && row.status !== "completed" && row.status !== "dismissed").length,
       critical: rows.filter((row) => row.priority === "critical" && row.status !== "completed" && row.status !== "dismissed").length,
     };
-  }, [attentionQuery.data]);
+  }, [attentionQuery.data, now]);
 
   const agentName = (agentId: number) => agentsQuery.data?.data.find((agent) => agent.id === agentId)?.name ?? `Agente #${agentId}`;
   const userName = (userId: number | null) => (userId ? (usersQuery.data?.data.find((user) => user.id === userId)?.name ?? `Usuário #${userId}`) : "--");
@@ -196,12 +203,16 @@ export function FollowUpsList() {
                 </TableHeader>
                 <TableBody>
                   {followUps.data.data.map((followUp) => {
-                    const overdue = followUp.dueAt && new Date(followUp.dueAt).getTime() < Date.now() && followUp.status !== "completed" && followUp.status !== "dismissed";
-                    const ageSeconds = Math.floor((Date.now() - new Date(followUp.createdAt).getTime()) / 1000);
+                    const overdue = followUp.dueAt && new Date(followUp.dueAt).getTime() < now && followUp.status !== "completed" && followUp.status !== "dismissed";
+                    const ageSeconds = Math.floor((now - new Date(followUp.createdAt).getTime()) / 1000);
 
                     return (
                       <TableRow key={followUp.id}>
-                        <TableCell className="max-w-64 text-sm font-medium">{followUp.title}</TableCell>
+                        <TableCell className="max-w-64 text-sm font-medium">
+                          <Link href={`/agents/follow-ups/${followUp.id}`} className="text-primary underline-offset-2 hover:underline">
+                            {followUp.title}
+                          </Link>
+                        </TableCell>
                         <TableCell className="text-xs">{agentName(followUp.ownerAgentId)}</TableCell>
                         <TableCell className="text-xs">{userName(followUp.assignedUserId)}</TableCell>
                         <TableCell className="text-xs">{followUpPriorityLabel(followUp.priority)}</TableCell>

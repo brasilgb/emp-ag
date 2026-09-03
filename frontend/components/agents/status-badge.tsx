@@ -10,6 +10,7 @@ import {
   autonomyLevelBadgeVariant,
   autonomyLevelLabel,
   circuitStateLabel,
+  actionProposalStatusLabel,
   decisionStatusLabel,
   escalationSeverityLabel,
   escalationStatusLabel,
@@ -47,6 +48,7 @@ import type {
   AutonomyBlockReason,
   AutonomyLevel,
   CircuitState,
+  ActionProposalStatus,
   DecisionStatus,
   EscalationSeverity,
   EscalationStatus,
@@ -649,6 +651,23 @@ export function FollowUpStatusBadge({ status }: { status: FollowUpStatus }) {
   return (
     <Badge variant="secondary" className={cn("border-transparent", FOLLOW_UP_STATUS_STYLES[status])}>
       {followUpStatusLabel(status)}
+    </Badge>
+  );
+}
+
+// Agentes v2.8 — Operational Actions & Governed Resolution.
+const ACTION_PROPOSAL_STATUS_STYLES: Record<ActionProposalStatus, string> = {
+  submitted: "bg-muted text-muted-foreground",
+  planned: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  completed: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  failed: "bg-red-500/10 text-red-700 dark:text-red-400",
+  cancelled: "bg-muted text-muted-foreground line-through",
+};
+
+export function ActionProposalStatusBadge({ status }: { status: ActionProposalStatus }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", ACTION_PROPOSAL_STATUS_STYLES[status])}>
+      {actionProposalStatusLabel(status)}
     </Badge>
   );
 }

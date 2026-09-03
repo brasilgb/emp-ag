@@ -11,6 +11,7 @@ import type {
   DecisionImpact,
   DecisionStatus,
   DecisionUrgency,
+  ActionProposalStatus,
   EscalationPolicy,
   EscalationSeverity,
   EscalationStatus,
@@ -881,6 +882,22 @@ export const FOLLOW_UP_SOURCE_TYPE_LABELS: Record<FollowUpSourceType, string> = 
 
 export function followUpSourceTypeLabel(sourceType: FollowUpSourceType): string {
   return FOLLOW_UP_SOURCE_TYPE_LABELS[sourceType] ?? sourceType;
+}
+
+// Agentes v2.8 — Operational Actions & Governed Resolution. Labels
+// derivados dos estados reais do sistema (seção 19: "esses labels devem
+// derivar dos estados reais do sistema" — nunca um vocabulário
+// inventado à parte).
+export const ACTION_PROPOSAL_STATUS_LABELS: Record<ActionProposalStatus, string> = {
+  submitted: "Proposta",
+  planned: "Planejada",
+  completed: "Concluída",
+  failed: "Falhou",
+  cancelled: "Cancelada",
+};
+
+export function actionProposalStatusLabel(status: ActionProposalStatus): string {
+  return ACTION_PROPOSAL_STATUS_LABELS[status] ?? status;
 }
 
 export function formatAgeSeconds(ageSeconds: number): string {

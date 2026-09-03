@@ -1,0 +1,1 @@
+ALTER TABLE "agent_operational_action_proposals" ADD CONSTRAINT "agent_operational_action_proposals_planned_requires_plan" CHECK (("agent_operational_action_proposals"."status" <> 'planned') OR ("agent_operational_action_proposals"."action_plan_id" IS NOT NULL));

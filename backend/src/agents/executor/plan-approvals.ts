@@ -8,6 +8,13 @@ import { executeActionPlan } from './action-plan-executor.js';
 // mecanismo já existente, sincroniza o Run do Job dono do plano, se
 // houver — no-op para planos sem Job (v1.2 continua idêntico).
 import { syncJobRunStatus } from '../jobs/job-runner.js';
+// Agentes v2.8 (correio.md seção 14): mesmo racional de syncJobRunStatus
+// acima — sincroniza a Operational Action Proposal dona do plano, se
+// houver (no-op para planos sem proposta). Necessário aqui porque uma
+// aprovação/rejeição tardia é o ponto onde um Action Plan que ficou
+// `waiting_approval` no momento do `submit` finalmente chega a um
+// estado terminal.
+import { syncActionProposalStatus } from '../followups/action-proposals-service.js';
 
 export type PlanApprovalDecisionOutcome =
   | { ok: true; planId: number; itemId: number; approvalId: number }
@@ -44,6 +51,7 @@ export async function approvePlanItem(
 
   await executeActionPlan(cas.item.planId, approverUserId);
   await syncJobRunStatus(cas.item.planId, approverUserId);
+  await syncActionProposalStatus(cas.item.planId, approverUserId);
 
   return { ok: true, planId: cas.item.planId, itemId: cas.item.id, approvalId };
 }
@@ -74,6 +82,7 @@ export async function rejectPlanItem(
   // novo, já que nenhum item está 'pending'/'approved' além deste).
   await executeActionPlan(cas.item.planId, approverUserId);
   await syncJobRunStatus(cas.item.planId, approverUserId);
+  await syncActionProposalStatus(cas.item.planId, approverUserId);
 
   return { ok: true, planId: cas.item.planId, itemId: cas.item.id, approvalId };
 }

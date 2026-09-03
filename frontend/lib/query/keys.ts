@@ -127,5 +127,7 @@ export const queryKeys = {
     escalation: (id: number) => ["agents", "escalations", id] as const,
     followUps: (params?: unknown) => ["agents", "follow-ups", params ?? {}] as const,
     followUp: (id: number) => ["agents", "follow-ups", id] as const,
+    actionProposals: (followUpId: number, params?: unknown) => ["agents", "follow-ups", followUpId, "action-proposals", params ?? {}] as const,
+    actionProposal: (id: number) => ["agents", "action-proposals", id] as const,
   },
 };

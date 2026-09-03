@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 
 import {
+  actionProposalStatusLabel,
   approvalState,
   autonomyLevelBadgeVariant,
   autonomyLevelLabel,
@@ -564,5 +565,21 @@ describe("followUpSourceTypeLabel", () => {
   test("valor desconhecido faz fallback para o próprio valor", () => {
     // @ts-expect-error — testando o fallback de valor não mapeado.
     assert.equal(followUpSourceTypeLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+// Agentes v2.8 — Operational Actions & Governed Resolution.
+describe("actionProposalStatusLabel", () => {
+  test("todo status conhecido tem rótulo em pt-BR", () => {
+    assert.equal(actionProposalStatusLabel("submitted"), "Proposta");
+    assert.equal(actionProposalStatusLabel("planned"), "Planejada");
+    assert.equal(actionProposalStatusLabel("completed"), "Concluída");
+    assert.equal(actionProposalStatusLabel("failed"), "Falhou");
+    assert.equal(actionProposalStatusLabel("cancelled"), "Cancelada");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(actionProposalStatusLabel("nunca_existiu"), "nunca_existiu");
   });
 });

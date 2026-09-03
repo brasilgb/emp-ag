@@ -428,6 +428,11 @@ const defaultPermissions = [
     slug: 'agents.followups.manage',
     description: 'Permite criar, transicionar e reatribuir Operational FollowUps (Agentes v2.7). Leitura segue em agents.followups.read.',
   },
+  {
+    name: 'Gerenciar propostas de ação operacional',
+    slug: 'agents.followups.actions.manage',
+    description: 'Permite criar/submeter/cancelar Operational Action Proposals de um FollowUp (Agentes v2.8). Leitura segue em agents.followups.read.',
+  },
 
   {
     name: 'Visualizar usuários',

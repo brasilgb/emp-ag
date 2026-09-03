@@ -1247,3 +1247,29 @@ export interface OperationalFollowUp {
   dismissedBy: number | null;
   dismissReason: string | null;
 }
+
+// Agentes v2.8 — Operational Actions & Governed Resolution (correio.md).
+export const ACTION_PROPOSAL_STATUSES = ["submitted", "planned", "completed", "failed", "cancelled"] as const;
+export type ActionProposalStatus = (typeof ACTION_PROPOSAL_STATUSES)[number];
+
+export interface OperationalActionProposal {
+  id: number;
+  followUpId: number;
+  responsibilityId: number;
+  ownerAgentId: number;
+  title: string;
+  objective: string;
+  description: string | null;
+  status: ActionProposalStatus;
+  actionPlanId: number | null;
+  createdBy: number;
+  createdAt: string;
+  updatedAt: string;
+  submittedBy: number | null;
+  submittedAt: string | null;
+  plannedAt: string | null;
+  completedAt: string | null;
+  cancelledAt: string | null;
+  cancelledBy: number | null;
+  failureReason: string | null;
+}
