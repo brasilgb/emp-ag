@@ -114,5 +114,7 @@ export const queryKeys = {
     directorInitiative: (id: number) => ["agents", "director", "initiatives", id] as const,
     directorInitiativeExecution: (id: number) => ["agents", "director", "initiatives", id, "execution"] as const,
     directorInitiativeReview: (id: number) => ["agents", "director", "initiatives", id, "review"] as const,
+    directorMemories: (params?: unknown) => ["agents", "director", "memories", params ?? {}] as const,
+    directorMemory: (id: number) => ["agents", "director", "memories", id] as const,
   },
 };

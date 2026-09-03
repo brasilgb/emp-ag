@@ -955,3 +955,35 @@ export interface ExecutiveReview {
   createdAt: string;
   updatedAt: string;
 }
+
+// Agentes v2.3 — Strategic Learning & Organizational Memory (correio.md).
+export const MEMORY_TYPES = ["initiative_outcome", "strategic_lesson", "decision_outcome", "recurring_pattern"] as const;
+export type MemoryType = (typeof MEMORY_TYPES)[number];
+
+export const MEMORY_STATUSES = ["draft", "active", "superseded", "archived"] as const;
+export type MemoryStatus = (typeof MEMORY_STATUSES)[number];
+
+export const MEMORY_IMPORTANCE_LEVELS = ["low", "medium", "high"] as const;
+export type MemoryImportance = (typeof MEMORY_IMPORTANCE_LEVELS)[number];
+
+export interface StrategicMemory {
+  id: number;
+  memoryType: MemoryType;
+  domain: SignalDomain;
+  title: string | null;
+  summary: string | null;
+  lesson: string | null;
+  outcome: ReviewOutcome | null;
+  confidence: string | null;
+  importance: MemoryImportance | null;
+  tags: string[];
+  sourceGoalId: number;
+  sourceInitiativeId: number;
+  sourceReviewId: number | null;
+  sourceDecisionId: number | null;
+  evidence: Record<string, unknown>;
+  status: MemoryStatus;
+  createdBy: number | null;
+  createdAt: string;
+  updatedAt: string;
+}

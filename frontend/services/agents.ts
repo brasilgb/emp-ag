@@ -30,6 +30,9 @@ import type {
   EventStatus,
   ExecutionStatus,
   ExecutiveReview,
+  MemoryStatus,
+  MemoryType,
+  StrategicMemory,
   GlobalAutonomyState,
   GoalDetail,
   GoalHealth,
@@ -633,4 +636,27 @@ export function getInitiativeReview(id: number): Promise<{ data: ExecutiveReview
 
 export function generateInitiativeReview(id: number): Promise<{ data: ExecutiveReview }> {
   return apiFetch(`/api/agents/director/initiatives/${id}/review`, { method: "POST", body: JSON.stringify({}) });
+}
+
+// Agentes v2.3 — Strategic Learning & Organizational Memory (correio.md).
+export interface ListStrategicMemoriesParams {
+  page?: number;
+  limit?: number;
+  domain?: SignalDomain;
+  memoryType?: MemoryType;
+  status?: MemoryStatus;
+  goalId?: number;
+  initiativeId?: number;
+}
+
+export function listStrategicMemories(params: ListStrategicMemoriesParams = {}): Promise<Paginated<StrategicMemory>> {
+  return apiFetch(`/api/agents/director/memories${toQueryString({ ...params })}`);
+}
+
+export function getStrategicMemory(id: number): Promise<{ data: StrategicMemory }> {
+  return apiFetch(`/api/agents/director/memories/${id}`);
+}
+
+export function generateMemoryFromReview(reviewId: number): Promise<{ data: StrategicMemory }> {
+  return apiFetch(`/api/agents/director/reviews/${reviewId}/memory`, { method: "POST", body: JSON.stringify({}) });
 }

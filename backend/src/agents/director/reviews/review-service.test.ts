@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import { db } from '../../../db/index.js';
 import {
@@ -11,8 +11,10 @@ import {
   agentDirectorGoals,
   agentDirectorInitiatives,
   agentExecutiveReviews,
+  agentStrategicMemories,
   agentTools,
   agents,
+  auditLogs,
   users,
 } from '../../../db/schema/index.js';
 import { database } from '../../../services/database.js';
@@ -50,6 +52,13 @@ function failingProvider(message: string): LLMProvider {
       throw new Error(message);
     },
   };
+}
+
+/** Agentes v2.3 — o userMessage agora tem "CURRENT EVIDENCE:" + JSON + "" + "HISTORICAL ORGANIZATIONAL MEMORY:..." (ver reviews/prompt.ts:buildExecutiveReviewUserMessage). Extrai só o bloco JSON de evidência atual. */
+function extractCurrentEvidenceJson(userMessage: string): unknown {
+  const start = userMessage.indexOf('CURRENT EVIDENCE:') + 'CURRENT EVIDENCE:'.length;
+  const end = userMessage.indexOf('\n\nHISTORICAL ORGANIZATIONAL MEMORY');
+  return JSON.parse(userMessage.slice(start, end === -1 ? undefined : end).trim());
 }
 
 function reviewOutput(overrides: Record<string, unknown> = {}) {
@@ -300,7 +309,7 @@ describe('Agentes v2.2 - Executive Review', () => {
       setLLMProviderOverrideForTests({
         name: 'mock-capture',
         async complete(request): Promise<LLMResponse> {
-          capturedContext = JSON.parse(request.userMessage);
+          capturedContext = extractCurrentEvidenceJson(request.userMessage);
           return { raw: reviewOutput({ outcome: 'successful' }) };
         },
       });
@@ -453,5 +462,104 @@ describe('Agentes v2.2 - Executive Review', () => {
     } finally {
       await cleanupInitiative(initiative.id, planId);
     }
+  });
+
+  describe('Agentes v2.3 (correio.md seção 11/16/20) — Strategic Memory injetada como contexto histórico', () => {
+    test('16: CURRENT EVIDENCE e HISTORICAL ORGANIZATIONAL MEMORY aparecem separadas no prompt; 19: memoryIdsUsed fica auditável', async () => {
+      const [historicalMemory] = await db
+        .insert(agentStrategicMemories)
+        .values({
+          memoryType: 'initiative_outcome',
+          domain: 'crm',
+          title: 'Aprendizado histórico de teste',
+          summary: 'resumo',
+          lesson: 'Campanhas deste tipo tendem a demorar mais que o esperado.',
+          confidence: '0.750',
+          importance: 'high',
+          tags: [],
+          sourceGoalId: goalId,
+          sourceInitiativeId: (await insertInitiative(goalId)).id,
+          status: 'active',
+          evidence: {},
+        })
+        .returning();
+
+      const planId = await insertControlledPlan(['completed']);
+      const initiative = await insertInitiative(goalId, { status: 'completed', actionPlanId: planId, startedAt: new Date(), completedAt: new Date() });
+      try {
+        let capturedUserMessage = '';
+        setLLMProviderOverrideForTests({
+          name: 'mock-capture-memory',
+          async complete(request): Promise<LLMResponse> {
+            capturedUserMessage = request.userMessage;
+            return { raw: reviewOutput({ outcome: 'successful' }) };
+          },
+        });
+
+        const { review } = await generateExecutiveReview(initiative, ceoUserId);
+        assert.equal(review.outcome, 'successful');
+
+        // Seção 16: seções claramente separadas, nunca misturadas num
+        // único blob — a evidência atual vem primeiro, a memória
+        // histórica depois, com o texto de precedência explícito.
+        const currentIndex = capturedUserMessage.indexOf('CURRENT EVIDENCE');
+        const historicalIndex = capturedUserMessage.indexOf('HISTORICAL ORGANIZATIONAL MEMORY');
+        assert.ok(currentIndex >= 0 && historicalIndex >= 0, 'ambas as seções deveriam estar presentes no prompt');
+        assert.ok(currentIndex < historicalIndex, 'CURRENT EVIDENCE deveria vir antes de HISTORICAL ORGANIZATIONAL MEMORY');
+        assert.ok(capturedUserMessage.includes('Campanhas deste tipo tendem a demorar mais que o esperado.'), 'a lição da memória histórica deveria estar no prompt');
+        assert.ok(capturedUserMessage.includes('precedência'), 'instrução explícita de precedência da evidência atual deveria estar presente');
+
+        // Seção 19: IDs das memórias usadas ficam auditáveis.
+        const [auditRow] = await db
+          .select()
+          .from(auditLogs)
+          .where(and(eq(auditLogs.action, 'agents.director.memory.reused'), eq(auditLogs.entityType, 'agent_executive_review'), eq(auditLogs.entityId, String(review.id))));
+        assert.ok(auditRow, 'deveria existir um registro de auditoria de reuso de memória para esta review');
+        const metadata = auditRow.metadata as { memoryIdsUsed: number[] };
+        assert.ok(metadata.memoryIdsUsed.includes(historicalMemory!.id));
+      } finally {
+        await cleanupInitiative(initiative.id, planId);
+        await db.delete(agentStrategicMemories).where(eq(agentStrategicMemories.id, historicalMemory!.id));
+      }
+    });
+
+    test('memória arquivada nunca entra no prompt de uma nova review', async () => {
+      const initiativeForMemory = await insertInitiative(goalId);
+      const [archivedMemory] = await db
+        .insert(agentStrategicMemories)
+        .values({
+          memoryType: 'initiative_outcome',
+          domain: 'crm',
+          title: 'Memória arquivada — nunca deveria aparecer',
+          lesson: 'Texto que nunca deveria ir ao prompt.',
+          confidence: '0.900',
+          importance: 'high',
+          tags: [],
+          sourceGoalId: goalId,
+          sourceInitiativeId: initiativeForMemory.id,
+          status: 'archived',
+          evidence: {},
+        })
+        .returning();
+
+      const planId = await insertControlledPlan(['completed']);
+      const initiative = await insertInitiative(goalId, { status: 'completed', actionPlanId: planId, startedAt: new Date(), completedAt: new Date() });
+      try {
+        let capturedUserMessage = '';
+        setLLMProviderOverrideForTests({
+          name: 'mock-capture-archived',
+          async complete(request): Promise<LLMResponse> {
+            capturedUserMessage = request.userMessage;
+            return { raw: reviewOutput({ outcome: 'successful' }) };
+          },
+        });
+
+        await generateExecutiveReview(initiative, ceoUserId);
+        assert.ok(!capturedUserMessage.includes('Texto que nunca deveria ir ao prompt.'), 'memória arquivada nunca deveria entrar no contexto');
+      } finally {
+        await cleanupInitiative(initiative.id, planId);
+        await db.delete(agentStrategicMemories).where(eq(agentStrategicMemories.id, archivedMemory!.id));
+      }
+    });
   });
 });

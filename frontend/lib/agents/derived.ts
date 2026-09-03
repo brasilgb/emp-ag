@@ -21,6 +21,9 @@ import type {
   HumanVerdict,
   IncidentType,
   InitiativeExecutionState,
+  MemoryImportance,
+  MemoryStatus,
+  MemoryType,
   RecommendationType,
   ReviewOutcome,
   InitiativeStatus,
@@ -658,4 +661,37 @@ export const RECOMMENDATION_TYPE_LABELS: Record<RecommendationType, string> = {
 
 export function recommendationTypeLabel(type: RecommendationType): string {
   return RECOMMENDATION_TYPE_LABELS[type] ?? type;
+}
+
+// Agentes v2.3 — Strategic Learning & Organizational Memory (correio.md seção 19).
+export const MEMORY_TYPE_LABELS: Record<MemoryType, string> = {
+  initiative_outcome: "Resultado de iniciativa",
+  strategic_lesson: "Lição estratégica",
+  decision_outcome: "Resultado de decisão",
+  recurring_pattern: "Padrão recorrente",
+};
+
+export function memoryTypeLabel(type: MemoryType): string {
+  return MEMORY_TYPE_LABELS[type] ?? type;
+}
+
+export const MEMORY_STATUS_LABELS: Record<MemoryStatus, string> = {
+  draft: "Gerando...",
+  active: "Ativa",
+  superseded: "Substituída",
+  archived: "Arquivada",
+};
+
+export function memoryStatusLabel(status: MemoryStatus): string {
+  return MEMORY_STATUS_LABELS[status] ?? status;
+}
+
+export const MEMORY_IMPORTANCE_LABELS: Record<MemoryImportance, string> = {
+  low: "Baixa",
+  medium: "Média",
+  high: "Alta",
+};
+
+export function memoryImportanceLabel(importance: MemoryImportance): string {
+  return MEMORY_IMPORTANCE_LABELS[importance] ?? importance;
 }

@@ -24,6 +24,8 @@ import {
   interpretationErrorTypeLabel,
   jobRunStatusLabel,
   jobStatusLabel,
+  memoryImportanceLabel,
+  memoryStatusLabel,
   recommendationTypeLabel,
   reviewOutcomeLabel,
   signalSeverityLabel,
@@ -51,6 +53,8 @@ import type {
   InterpretationError,
   JobRunStatus,
   JobStatus,
+  MemoryImportance,
+  MemoryStatus,
   RecommendationType,
   ReviewOutcome,
   SignalSeverity,
@@ -480,6 +484,36 @@ export function RecommendationTypeBadge({ type }: { type: RecommendationType }) 
   return (
     <Badge variant="secondary" className={cn("border-transparent", RECOMMENDATION_TYPE_STYLES[type])}>
       {recommendationTypeLabel(type)}
+    </Badge>
+  );
+}
+
+// Agentes v2.3 — Strategic Learning & Organizational Memory (correio.md).
+const MEMORY_STATUS_STYLES: Record<MemoryStatus, string> = {
+  draft: "bg-muted text-muted-foreground",
+  active: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  superseded: "bg-muted text-muted-foreground",
+  archived: "bg-muted text-muted-foreground line-through",
+};
+
+export function MemoryStatusBadge({ status }: { status: MemoryStatus }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", MEMORY_STATUS_STYLES[status])}>
+      {memoryStatusLabel(status)}
+    </Badge>
+  );
+}
+
+const MEMORY_IMPORTANCE_STYLES: Record<MemoryImportance, string> = {
+  low: "bg-muted text-muted-foreground",
+  medium: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  high: "bg-violet-500/10 text-violet-700 dark:text-violet-400",
+};
+
+export function MemoryImportanceBadge({ importance }: { importance: MemoryImportance }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", MEMORY_IMPORTANCE_STYLES[importance])}>
+      {memoryImportanceLabel(importance)}
     </Badge>
   );
 }

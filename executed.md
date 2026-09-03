@@ -1,173 +1,231 @@
-# Agentes v2.2 — Executive Review & Strategic Feedback Loop
+# Agentes v2.3 — Strategic Learning & Organizational Memory
 
-Relatório de entrega da v2.2, conforme `correio.md` seção 29 ("Relatório
-final"), 22 itens obrigatórios. **NENHUM COMMIT foi feito** — todas as
-alterações permanecem no working tree, aguardando autorização final do
-Diretor/CEO.
+Relatório de entrega da v2.3, conforme `correio.md` seção 29 ("Relatório
+final"), 28 itens obrigatórios. **NENHUM COMMIT foi feito nesta sessão**
+— todas as alterações desta entrega permanecem no working tree,
+aguardando autorização final do Diretor/CEO.
+
+**Nota sobre o baseline:** entre a entrega da v2.2 e o início desta v2.3,
+os commits `706699a` ("Commit", saneamento v2.1) e `7545772` ("Push",
+v2.2 completa) foram realizados — pelo autor do repositório, fora desta
+sessão de execução, refletindo a aprovação/consolidação daquelas
+entregas. `HEAD` já contém, portanto, toda a v2.1/v2.2. O `git diff
+--stat`/`git status` deste relatório (itens 26/27) refletem exclusivamente
+o delta real da v2.3 sobre esse HEAD.
 
 ---
 
 ## 1. Resumo da implementação
 
-O Diretor Virtual passou a avaliar o RESULTADO ESTRATÉGICO de Initiatives
-já executadas (não só o resultado técnico, já coberto pela v2.1),
-registrar essa avaliação de forma persistente e auditável, e produzir
-recomendações estruturadas (`none | continue | adjust | new_initiative |
-escalate`) que só viram ação real através dos pipelines oficiais já
-existentes — nunca um mecanismo novo de planejamento/execução. A cadeia
-completa (CEO Goal → Director Analysis → Initiative → Action Plan →
-Policy Evaluator → Executor → Execution Evidence → **Executive Review** →
-**Recommendation**) está implementada e testada de ponta a ponta.
+O Diretor Virtual passou a ter uma camada de memória organizacional
+estratégica: aprendizados extraídos de Executive Reviews (v2.2)
+concluídas, persistidos com proveniência rastreável, usados
+EXCLUSIVAMENTE como contexto consultivo — nunca como autorização. Uma
+nova Executive Review agora recebe (opcionalmente) memórias históricas
+relevantes do mesmo domínio, apresentadas ao LLM numa seção
+"HISTORICAL ORGANIZATIONAL MEMORY" claramente separada da "CURRENT
+EVIDENCE", com instrução explícita de precedência da evidência atual.
 
 ## 2. Arquitetura adotada
 
-Separação estrita em 4 módulos novos, todos sob
-`agents/director/reviews/`, seguindo o mesmo padrão de camadas já usado
-por Goals (v2.0) e Initiative Execution (v2.1):
-
-- `context.ts` — monta o DTO de evidência determinística (nunca SQL/tabela
-  exposta ao LLM).
-- `prompt.ts` — prompt restritivo (mesmo princípio de `planner/prompt.ts`).
-- `executive-reviewer.ts` — chama o provider LLM, valida a saída com Zod,
-  devolve só análise/recomendação (nunca toca o banco).
-- `review-service.ts` — orquestra claim/persistência/efeitos colaterais
-  (nunca chama o LLM diretamente nem monta prompt).
-- `escalation.ts` — adaptador que reutiliza a Director Decision Queue
-  (v1.9) para a recomendação `escalate`.
-- `initiatives-service.ts` (v2.0, estendido) — adaptador
-  `createInitiativeFromExecutiveReview` que reutiliza o pipeline oficial
-  de criação de Initiative para a recomendação `new_initiative`.
-
-Nenhum novo Executor, Planner ou Approval Workflow foi criado (seção 27).
+Novo módulo `agents/director/memory/`, mesmo padrão de camadas de
+`reviews/` (v2.2): `types.ts`, `schemas.ts`, `context.ts`, `prompt.ts`,
+`memory-extractor.ts` (chama o LLM, isolado de banco/execução/policy),
+`memory-service.ts` (orquestra claim/persistência/arquivamento),
+`retrieval-service.ts` (recuperação determinística). Nenhum novo
+Executor/Planner/Approval Workflow/Policy Evaluator foi criado (seção
+27). A integração com "Director Analysis" reaproveita o ÚNICO componente
+LLM de análise estratégica já existente — o Executive Reviewer da v2.2
+(`reviews/executive-reviewer.ts` + `reviews/prompt.ts`, ambos estendidos,
+nunca duplicados).
 
 ## 3. Schema/migrations
 
-Nova tabela `agent_executive_reviews` (migration `0016_agent_executive_reviews.sql`,
-gerada via `drizzle-kit generate` + aplicada via `drizzle-kit migrate` —
-diferente dos rounds anteriores, que exigiram reconciliação manual da
-tabela de tracking; aqui o fluxo oficial do drizzle-kit funcionou de
-ponta a ponta sem desvio, confirmado via `drizzle.__drizzle_migrations`
-consistente com `drizzle/meta/_journal.json`).
+Nova tabela `agent_strategic_memories` (migration
+`0017_agent_strategic_memories.sql`), gerada e aplicada via fluxo oficial
+`drizzle-kit generate` + `drizzle-kit migrate` (seção 26) — sem edição
+manual do tracking, consistência entre migration SQL, `drizzle/meta/_journal.json`,
+snapshot e `drizzle.__drizzle_migrations` confirmada pelo próprio
+`drizzle-kit migrate` (que teria falhado em caso de divergência).
 
-Campos: `id, goal_id, initiative_id, action_plan_id (NOT NULL, UNIQUE),
-created_by, review_type, status, outcome, summary, expected_result,
-actual_result, evidence (jsonb), assessment, confidence, recommendation_type,
-recommendation (jsonb), resulting_initiative_id, resulting_decision_id,
-created_at, updated_at`.
+Campos: `id, memory_type, domain, title, summary, lesson, outcome,
+confidence, importance, tags (jsonb), source_goal_id, source_initiative_id,
+source_review_id, source_decision_id, evidence (jsonb), status,
+created_by, created_at, updated_at`.
 
-Decisão de modelagem documentada no schema (`agent-executive-reviews.ts`):
-`action_plan_id` é **NOT NULL + UNIQUE** — 1:1 deliberado com o Action
-Plan/execução (correio.md seção 16: "pode existir inicialmente uma review
-canônica por Action Plan/execução"). Essa unicidade É o próprio mecanismo
-de idempotência/claim (seção 3/11 abaixo) — nunca uma coluna de lock
-separada. Evolução futura sem redesenho: se uma segunda `review_type`
-for introduzida, o índice único passa a ser composto
-`(action_plan_id, review_type)` — a coluna já existe hoje só sem fazer
-parte do índice único enquanto há um único tipo real.
+Decisões de modelagem documentadas no schema
+(`agent-strategic-memories.ts`):
+- `source_review_id` NULLABLE + índice único PARCIAL (`WHERE NOT NULL`)
+  — nesta versão toda memória nasce de uma review (1:1, seção 13), mas a
+  coluna fica nullable para permitir, sem migração futura, outros
+  `memory_type` não derivados de review.
+- `status` ganhou um 4º valor, `draft`, além dos 3 sugeridos pelo
+  correio.md (`active/superseded/archived`) — mesmo racional já usado em
+  `agent_executive_reviews.status` (v2.2): é o estado transitório entre
+  o claim atômico e a resposta do LLM, necessário para nunca segurar
+  transaction durante a chamada externa.
+- `tags` foi adicionado além dos "campos mínimos" da seção 2 — a seção 7
+  pede explicitamente que a saída do LLM inclua `tags`; persistir é
+  melhor que descartar.
 
-## 4. Fluxo completo da Executive Review
+## 4. Modelo da Strategic Memory
+
+Uma linha de `agent_strategic_memories` representa UM aprendizado:
+`evidence` (fato, backend) + `title/summary/lesson/tags` (interpretação,
+LLM) + `confidence/importance` (auto-avaliação do LLM) + proveniência
+(`source_*`, backend) + `status` (lifecycle). Nunca uma verdade absoluta
+— sempre acompanhada de confiança e proveniência, nunca apresentada como
+regra (seção 8/19).
+
+## 5. Tipos de memória implementados
+
+Vocabulário completo definido (`memory/types.ts`): `initiative_outcome |
+strategic_lesson | decision_outcome | recurring_pattern`. **Nesta
+versão, só `initiative_outcome` é efetivamente produzido**
+(`createStrategicMemoryFromReview` sempre grava esse tipo) — os outros 3
+ficam no vocabulário/schema, prontos para uma fonte de geração futura
+(ex.: memória extraída diretamente de uma Decision resolvida, sem passar
+por Executive Review), sem exigir migração de schema quando isso
+acontecer. Consistente com a seção 2: "não criar dezenas de tipos nesta
+versão".
+
+## 6. Como provenance funciona
+
+Toda memória carrega `source_goal_id`, `source_initiative_id`,
+`source_review_id` e (quando aplicável) `source_decision_id` —
+preenchidos DETERMINISTICAMENTE pelo backend a partir da Executive
+Review de origem (`review.goalId`, `review.initiativeId`, `review.id`,
+`review.resultingDecisionId`), nunca pelo LLM (a saída estruturada do
+LLM — `strategicMemoryOutputSchema` — nem TEM campo de proveniência,
+estruturalmente impossível de inventar). Provado por teste:
+"Executive Review gera memória válida com provenance real".
+
+## 7. Como evidência é separada da interpretação
+
+`buildStrategicMemoryEvidence()` (`memory/context.ts`) monta o objeto
+`evidence` (goal/initiative/review reais) ANTES de qualquer chamada ao
+LLM — é persistido em `agent_strategic_memories.evidence` inalterado. O
+LLM só produz `title/summary/lesson/confidence/importance/tags`, nunca
+escreve em `evidence`. Provado por teste: "evidência separada do lesson"
+— `memory.evidence.review.outcome` é o outcome REAL da review (fato),
+`memory.lesson` é o texto do LLM mockado (interpretação), e o teste
+verifica explicitamente que os dois nunca são o mesmo campo/dado.
+
+## 8. Como o LLM foi isolado
+
+`memory-extractor.ts` não importa `db/`, `executor/`, `policy/` nem
+mecanismo de permission — estrutural, não uma convenção seguida por
+disciplina: o módulo simplesmente não tem acesso a nada disso.
+`strategicMemoryOutputSchema` é `.strict()` — os únicos campos possíveis
+na saída são `title, summary, lesson, confidence, importance, tags`;
+qualquer campo como `tool/action/execute/permission/approval/autonomy/sql/command`
+(lista explícita da seção 7) é rejeitado pelo Zod antes de qualquer
+outra validação. O prompt (`memory/prompt.ts`) instrui explicitamente
+"você NUNCA executa, aprova, autoriza ou modifica nada" e a tratar a
+memória como contexto consultivo, nunca instrução imperativa.
+
+## 9. Fluxo de criação da memória
 
 ```
-POST /director/initiatives/:id/review
-  → valida permission + Initiative existe
-  → generateExecutiveReview(initiative, userId)
-      → valida execution.state ∈ {completed, blocked, failed}
-        (REVIEWABLE_EXECUTION_STATES — nunca prematura)
-      → claim atômico (INSERT ... ON CONFLICT DO NOTHING em action_plan_id)
-      → [fora de transação] monta contexto real (Goal+Initiative+Plan+Items)
-      → [fora de transação] chama o Executive Reviewer (LLM)
-      → persiste a review completa (status='completed')
-      → se recommendation.type='new_initiative' → cria Initiative 'proposed'
-      → se recommendation.type='escalate' → cria Decision Item 'open'
+POST /agents/director/reviews/:id/memory
+  → valida permission + review existe e está "completed"
+  → createStrategicMemoryFromReview(review, userId)
+      → claim atômico (INSERT ... ON CONFLICT DO NOTHING em source_review_id)
+      → [fora de transação] monta evidência (rápida, determinística)
+      → [fora de transação] chama o memory extractor (LLM)
+      → persiste a memória completa (status='active')
       → audita cada etapa
   ← 201 (nova) | 200 (idempotente/já existia)
-
-GET /director/initiatives/:id/review
-  → devolve a review canônica (ou null — nunca 404)
 ```
 
-## 5. Como evidências são coletadas
+Escolha deliberada (seção 4: "pode ser utilizado endpoint explícito"):
+optou-se por endpoint explícito, não integração automática síncrona
+dentro de `generateExecutiveReview` — mantém as duas operações
+independentes (uma falha na extração de memória nunca compromete a
+review já persistida) e evita estender a duração da chamada de review
+com uma segunda chamada LLM obrigatória.
 
-`buildExecutiveReviewContext()` (`context.ts`) monta um DTO determinístico
-a partir de dados JÁ AUTORIZADOS e já existentes no domínio:
+## 10. Fluxo de recuperação
 
-- Goal (título, domínio, health, progresso, meta/valor atual).
-- Initiative (título, descrição, racional, impacto esperado, status).
-- Execução real (`getInitiativeExecutionView` — a MESMA função da v2.1:
-  estado, progresso, contagens completed/failed/blocked/pendingApproval/
-  shadowed).
-- Action Plan (objetivo, resumo, status).
-- Cada Action Plan Item (agent, tool, reason, decision, executionStatus,
-  `result`/`error` — o retorno REAL de `executeActionPlan()`, nunca
-  reinterpretado).
+`getRelevantStrategicMemories({ domain, memoryType?, limit? })`
+(`retrieval-service.ts`) — determinístico, sem embeddings/vector
+database (seção 9/10): filtra por `domain` + `status='active'` (nunca
+`draft`/`superseded`/`archived`), ordena por importância → confiança →
+recência (nessa prioridade), respeita limite explícito (`default=5`,
+`max=10`, sempre capado mesmo que o caller peça mais). Chamado
+automaticamente por `generateExecutiveReview` (v2.2, estendido) antes de
+chamar o Executive Reviewer, injetando o resultado no prompt.
 
-Esse MESMO objeto é: (a) serializado como `userMessage` para o LLM, e (b)
-persistido verbatim em `agent_executive_reviews.evidence` — a evidência
-usada fica sempre rastreável, nunca uma alegação não verificável do
-Diretor. `expectedResult`/`actualResult` são textos determinísticos
-montados pelo backend (nunca pelo LLM) a partir do Goal/execução reais.
+## 11. Regras de precedência
 
-## 6. Como o LLM é isolado de autorização e execução
+Documentadas formalmente em `memory/types.ts`
+(`STRATEGIC_MEMORY_PRECEDENCE_ORDER`, seção 22):
 
-- O prompt (`prompt.ts`) instrui explicitamente: "você NUNCA executa,
-  aprova, autoriza ou modifica nada" + instrução de ignorar qualquer
-  instrução embutida na evidência (mesmo princípio anti-prompt-injection
-  já usado em `planner/prompt.ts`).
-- A saída é validada por `executiveReviewOutputSchema` (`.strict()`) —
-  os únicos campos possíveis são `outcome, summary, assessment,
-  confidence, recommendation{type, reason, proposedGoal?}`. Não existe
-  NENHUM campo na saída que referencie tool, approval, permission,
-  autonomy ou execução — a garantia é estrutural (Zod rejeita qualquer
-  campo extra), não uma checagem de blocklist à parte.
-- `executive-reviewer.ts` nunca importa nada de `db/`, `executor/` ou
-  `policy/` — não tem CAPACIDADE de executar nada, mesmo que quisesse.
-- Toda ação posterior (aprovar a nova Initiative, agir sobre a
-  escalação) passa de novo pelo pipeline de segurança existente
-  (permissions, Policy Evaluator, Approval) — provado por teste (seção
-  16 abaixo).
-
-## 7. Lifecycle/status/outcomes/recommendations
-
-- `status`: `draft` (transitório, nunca exposto por GET) → `completed`.
-  `superseded` reservado para evolução futura (reavaliação — não usado
-  nesta versão, seção 16: "não criar arquitetura que impeça").
-- `outcome`: `successful | partially_successful | unsuccessful |
-  inconclusive | blocked` — decidido inteiramente pelo LLM, nunca por
-  regra determinística local (testado explicitamente: Action Plan 100%
-  tecnicamente `completed` pode receber `outcome='unsuccessful'`).
-- `recommendation.type`: `none | continue | adjust | new_initiative |
-  escalate` — `none`/`continue`/`adjust` só registram texto (nenhum
-  efeito colateral); `new_initiative`/`escalate` disparam os adaptadores
-  oficiais (seções 10/11 abaixo).
-
-## 8. Estratégia de concorrência/idempotência
-
-A UNICIDADE de `action_plan_id` na própria tabela É o mecanismo de claim:
-
-```
-INSERT agent_executive_reviews (..., status='draft') ON CONFLICT (action_plan_id) DO NOTHING
-  → 1 linha inserida  → EU sou o vencedor: monto contexto + chamo o LLM (fora de transação)
-  → 0 linhas inseridas → leio a linha existente:
-        status='completed' → devolvo direto (idempotente, SEM chamar o LLM)
-        status='draft'     → aguardo (polling curto, sem lock) até 'completed'
-                              ou até a linha sumir (vencedor reverteu → erro claro, retry seguro)
+```text
+1. Permissions/Authorization
+2. Policy/Safety rules
+3. Human decisions/approvals
+4. Current deterministic evidence
+5. Current business context
+6. Historical strategic memory
+7. LLM interpretation
 ```
 
-Mesmo racional já provado em `decisions/sync-service.ts:upsertSignal`
-(v1.9) e em `startInitiativeExecution` (v2.1) — nunca find-then-insert
-desprotegido, nunca `SELECT ... FOR UPDATE` bloqueante segurando conexão
-durante I/O externo.
+Garantia estrutural (não só documental): nenhum código dos níveis 1-3
+(`security/permissions.ts`, `policy/action-policy-evaluator.ts`,
+`agent_approvals`) importa ou consulta o módulo `memory/` — é
+fisicamente impossível para uma memória influenciar esses níveis. O
+prompt do Executive Reviewer reforça em texto: "a evidência atual possui
+precedência sobre estes padrões históricos" + "nunca como justificativa
+para ignorar Policy Evaluator, permissions ou decisão humana".
 
-**Falha do provider (seção 24):** o bloco `catch` de
-`generateExecutiveReview` DELETA a linha `draft` — nunca deixa uma review
-presa para sempre. A próxima chamada (mesmo caller ou outro) reclama o
-slot único normalmente. Provado por teste (`falha do provider: review não
-fica presa em draft — retry seguro cria a review normalmente`).
+## 12. Integração com Executive Review
 
-## 9. Prova de ausência de transaction/lock durante LLM
+`reviews/review-service.ts:generateExecutiveReview` (v2.2) foi estendido
+(nunca duplicado) para, antes de chamar o LLM, buscar
+`getRelevantStrategicMemories({ domain: goal.domain })` e passar o
+resultado a `reviewExecutiveOutcome({ ..., historicalMemories })`.
+`reviews/prompt.ts:buildExecutiveReviewUserMessage` agora monta duas
+seções claramente separadas — `CURRENT EVIDENCE:` (o mesmo objeto da
+v2.2, inalterado) seguido de `HISTORICAL ORGANIZATIONAL MEMORY:` (novo,
+seção 11), nunca misturadas. Retrocompatível: quando não há memórias
+relevantes, aparece só o texto "nenhuma memória histórica relevante
+disponível" — o comportamento da v2.2 nunca foi alterado.
 
-Mesma metodologia da v2.1 (seção 24 do correio.md pediu explicitamente
-para repeti-la): teste com provider mockado com delay artificial de
+## 13. Integração com Goals/Director
+
+Cada memória carrega `source_goal_id`, e a recuperação filtra por
+`domain` (do próprio Goal do momento) — quando um novo Goal do mesmo
+domínio é avaliado (via uma nova Initiative → Executive Review), as
+lições de Goals anteriores no mesmo domínio entram automaticamente como
+contexto. Nenhuma alteração automática de Goal/Initiative acontece nunca
+— provado por teste ("memória nunca altera Goal nem Initiative
+originais").
+
+## 14. Estratégia de concorrência/idempotência
+
+Idêntica ao padrão já provado em `reviews/review-service.ts` (v2.2): a
+UNICIDADE de `source_review_id` na própria tabela É o claim
+(`INSERT ... ON CONFLICT DO NOTHING`, atômico). Vencedor monta
+evidência + chama o LLM fora de transação; perdedor lê a linha
+existente — se `active`, devolve direto (idempotente, SEM chamar o LLM
+de novo); se `draft`, aguarda via polling curto (sem lock). Provado por
+teste: duas chamadas concorrentes (`Promise.all`) convergem para a MESMA
+memória, só uma efetivamente cria; uma terceira chamada normal (não
+concorrente) também é idempotente.
+
+## 15. Comportamento em falha do provider
+
+O `catch` de `createStrategicMemoryFromReview` DELETA a linha `draft` —
+nunca deixa um registro permanentemente em estado transitório. A próxima
+chamada (mesmo caller ou outro) reclama o slot único normalmente.
+Provado por teste: falha do provider (mock lançando erro) → linha draft
+desaparece → nova chamada com provider funcional cria a memória
+normalmente (retry seguro).
+
+## 16. Prova de ausência de transaction/lock durante LLM
+
+Mesma metodologia da v2.1/v2.2: provider mockado com delay artificial de
 800ms, consulta `pg_stat_activity` no meio do delay:
 
 ```sql
@@ -175,306 +233,337 @@ select count(*)::int as count from pg_stat_activity
 where state = 'idle in transaction' and datname = current_database()
 ```
 
-Resultado: **0** — nenhuma conexão do pool está com transação aberta
-enquanto o "LLM" está "pensando". No mesmo instante, a linha `draft` já
-existe no banco (claim já commitado antes do I/O externo começar).
-Teste: `ausência de lock durante o LLM: nenhuma transação fica "idle in
-transaction" durante a chamada ao provider` — passou (879ms).
+Resultado: **0**. No mesmo instante, a linha `draft` já existe no banco
+(claim já commitado antes do I/O externo). Teste: "ausência de lock
+durante o LLM — nenhuma transação fica 'idle in transaction' durante a
+chamada ao provider" — passou (886ms).
 
-## 10. Integração com Goals/Initiatives/Action Plans
+## 17. Auditoria
 
-Nenhuma tabela nova de "execução" foi criada — a review lê Goal,
-Initiative, Action Plan e Action Plan Items reais via `db.select()`
-direto (mesmas tabelas da v2.0/v1.2), reutilizando
-`getInitiativeExecutionView` (v2.1) para a visão de execução. A rota
-`POST/GET .../review` foi adicionada ao MESMO arquivo de rotas de
-Initiatives (`director-initiatives.ts`), reaproveitando os helpers
-(`badRequest/notFound/currentUserId`) e o padrão de erro (`AgentError`)
-já existentes — nenhum arquivo de rotas novo.
+Implementados exatamente os 4 eventos pedidos pela seção 16, ajustados
+aos fluxos reais:
 
-## 11. Integração de `new_initiative`
+- `agents.director.memory.requested` — ao iniciar o claim (vencedor da
+  corrida).
+- `agents.director.memory.created` — quando a memória é persistida como
+  `active` pela primeira vez.
+- `agents.director.memory.reused` — em DOIS fluxos reais: (a) uma
+  chamada de criação que encontra uma memória já existente (idempotente,
+  nenhum LLM chamado de novo); (b) uma nova Executive Review que
+  recupera e injeta memórias históricas em seu prompt (com
+  `metadata.memoryIdsUsed`, seção 20) — decisão de design documentada em
+  código (`review-service.ts`), já que a seção 16 não distingue os dois
+  usos de "reused" e ambos são genuinamente "a memória foi usada de
+  novo".
+- `agents.director.memory.archived` — ao arquivar (`archiveStrategicMemory`).
 
-`createInitiativeFromExecutiveReview()` (`initiatives-service.ts`)
-reutiliza o MESMO `agentDirectorInitiatives` e o MESMO
-`recommendationKey` (índice único parcial já existente desde a v2.0,
-usado por `reviewDirectorGoals()`) — chave
-`executive-review:<reviewId>`. A Initiative nasce **sempre** `proposed`,
-`origin='director_recommendation'`, **sem** `actionPlanId` — precisa
-passar pelo ciclo de vida oficial completo (aprovação humana →
-`startInitiativeExecution` → Action Plan oficial) antes de qualquer
-execução. Provado por teste: `recomendação new_initiative: cria só uma
-proposta pelo pipeline oficial — nunca Action Plan, nunca tool, nunca
-pula aprovação`.
+Todos registram `actor/memoryId (ou reviewId)/sourceReviewId/sourceGoalId/
+sourceInitiativeId/timestamp/metadata` conforme pedido, nunca secrets.
 
-Nota de correção aplicada durante a implementação: o primeiro `insert`
-com `onConflictDoNothing` sobre o índice PARCIAL falhou com "there is no
-unique or exclusion constraint matching the ON CONFLICT specification"
-(mesmo bug de sintaxe já documentado na saneamento v2.0 — `where` é
-necessário, não `targetWhere`, exclusivo de `onConflictDoUpdate`) —
-corrigido adicionando `where: isNotNull(recommendationKey)`, confirmado
-pelo teste passando em seguida.
+## 18. Segurança/permissions
 
-## 12. Integração de `escalate`
+Nenhuma permission nova criada (seção 17). Reaproveitadas: `agents.read`
+para leitura (`GET /director/memories`, `GET /director/memories/:id`),
+`agents.director.initiatives.manage` para a ação administrativa
+(`POST /director/reviews/:id/memory`) — mesma permission já usada por
+`POST .../review` na v2.2, descrita como "ação administrativa sobre o
+mesmo domínio do Diretor". Autorização sempre no backend (`requirePermission()`
+nas rotas); frontend nunca é barreira de segurança (`PermissionGate`
+só esconde a UI, não substitui o 403 real do backend).
 
-`escalateExecutiveReview()` (`escalation.ts`) reutiliza a MESMA
-`agentDirectorDecisions` da Director Decision Queue (v1.9) — nenhuma
-tabela de "escalations" paralela. `severity=critical, impact=high,
-urgency=immediate` (decisão deliberada e documentada no código: uma
-escalação de Executive Review não tem um sinal operacional bruto do qual
-derivar esses eixos, então usa o teto de cada um — nunca sub-prioriza).
-`requiresHumanAttention=true` — já é o mecanismo existente que destaca o
-item no brief do Diretor. Idempotência via `deduplicationKey` +
-`ON CONFLICT DO NOTHING` (mesmo padrão de `upsertSignal`). Decision Item
-nasce `status='open'` — nenhuma decisão é auto-aprovada pelo LLM,
-provado por teste.
+## 19. Frontend implementado
 
-## 13. Auditoria e segurança
+- Nova página `/agents/director/memories` (`MemoriesList`) — filtros por
+  domínio/tipo, cada card mostra título/tipo/domínio/lição/confiança/
+  importância/data, com links para Goal e Initiative de origem. Nunca
+  usa a palavra "regra" — o texto de topo da página diz explicitamente
+  "orientação consultiva para o Diretor, nunca uma regra obrigatória".
+- Seção "Aprendizado estratégico" dentro do `ExecutiveReviewCard` (tela
+  de Initiative) — botão "Gerar aprendizado" (atrás de
+  `PermissionGate`), mostra título/lição/importância/confiança quando já
+  existe, link para a lista completa.
+- Badges: `MemoryStatusBadge`, `MemoryImportanceBadge` — nunca dependem
+  só de cor (texto sempre visível).
+- Item "Aprendizados" adicionado à sub-navegação do módulo Agentes.
 
-Eventos auditados (`audit()`, mesma tabela `audit_logs` de sempre):
-`agents.director.review.requested`, `.completed`,
-`.initiative_proposed` (quando new_initiative), `.recommendation_escalated`
-(quando escalate) — cada um com actor/entity/IDs/timestamps/metadata,
-nunca conteúdo sensível.
-
-Segurança: `POST .../review` exige `agents.director.initiatives.manage`
-(permission JÁ EXISTENTE, reaproveitada — nenhuma permission nova
-criada); `GET .../review` exige `agents.read`. Validação Zod em toda
-saída do LLM. Usuário sem permission → 403, nenhuma review criada,
-nenhuma chamada mutável ocorre (provado por teste HTTP).
-
-## 14. Arquivos criados
+## 20. Arquivos criados
 
 Backend:
 ```
-backend/src/agents/director/reviews/types.ts
-backend/src/agents/director/reviews/schemas.ts
-backend/src/agents/director/reviews/context.ts
-backend/src/agents/director/reviews/prompt.ts
-backend/src/agents/director/reviews/executive-reviewer.ts
-backend/src/agents/director/reviews/review-service.ts
-backend/src/agents/director/reviews/escalation.ts
-backend/src/agents/director/reviews/review-service.test.ts
-backend/src/db/schema/agent-executive-reviews.ts
-backend/drizzle/0016_agent_executive_reviews.sql
-backend/drizzle/meta/0016_snapshot.json
+backend/src/agents/director/memory/types.ts
+backend/src/agents/director/memory/schemas.ts
+backend/src/agents/director/memory/context.ts
+backend/src/agents/director/memory/prompt.ts
+backend/src/agents/director/memory/memory-extractor.ts
+backend/src/agents/director/memory/memory-service.ts
+backend/src/agents/director/memory/retrieval-service.ts
+backend/src/agents/director/memory/schemas-route.ts
+backend/src/agents/director/memory/memory-service.test.ts
+backend/src/agents/director/memory/retrieval-service.test.ts
+backend/src/db/schema/agent-strategic-memories.ts
+backend/src/routes/agents/director-memories.ts
+backend/src/routes/agents/director-memories.test.ts
+backend/drizzle/0017_agent_strategic_memories.sql
+backend/drizzle/meta/0017_snapshot.json
 ```
 
 Frontend:
 ```
-frontend/app/api/agents/director/initiatives/[id]/review/route.ts
+frontend/app/(dashboard)/agents/director/memories/page.tsx
+frontend/app/api/agents/director/memories/route.ts
+frontend/app/api/agents/director/memories/[id]/route.ts
+frontend/app/api/agents/director/reviews/[id]/memory/route.ts
+frontend/components/agents/director/memory/memories-list.tsx
+frontend/hooks/agents/use-director-memories.ts
 ```
 
-## 15. Arquivos alterados
+## 21. Arquivos alterados
 
 ```
-backend/drizzle/meta/_journal.json                          (+entrada da migration 0016)
-backend/src/agents/director/goals/initiatives-service.ts    (+createInitiativeFromExecutiveReview)
-backend/src/agents/errors.ts                                (+código 'review_failed', 422)
-backend/src/db/schema/index.ts                               (+export agent-executive-reviews)
-backend/src/db/seed.ts                                       (descrição da permission atualizada — cosmético, seed só insere se não existir, não afeta permissions já seedadas)
-backend/src/routes/agents/director-initiatives.ts             (+POST/GET .../review)
-backend/src/routes/agents/director-initiatives.test.ts       (+describe "POST/GET .../review", 5 testes)
-frontend/components/agents/director/goals/initiative-detail.tsx (+ExecutiveReviewCard)
-frontend/components/agents/status-badge.tsx                   (+ReviewOutcomeBadge, RecommendationTypeBadge)
-frontend/hooks/agents/use-director-goals.ts                   (+useInitiativeReview, useGenerateInitiativeReview)
-frontend/lib/agents/derived.ts                                (+reviewOutcomeLabel, recommendationTypeLabel)
-frontend/lib/agents/derived.test.ts                           (+8 testes)
-frontend/lib/query/keys.ts                                    (+directorInitiativeReview)
-frontend/services/agents.ts                                   (+getInitiativeReview, generateInitiativeReview)
-frontend/types/agents.ts                                      (+ExecutiveReview e tipos relacionados)
+backend/drizzle/meta/_journal.json                         (+entrada da migration 0017)
+backend/src/agents/director/reviews/executive-reviewer.ts  (+historicalMemories opcional)
+backend/src/agents/director/reviews/prompt.ts               (+seção HISTORICAL ORGANIZATIONAL MEMORY)
+backend/src/agents/director/reviews/review-service.ts       (+recuperação/injeção de memórias, +auditoria de reuso)
+backend/src/agents/director/reviews/review-service.test.ts  (+2 testes de integração v2.3, +helper de parsing do novo formato de userMessage)
+backend/src/agents/errors.ts                                (+código 'memory_failed', 422)
+backend/src/db/schema/index.ts                              (+export agent-strategic-memories)
+backend/src/routes/agents/index.ts                          (+registro de directorMemoriesRoutes)
+frontend/components/agents/agents-sub-nav.tsx               (+item "Aprendizados")
+frontend/components/agents/director/goals/initiative-detail.tsx (+seção StrategicMemorySection)
+frontend/components/agents/status-badge.tsx                 (+MemoryStatusBadge, MemoryImportanceBadge)
+frontend/lib/agents/derived.ts                               (+memoryTypeLabel, memoryStatusLabel, memoryImportanceLabel)
+frontend/lib/agents/derived.test.ts                          (+6 testes)
+frontend/lib/query/keys.ts                                   (+directorMemories, directorMemory)
+frontend/services/agents.ts                                  (+listStrategicMemories, getStrategicMemory, generateMemoryFromReview)
+frontend/types/agents.ts                                     (+StrategicMemory e tipos relacionados)
 ```
 
-## 16. Testes adicionados
+## 22. Testes adicionados
 
-- `review-service.test.ts` — **12 testes**: Initiative sem execução
-  elegível (409), sem actionPlanId (409), review bem-sucedida
-  persistida corretamente, sucesso técnico ≠ sucesso estratégico,
-  Initiative bloqueada (outcome coerente, nunca sucesso), skipped/shadow
-  não é falha automática, review não altera Goal/Initiative originais,
-  `new_initiative` cria só proposta pelo pipeline oficial, `escalate`
-  gera Decision Item real sem auto-aprovação, idempotência (2 chamadas
-  concorrentes → 1 review), ausência de lock durante o LLM (prova real
-  via `pg_stat_activity`), falha do provider não deixa review presa.
-- `director-initiatives.test.ts` (describe novo) — **5 testes**: 403 sem
-  permission (nenhuma review criada), `GET` sem review ainda → `null`
-  (nunca 404), `POST` prematuro (execução não terminada) → 409, fluxo
-  completo via HTTP (propose → auto-completed → `POST review` 201 →
-  `GET` devolve a mesma → segunda `POST` idempotente 200), recomendação
-  `escalate` via HTTP gerando Decision Item real e visível na queue.
-- `derived.test.ts` (frontend) — **4 testes**: `reviewOutcomeLabel` e
-  `recommendationTypeLabel` (todos os valores + fallback de valor
-  desconhecido, 2 testes cada).
+Cobrindo os 20 itens da seção 23 do correio.md:
 
-Total: **17 testes novos no backend + 4 no frontend = 21 testes novos**.
+- `memory-service.test.ts` (novo) — **9 testes**: review não `completed`
+  rejeitada (409); (1/2/3) review gera memória válida com provenance
+  real e evidência separada do lesson; (8/9) nunca altera Goal/Initiative;
+  (10/11/12) nunca cria Action Plan, nunca executa tool, nunca cria
+  approval; (4/5) concorrência + idempotência; (7) ausência de lock
+  durante o LLM (`pg_stat_activity`); (6) falha do provider com retry
+  seguro; listagem nunca inclui `draft` por padrão (bug real encontrado
+  e corrigido durante a implementação — ver seção 28); `archiveStrategicMemory`
+  (arquivar + rejeitar arquivar de novo).
+- `retrieval-service.test.ts` (novo) — **4 testes**: (13) recuperação
+  por domínio; (14) limite respeitado (default/customizado/capado no
+  máximo); (15) arquivada/draft nunca entram no contexto; ordenação por
+  importância > confiança > recência.
+- `director-memories.test.ts` (novo) — **4 testes**: (17) sem permission
+  → 403, nenhuma memória criada; (18) só `agents.read` → lista permitida,
+  criação continua 403; fluxo completo via HTTP (criar → detalhe →
+  lista filtrada → idempotência); review inexistente → 404.
+- `review-service.test.ts` (v2.2, estendido) — **+2 testes**: (16)
+  `CURRENT EVIDENCE`/`HISTORICAL ORGANIZATIONAL MEMORY` aparecem
+  separadas no prompt real, com texto de precedência presente; (19) IDs
+  das memórias usadas ficam auditáveis (`agents.director.memory.reused`
+  com `memoryIdsUsed`); memória arquivada nunca entra no prompt de uma
+  nova review.
+- `derived.test.ts` (frontend) — **6 testes**: (20) `memoryTypeLabel`,
+  `memoryStatusLabel`, `memoryImportanceLabel` (todos os valores +
+  fallback).
 
-## 17. Números exatos da suíte backend (medidos pelo runner real)
+Total: **19 testes novos no backend + 6 no frontend = 25 testes novos**.
 
-**Baseline antes da v2.2** (correio.md seção 25, medida real da entrega
-anterior): `455 testes / 455 pass / 0 fail`.
+## 23. Números exatos da suíte backend (medidos pelo runner real)
 
-**Suíte completa após a v2.2** (`npx tsx --test --test-concurrency=1
+**Baseline após v2.2** (correio.md seção 24, medida real da entrega
+anterior): `472 testes / 472 pass / 0 fail`.
+
+**Suíte completa após a v2.3** (`npx tsx --test --test-concurrency=1
 'src/**/*.test.ts'`, via Docker no network do projeto):
 
 ```
-ℹ tests 472
-ℹ suites 79
-ℹ pass 472
+ℹ tests 491
+ℹ suites 83
+ℹ pass 491
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
 ```
 
-**Reconciliação:** 455 → 472 = **+17 testes líquidos**, batendo
-exatamente com a soma medida por arquivo: `review-service.test.ts`
-(12, arquivo novo) + `director-initiatives.test.ts` (8 → 13, +5) =
-12 + 5 = 17. Nenhuma regressão — todos os 455 testes anteriores
-continuam passando.
+**Reconciliação:** 472 → 491 = **+19 testes líquidos**, batendo
+exatamente com a soma medida por arquivo: `memory-service.test.ts` (9,
+novo) + `retrieval-service.test.ts` (4, novo) + `director-memories.test.ts`
+(4, novo) + `review-service.test.ts` (12 → 14, +2) = 9 + 4 + 4 + 2 = 19.
+Nenhuma regressão — todos os 472 testes anteriores continuam passando.
 
-## 18. Números exatos da suíte frontend (medidos pelo runner real)
+## 24. Números exatos da suíte frontend (medidos pelo runner real)
 
 `npx tsx --test 'lib/**/*.test.ts'`:
 
 ```
-ℹ tests 76
-ℹ suites 25
-ℹ pass 76
+ℹ tests 82
+ℹ suites 28
+ℹ pass 82
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
 ```
 
-Baseline anterior era 72/72 → 76/76 = **+4 testes líquidos**, batendo
-exatamente com os 4 testes novos de `reviewOutcomeLabel`/
-`recommendationTypeLabel` (2 describes × 2 testes cada). Nenhuma
-regressão.
+Baseline anterior era 76/76 → 82/82 = **+6 testes líquidos**, batendo
+exatamente com os 6 testes novos de `memoryTypeLabel`/`memoryStatusLabel`/
+`memoryImportanceLabel` (3 describes × 2 testes cada). Nenhuma regressão.
 
-## 19. Typecheck/build
+## 25. Typecheck/build
 
 - Backend typecheck (`npx tsc --noEmit`, via Docker): **OK, sem erros.**
 - Frontend typecheck (`npx tsc --noEmit`): **OK, sem erros.**
 - Frontend build (`npm run build`): **OK**, build de produção completo
-  sem erros — rota `/api/agents/director/initiatives/[id]/review`
-  presente na saída do build.
-- Lint: o projeto não possui script/config de lint configurado (backend
-  nem frontend) — reconfirmado, mesmo estado já registrado nos rounds
-  anteriores; nenhuma ferramenta de lint foi adicionada incidentalmente
-  (correio.md seção 26).
+  sem erros — rotas `/agents/director/memories`,
+  `/api/agents/director/memories`, `/api/agents/director/memories/[id]`
+  e `/api/agents/director/reviews/[id]/memory` presentes na saída do
+  build.
+- Lint: o projeto continua sem script/config de lint configurado —
+  reconfirmado; nenhuma ferramenta de lint foi adicionada.
 
-## 20. `git diff --stat`
+## 26. `git diff --stat`
+
+(Delta real da v2.3 — HEAD já inclui v2.1/v2.2, commitados fora desta
+sessão entre rounds; ver nota no topo do relatório.)
 
 ```
- backend/drizzle/meta/_journal.json                 |   7 +
- .../agents/director/goals/initiatives-service.ts   |  69 +-
- backend/src/agents/errors.ts                       |   9 +-
+ backend/drizzle/meta/_journal.json                 |   7 ++
+ .../agents/director/reviews/executive-reviewer.ts  |   9 +-
+ backend/src/agents/director/reviews/prompt.ts      |  23 ++++-
+ .../agents/director/reviews/review-service.test.ts | 112 ++++++++++++++++++++-
+ .../src/agents/director/reviews/review-service.ts  |  26 +++++
+ backend/src/agents/errors.ts                       |   7 +-
  backend/src/db/schema/index.ts                     |   3 +-
- backend/src/db/seed.ts                             |   2 +-
- .../src/routes/agents/director-initiatives.test.ts | 175 +++-
- backend/src/routes/agents/director-initiatives.ts  |  51 ++
- correio.md                                         | 889 +++++++++++++++++----
- .../agents/director/goals/initiative-detail.tsx    | 143 +++-
- frontend/components/agents/status-badge.tsx        |  42 +
- frontend/hooks/agents/use-director-goals.ts        |  28 +
- frontend/lib/agents/derived.test.ts                |  33 +
- frontend/lib/agents/derived.ts                     |  27 +
- frontend/lib/query/keys.ts                         |   1 +
- frontend/services/agents.ts                        |  11 +
- frontend/types/agents.ts                           |  54 ++
- 16 files changed, 1364 insertions(+), 180 deletions(-)
+ backend/src/routes/agents/index.ts                 |   2 +
+ frontend/components/agents/agents-sub-nav.tsx      |   1 +
+ .../agents/director/goals/initiative-detail.tsx    |  76 +++++++++++++-
+ frontend/components/agents/status-badge.tsx        |  34 +++++++
+ frontend/lib/agents/derived.test.ts                |  45 +++++++++
+ frontend/lib/agents/derived.ts                     |  36 +++++++
+ frontend/lib/query/keys.ts                         |   2 +
+ frontend/services/agents.ts                        |  26 +++++
+ frontend/types/agents.ts                           |  32 ++++++
+ 16 files changed, 432 insertions(+), 9 deletions(-)
 ```
 
-(`executed.md` não aparece no diff acima porque a comparação é contra o
-último commit real — este relatório substitui o conteúdo anterior do
-arquivo, mesmo padrão dos rounds anteriores; `git status` abaixo mostra
-`M executed.md`.)
+(`executed.md`/`correio.md` fora do diff acima por comparação com HEAD —
+este relatório substitui o `executed.md` já commitado.)
 
-Novos arquivos (sem histórico prévio, portanto fora do `diff --stat`):
+Novos arquivos (sem histórico prévio, fora do `diff --stat`):
 ```
-backend/src/agents/director/reviews/                (7 arquivos)
-backend/src/db/schema/agent-executive-reviews.ts
-backend/drizzle/0016_agent_executive_reviews.sql
-backend/drizzle/meta/0016_snapshot.json
-frontend/app/api/agents/director/initiatives/[id]/review/route.ts
+backend/src/agents/director/memory/                 (10 arquivos)
+backend/src/db/schema/agent-strategic-memories.ts
+backend/src/routes/agents/director-memories.ts
+backend/src/routes/agents/director-memories.test.ts
+backend/drizzle/0017_agent_strategic_memories.sql
+backend/drizzle/meta/0017_snapshot.json
+frontend/app/(dashboard)/agents/director/memories/
+frontend/app/api/agents/director/memories/
+frontend/app/api/agents/director/reviews/
+frontend/components/agents/director/memory/
+frontend/hooks/agents/use-director-memories.ts
 ```
 
-## 21. `git status`
+## 27. `git status`
 
 ```
  M backend/drizzle/meta/_journal.json
- M backend/src/agents/director/goals/initiatives-service.ts
+ M backend/src/agents/director/reviews/executive-reviewer.ts
+ M backend/src/agents/director/reviews/prompt.ts
+ M backend/src/agents/director/reviews/review-service.test.ts
+ M backend/src/agents/director/reviews/review-service.ts
  M backend/src/agents/errors.ts
  M backend/src/db/schema/index.ts
- M backend/src/db/seed.ts
- M backend/src/routes/agents/director-initiatives.test.ts
- M backend/src/routes/agents/director-initiatives.ts
+ M backend/src/routes/agents/index.ts
  M correio.md
  M executed.md
+ M frontend/components/agents/agents-sub-nav.tsx
  M frontend/components/agents/director/goals/initiative-detail.tsx
  M frontend/components/agents/status-badge.tsx
- M frontend/hooks/agents/use-director-goals.ts
  M frontend/lib/agents/derived.test.ts
  M frontend/lib/agents/derived.ts
  M frontend/lib/query/keys.ts
  M frontend/services/agents.ts
  M frontend/types/agents.ts
-?? backend/drizzle/0016_agent_executive_reviews.sql
-?? backend/drizzle/meta/0016_snapshot.json
-?? backend/src/agents/director/reviews/
-?? backend/src/db/schema/agent-executive-reviews.ts
-?? frontend/app/api/agents/director/initiatives/[id]/review/
+?? backend/drizzle/0017_agent_strategic_memories.sql
+?? backend/drizzle/meta/0017_snapshot.json
+?? backend/src/agents/director/memory/
+?? backend/src/db/schema/agent-strategic-memories.ts
+?? backend/src/routes/agents/director-memories.test.ts
+?? backend/src/routes/agents/director-memories.ts
+?? frontend/app/(dashboard)/agents/director/memories/
+?? frontend/app/api/agents/director/memories/
+?? frontend/app/api/agents/director/reviews/
+?? frontend/components/agents/director/memory/
+?? frontend/hooks/agents/use-director-memories.ts
 ```
 
-## 22. Pendências ou limitações reais encontradas
+## 28. Limitações ou pendências reais encontradas
 
-1. **Falha de processo (crash) entre o claim e o revert.** Se o processo
-   Node morrer no meio do `try` de `generateExecutiveReview` (não uma
-   exceção JS normal, mas um crash real do processo), a linha `draft`
-   fica presa — o `catch` que a deleta nunca roda. Mesma limitação já
-   documentada na v2.1 para `startInitiativeExecution` (Initiative presa
-   em `active` sem plano); não é uma regressão desta versão, é uma
-   limitação estrutural do padrão "compensação via catch" sem um
-   mecanismo de saga/timeout externo — fora do escopo pedido pelo
-   correio.md desta versão.
-2. **`reviewType`/índice único.** Só existe um `reviewType` real
-   (`initiative_outcome`) nesta versão — o índice único cobre só
-   `action_plan_id`. Se uma segunda `reviewType` for introduzida no
-   futuro, o índice único precisa virar composto
-   `(action_plan_id, review_type)` (documentado no schema).
-3. **Geração automática (correio.md seção 13) não foi implementada como
-   trigger automático** — o correio.md permitiu explicitamente evitar
-   isso ("não é necessário criar um novo daemon ou scheduler se não
-   houver necessidade") e pediu preferir "endpoint explícito" — foi essa
-   a opção escolhida (`POST .../review`, chamado explicitamente pelo
-   usuário ou por uma futura integração). Nenhum ponto de sincronização
-   automática (ex.: gerar review sozinho quando a execução chega a
-   `completed`) foi adicionado — decisão deliberada de manter o escopo
-   mínimo pedido.
-4. **Frontend**: o card de Executive Review some quando a execução não
-   está em estado terminal (nunca mostra "gerar review" prematuramente),
-   mas não há um botão de "gerar" desabilitado com tooltip explicando o
-   motivo — simplesmente não aparece. Comportamento aceitável, mas uma
-   iteração futura poderia tornar isso mais explícito.
+1. **Bug real encontrado e corrigido durante a implementação:**
+   `listStrategicMemories` não excluía linhas `draft` por padrão (o
+   filtro `status` só era aplicado quando explicitamente passado pelo
+   caller) — a documentação da função já afirmava esse comportamento,
+   mas o código não o implementava. Corrigido (`ne(status, 'draft')`
+   quando `status` não é informado) e coberto por um teste novo dedicado
+   (`listStrategicMemories nunca inclui draft por padrão`). A suíte
+   completa (491/491) já reflete o código corrigido — o run anterior
+   (com o bug) foi descartado e a suíte foi re-executada do zero após o
+   fix, nunca apenas re-rodada parcialmente.
+2. **Falha de processo (crash) entre claim e revert** — mesma limitação
+   estrutural já documentada na v2.1 (`startInitiativeExecution`) e v2.2
+   (`generateExecutiveReview`): um crash real do processo Node entre o
+   claim e o `catch` de reversão deixaria uma linha `draft` presa. Fora
+   do escopo pedido pelo correio.md (que pede "falha de provider", não
+   "crash de processo" — tratado corretamente).
+3. **Arquivamento (`archiveStrategicMemory`) não tem endpoint HTTP
+   próprio nesta versão** — decisão deliberada (correio.md seção 18:
+   "não criar CRUD administrativo gigantesco", escopo pedido é
+   "criar; consultar; recuperar memórias relevantes"). A função de
+   serviço existe, é auditada (`agents.director.memory.archived`) e
+   testada diretamente — pronta para ganhar rota quando houver
+   necessidade real comprovada.
+4. **Recuperação por importância/confiança é feita em memória (JS), não
+   em SQL** — decisão documentada em `retrieval-service.ts`: o volume
+   esperado de memórias `active` por domínio (uma por Executive Review)
+   é pequeno o bastante para não justificar um `ORDER BY` com `CASE`
+   só para mapear enum→rank. Se o volume crescer ordens de magnitude,
+   vale revisitar.
+5. **`memory_type` só produz `initiative_outcome` nesta versão** — os
+   outros 3 tipos do vocabulário (`strategic_lesson`, `decision_outcome`,
+   `recurring_pattern`) existem no schema/tipos mas não têm nenhum fluxo
+   de geração real ainda (correio.md seção 2: "não criar dezenas de
+   tipos nesta versão" — cumprido deliberadamente).
+6. **`sourceReviewId` nullable no schema, mas sempre preenchido na
+   prática** — só um `memory_type` (`initiative_outcome`) é gerado nesta
+   versão, e ele sempre nasce de uma review real. A nulidade é só para
+   suportar evolução futura (item 5), não um estado alcançável hoje via
+   nenhum fluxo real do sistema.
 
 ---
 
 ## Conclusão
 
-Todos os 16 critérios da seção 28 do correio.md foram atendidos: Executive
-Review persistida; evidência separada da interpretação do LLM; resultado
-técnico separado do resultado estratégico (provado por teste); recomendações
-estruturadas e validadas por Zod; LLM sem poder de autorização (estrutural,
-não convencional); `new_initiative` reutiliza o pipeline oficial;
-`escalate` reutiliza a Decision Queue existente; concorrência protegida
-(claim atômico via unicidade); nenhuma transaction aberta durante o LLM
-(provado via `pg_stat_activity`); Goal original nunca modificado pela
-review (provado por teste); auditoria implementada; frontend apresenta
-review e recomendação sem sugerir decisão automática; backend completo
-passa (472/472); frontend completo passa (76/76); typecheck limpo dos dois
-lados; build de produção passa.
+Todos os 22 critérios da seção 28 do correio.md foram atendidos: memória
+estratégica persistida; provenance rastreável (testado); evidência e
+interpretação separadas (testado); Executive Review alimenta memória;
+criação idempotente (testado); concorrência protegida (testado); falha
+de provider com retry seguro (testado); nenhum lock/transaction durante
+I/O externo (provado via `pg_stat_activity`); recuperação com limite
+(testado); memórias arquivadas não contaminam contexto (testado);
+evidência atual com precedência explícita (documentado + testado); LLM
+sem poder de autorização (estrutural); memória nunca modifica Goals/
+Initiatives (testado); memória nunca executa nada (testado); uso
+auditável (testado); frontend distingue aprendizado histórico de decisão
+obrigatória; backend completo passa (491/491); frontend completo passa
+(82/82); typechecks limpos; build de produção passa; nenhuma arquitetura
+paralela foi criada (Executor/Planner/Approval/Policy únicos, reaproveitados
+em toda a extensão).
 
-Nenhuma funcionalidade fora do escopo da v2.2 foi adicionada, nenhum
-mecanismo de planejamento/execução/aprovação foi duplicado.
-
-**NENHUM COMMIT foi realizado.** Todas as alterações permanecem no
-working tree, aguardando autorização final do Diretor/CEO.
+**NENHUM COMMIT foi realizado nesta sessão.** Todas as alterações desta
+entrega permanecem no working tree, aguardando autorização final do
+Diretor/CEO.

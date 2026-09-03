@@ -9,6 +9,7 @@ import { getLLMProvider } from '../../llm/factory.js';
 import { getInitiativeExecutionView } from '../goals/initiatives-execution-service.js';
 import { createInitiativeFromExecutiveReview } from '../goals/initiatives-service.js';
 import type { InitiativeRow } from '../goals/initiatives-service.js';
+import { getRelevantStrategicMemories } from '../memory/retrieval-service.js';
 
 import { buildExecutiveReviewContext } from './context.js';
 import { escalateExecutiveReview } from './escalation.js';
@@ -157,11 +158,19 @@ export async function generateExecutiveReview(initiative: InitiativeRow, actorUs
       throw new AgentError('llm_unavailable', 'Geração de Executive Review requer o LLM habilitado (AGENT_LLM_ENABLED=false).');
     }
 
+    // Agentes v2.3 (correio.md seção 11/12/20) — recupera memórias
+    // estratégicas relevantes do MESMO domínio do Goal (determinístico,
+    // sem embeddings — seção 9/10) e as injeta no prompt do Executive
+    // Reviewer, sempre numa seção separada de "CURRENT EVIDENCE" (nunca
+    // misturadas). IDs efetivamente usados ficam auditáveis (seção 20).
+    const historicalMemories = await getRelevantStrategicMemories({ domain: goal.domain });
+
     const reviewed = await reviewExecutiveOutcome({
       provider: getLLMProvider(),
       model: env.AGENT_LLM_MODEL,
       context,
       timeoutMs: env.AGENT_LLM_TIMEOUT_MS,
+      historicalMemories,
     });
 
     if (reviewed.status !== 'ok' || !reviewed.output) {
@@ -198,6 +207,23 @@ export async function generateExecutiveReview(initiative: InitiativeRow, actorUs
       entityId: String(draft.id),
       metadata: { initiativeId: initiative.id, goalId: initiative.goalId, outcome: output.outcome, recommendationType: output.recommendation.type },
     });
+
+    // Agentes v2.3 (correio.md seção 16/20) — auditoria de USO de
+    // memória: registra exatamente quais memoryIds entraram no contexto
+    // desta review, respondendo "por que o Diretor considerou essa
+    // experiência anterior?". Só audita quando há alguma memória de
+    // verdade (nunca um evento vazio/ruído).
+    if (historicalMemories.length > 0) {
+      await audit({
+        userId: actorUserId,
+        actorType: actorUserId ? 'user' : 'system',
+        actorId: actorUserId ? String(actorUserId) : null,
+        action: 'agents.director.memory.reused',
+        entityType: 'agent_executive_review',
+        entityId: String(draft.id),
+        metadata: { memoryIdsUsed: historicalMemories.map((memory) => memory.id), domain: goal.domain, reason: 'used_as_context_for_review' },
+      });
+    }
 
     // --- efeitos colaterais autorizados (nunca execução) ---
     let resultingInitiativeId: number | null = null;

@@ -46,7 +46,11 @@ export type AgentErrorCode =
   // estruturalmente válida (timeout, erro de provider, saída inválida) —
   // mesmo racional de 'planning_failed', para o domínio de review em vez
   // de planejamento.
-  | 'review_failed';
+  | 'review_failed'
+  // Agentes v2.3 — Strategic Memory (correio.md seção 15 "Falha do
+  // provider"): o memory extractor (LLM) não produziu uma saída
+  // estruturalmente válida — mesmo racional de 'review_failed'.
+  | 'memory_failed';
 
 const STATUS_BY_CODE: Record<AgentErrorCode, number> = {
   validation_error: 400,
@@ -79,6 +83,7 @@ const STATUS_BY_CODE: Record<AgentErrorCode, number> = {
   autonomous_rate_limit_exceeded: 429,
   autonomy_circuit_open: 503,
   review_failed: 422,
+  memory_failed: 422,
 };
 
 export class AgentError extends Error {

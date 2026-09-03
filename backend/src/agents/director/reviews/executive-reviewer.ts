@@ -2,6 +2,8 @@ import { ProviderHttpError, sanitizeProviderMessage } from '../../llm/error-clas
 import type { InterpretationErrorType } from '../../llm/error-classification.js';
 import type { LLMProvider, LLMUsage } from '../../llm/types.js';
 
+import type { RelevantMemorySummary } from '../memory/context.js';
+
 import type { ExecutiveReviewContext } from './context.js';
 import { buildExecutiveReviewSystemPrompt, buildExecutiveReviewUserMessage } from './prompt.js';
 import { executiveReviewOutputSchema } from './schemas.js';
@@ -60,11 +62,16 @@ export async function reviewExecutiveOutcome(params: {
   model: string;
   context: ExecutiveReviewContext;
   timeoutMs: number;
+  // Agentes v2.3 (correio.md seção 11) — memórias estratégicas
+  // relevantes já recuperadas por `getRelevantStrategicMemories`, nunca
+  // buscadas por este módulo (que não toca o banco). Opcional/vazio por
+  // padrão — retrocompatível com o comportamento da v2.2.
+  historicalMemories?: RelevantMemorySummary[];
 }): Promise<ExecutiveReviewerResult> {
   const started = Date.now();
 
   const systemPrompt = buildExecutiveReviewSystemPrompt();
-  const userMessage = buildExecutiveReviewUserMessage(params.context);
+  const userMessage = buildExecutiveReviewUserMessage(params.context, params.historicalMemories ?? []);
 
   const base = {
     provider: params.provider.name,

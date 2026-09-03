@@ -49,3 +49,4 @@ export * from './agent-director-goal-metrics.js';
 export * from './agent-director-goal-evaluations.js';
 export * from './agent-director-initiatives.js';
 export * from './agent-executive-reviews.js';
+export * from './agent-strategic-memories.js';

@@ -9,6 +9,7 @@ import { useAuth } from "@/lib/auth/use-auth";
 const ITEMS = [
   { href: "/agents", label: "Agentes", permission: "agents.read" },
   { href: "/agents/director", label: "Mesa do Diretor", permission: "agents.read" },
+  { href: "/agents/director/memories", label: "Aprendizados", permission: "agents.read" },
   { href: "/agents/chat", label: "Chat", permission: "agents.use" },
   { href: "/agents/plans", label: "Planos de Ação", permission: "agents.plan.read" },
   { href: "/agents/jobs", label: "Jobs", permission: "agents.jobs.read" },

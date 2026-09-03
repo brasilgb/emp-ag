@@ -19,10 +19,11 @@ import {
   useInitiativeReview,
   useProposeInitiativeAction,
 } from "@/hooks/agents/use-director-goals";
-import { approvalState, canProposeActionForInitiative, goalPriorityLabel, reviewOutcomeLabel, signalDomainLabel } from "@/lib/agents/derived";
+import { useGenerateMemoryFromReview, useStrategicMemories } from "@/hooks/agents/use-director-memories";
+import { approvalState, canProposeActionForInitiative, goalPriorityLabel, memoryImportanceLabel, reviewOutcomeLabel, signalDomainLabel } from "@/lib/agents/derived";
 import { formatDateTime } from "@/lib/agents/format";
 import { toErrorMessage } from "@/services/http";
-import type { ExecutiveReview, InitiativeExecutionState, InitiativeExecutionView } from "@/types/agents";
+import type { ExecutiveReview, InitiativeExecutionState, InitiativeExecutionView, StrategicMemory } from "@/types/agents";
 
 import { ApprovalStateBadge, InitiativeExecutionStateBadge, InitiativeStatusBadge, RecommendationTypeBadge, ReviewOutcomeBadge } from "../../status-badge";
 
@@ -41,6 +42,10 @@ export function InitiativeDetail({ initiativeId }: { initiativeId: number }) {
   const complete = useCompleteInitiative();
   const propose = useProposeInitiativeAction();
   const generateReview = useGenerateInitiativeReview();
+  // Agentes v2.3 — 0 ou 1 memória canônica por review (1:1 nesta versão)
+  // — filtrar por initiativeId basta para achar "a" memória desta review.
+  const memoriesQuery = useStrategicMemories({ initiativeId });
+  const generateMemory = useGenerateMemoryFromReview();
 
   if (isLoading) return <LoadingState label="Carregando Initiative..." />;
   if (isError || !data) return <ErrorState onRetry={() => refetch()} />;
@@ -82,6 +87,15 @@ export function InitiativeDetail({ initiativeId }: { initiativeId: number }) {
       toast.success("Executive Review gerada.");
     } catch (error) {
       toast.error(toErrorMessage(error, "Erro ao gerar Executive Review."));
+    }
+  }
+
+  async function handleGenerateMemory(reviewId: number) {
+    try {
+      await generateMemory.mutateAsync(reviewId);
+      toast.success("Aprendizado estratégico gerado.");
+    } catch (error) {
+      toast.error(toErrorMessage(error, "Erro ao gerar aprendizado estratégico."));
     }
   }
 
@@ -148,6 +162,9 @@ export function InitiativeDetail({ initiativeId }: { initiativeId: number }) {
           review={reviewQuery.data?.data ?? null}
           isPending={generateReview.isPending}
           onGenerate={handleGenerateReview}
+          memory={memoriesQuery.data?.data.find((candidate) => candidate.sourceReviewId === reviewQuery.data?.data?.id) ?? null}
+          isMemoryPending={generateMemory.isPending}
+          onGenerateMemory={handleGenerateMemory}
         />
       ) : null}
 
@@ -281,10 +298,16 @@ function ExecutiveReviewCard({
   review,
   isPending,
   onGenerate,
+  memory,
+  isMemoryPending,
+  onGenerateMemory,
 }: {
   review: ExecutiveReview | null;
   isPending: boolean;
   onGenerate: () => void;
+  memory: StrategicMemory | null;
+  isMemoryPending: boolean;
+  onGenerateMemory: (reviewId: number) => void;
 }) {
   return (
     <Card>
@@ -370,9 +393,58 @@ function ExecutiveReviewCard({
                 ) : null}
               </div>
             ) : null}
+
+            <StrategicMemorySection review={review} memory={memory} isPending={isMemoryPending} onGenerate={onGenerateMemory} />
           </>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Agentes v2.3 (correio.md seções 4/19) — "Aprendizado histórico", nunca
+ * apresentado como "Decisão obrigatória" (seção 19). Só aparece quando já
+ * existe uma Executive Review `completed` — gerar o aprendizado é uma
+ * ação explícita do usuário (`POST /director/reviews/:id/memory`), nunca
+ * automática.
+ */
+function StrategicMemorySection({
+  review,
+  memory,
+  isPending,
+  onGenerate,
+}: {
+  review: ExecutiveReview;
+  memory: StrategicMemory | null;
+  isPending: boolean;
+  onGenerate: (reviewId: number) => void;
+}) {
+  return (
+    <div className="space-y-2 rounded-md border border-dashed border-border p-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-medium text-muted-foreground">Aprendizado estratégico</p>
+        <PermissionGate permission="agents.director.initiatives.manage">
+          <Button size="sm" variant="ghost" disabled={isPending} onClick={() => onGenerate(review.id)}>
+            {memory ? "Atualizar aprendizado" : "Gerar aprendizado"}
+          </Button>
+        </PermissionGate>
+      </div>
+      {!memory ? (
+        <p className="text-xs text-muted-foreground">Nenhum aprendizado estratégico extraído desta review ainda.</p>
+      ) : (
+        <div className="space-y-1 text-xs">
+          <p className="font-medium text-foreground">{memory.title}</p>
+          <p className="text-muted-foreground">{memory.lesson}</p>
+          <div className="flex flex-wrap items-center gap-3 text-muted-foreground">
+            {memory.importance ? <span>Importância: {memoryImportanceLabel(memory.importance)}</span> : null}
+            {memory.confidence ? <span>Confiança: {Math.round(Number(memory.confidence) * 100)}%</span> : null}
+            <Link href="/agents/director/memories" className="text-primary underline underline-offset-2">
+              Ver todos os aprendizados
+            </Link>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

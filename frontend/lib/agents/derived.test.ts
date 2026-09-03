@@ -18,6 +18,9 @@ import {
   goalPriorityLabel,
   goalStatusLabel,
   initiativeExecutionStateLabel,
+  memoryImportanceLabel,
+  memoryStatusLabel,
+  memoryTypeLabel,
   recommendationTypeLabel,
   reviewOutcomeLabel,
   initiativeStatusLabel,
@@ -288,5 +291,47 @@ describe("recommendationTypeLabel", () => {
   test("valor desconhecido faz fallback para o próprio valor", () => {
     // @ts-expect-error — testando o fallback de valor não mapeado.
     assert.equal(recommendationTypeLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+// Agentes v2.3 — Strategic Learning & Organizational Memory.
+describe("memoryTypeLabel", () => {
+  test("todo tipo conhecido tem rótulo em pt-BR", () => {
+    assert.equal(memoryTypeLabel("initiative_outcome"), "Resultado de iniciativa");
+    assert.equal(memoryTypeLabel("strategic_lesson"), "Lição estratégica");
+    assert.equal(memoryTypeLabel("decision_outcome"), "Resultado de decisão");
+    assert.equal(memoryTypeLabel("recurring_pattern"), "Padrão recorrente");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(memoryTypeLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+describe("memoryStatusLabel", () => {
+  test("todo status conhecido tem rótulo em pt-BR", () => {
+    assert.equal(memoryStatusLabel("draft"), "Gerando...");
+    assert.equal(memoryStatusLabel("active"), "Ativa");
+    assert.equal(memoryStatusLabel("superseded"), "Substituída");
+    assert.equal(memoryStatusLabel("archived"), "Arquivada");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(memoryStatusLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+describe("memoryImportanceLabel", () => {
+  test("todo nível conhecido tem rótulo em pt-BR", () => {
+    assert.equal(memoryImportanceLabel("low"), "Baixa");
+    assert.equal(memoryImportanceLabel("medium"), "Média");
+    assert.equal(memoryImportanceLabel("high"), "Alta");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(memoryImportanceLabel("nunca_existiu"), "nunca_existiu");
   });
 });

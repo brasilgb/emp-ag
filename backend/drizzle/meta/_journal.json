@@ -120,6 +120,13 @@
       "when": 1788377310352,
       "tag": "0016_agent_executive_reviews",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1788379826596,
+      "tag": "0017_agent_strategic_memories",
+      "breakpoints": true
     }
   ]
 }
