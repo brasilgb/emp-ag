@@ -15,9 +15,12 @@ import { requirePermission } from '../../middleware/require-permission.js';
 import { AUTONOMY_BLOCK_REASONS } from '../../agents/autonomy/reasons.js';
 
 import { badRequest, currentUserId } from './helpers.js';
-import { operationsSummaryQuerySchema, superviseQuerySchema } from '../../agents/operations/schemas.js';
+import { operationsSummaryQuerySchema, patchSupervisionSchedulerSchema, superviseQuerySchema } from '../../agents/operations/schemas.js';
 import { getOperationalHealth } from '../../agents/operations/health-service.js';
-import { runOperationalSupervision } from '../../agents/operations/supervisor-service.js';
+import { getOperationalSupervisionSchedulerStatus } from '../../agents/operations/scheduler-status.js';
+import { isOperationalSupervisionEnabled, setOperationalSupervisionEnabled } from '../../agents/operations/scheduler-settings.js';
+import { runGuardedOperationalSupervision, SupervisionAlreadyRunningError } from '../../agents/operations/supervisor-guard.js';
+import { audit } from '../../services/audit.js';
 
 /**
  * Agentes v1.6 (correio.md seção 3) — Operations Dashboard.
@@ -238,8 +241,55 @@ export async function operationsRoutes(app: FastifyInstance) {
       const query = superviseQuerySchema.safeParse(request.query);
       if (!query.success) return badRequest(reply, query.error);
 
-      const report = await runOperationalSupervision({ dryRun: query.data.dryRun, actorUserId: currentUserId(request) });
-      return { data: report };
+      try {
+        // Agentes v2.5.1 (correio.md seções 27/28/29) — passa pelo MESMO
+        // guard central do scheduler automático (nunca dois guards
+        // independentes) — uma supervisão manual enquanto outra (manual
+        // ou automática) já está rodando devolve 409, nunca enfileira.
+        const report = await runGuardedOperationalSupervision({ dryRun: query.data.dryRun, actorUserId: currentUserId(request), triggeredBy: 'manual' });
+        return { data: report };
+      } catch (error) {
+        if (error instanceof SupervisionAlreadyRunningError) {
+          return reply.code(409).send({ error: 'conflict', message: error.message });
+        }
+        throw error;
+      }
+    },
+  );
+
+  // Agentes v2.5.1 (correio.md seções 17/22) — observabilidade e
+  // administração do scheduler automático. Leitura em
+  // `agents.operations.read` (mesma da v2.5); alteração em
+  // `agents.operations.manage` (mesma da v2.5 — seção 23: "reaproveitar
+  // permission da v2.5, não criar nova sem necessidade objetiva").
+  app.get(
+    '/operations/scheduler',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async () => ({ data: await getOperationalSupervisionSchedulerStatus() }),
+  );
+
+  app.patch(
+    '/operations/scheduler',
+    { preHandler: [authenticate, requirePermission('agents.operations.manage')] },
+    async (request, reply) => {
+      const body = patchSupervisionSchedulerSchema.safeParse(request.body ?? {});
+      if (!body.success) return badRequest(reply, body.error);
+
+      const previous = await isOperationalSupervisionEnabled();
+      await setOperationalSupervisionEnabled(body.data.enabled);
+
+      const userId = currentUserId(request);
+      await audit({
+        userId,
+        actorType: 'user',
+        actorId: String(userId),
+        action: body.data.enabled ? 'agents.operations.scheduler.enabled' : 'agents.operations.scheduler.disabled',
+        entityType: 'agent_operational_supervision',
+        entityId: null,
+        metadata: { previous, next: body.data.enabled },
+      });
+
+      return { data: await getOperationalSupervisionSchedulerStatus() };
     },
   );
 }

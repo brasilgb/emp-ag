@@ -1,1099 +1,928 @@
-# Agentes v2.5 — Operational Supervision & Autonomous Incident Response
+# Agentes v2.5.1 — Automatic Operational Supervision
 
 ## 1. Objetivo
 
-Implementar uma camada de supervisão operacional sobre a arquitetura de agentes existente, capaz de detectar degradações operacionais, correlacionar sinais provenientes dos módulos já existentes e aplicar respostas seguras e determinísticas.
+Integrar o `Operational Supervisor` da v2.5 ao mecanismo de agendamento já existente da plataforma, permitindo supervisão recorrente e segura da operação sem criar:
 
-A v2.5 NÃO deve criar um novo sistema de execução.
+* segundo scheduler;
+* cron paralelo;
+* `setInterval` solto;
+* novo Executor;
+* novo Circuit Breaker;
+* nova Decision Queue;
+* novo mecanismo de recovery.
 
-Ela deve coordenar exclusivamente mecanismos já existentes:
+A execução automática deve chamar exclusivamente o serviço existente:
 
-* Jobs
-* Runs
-* Events
-* Event Rules
-* Action Plans
-* Approvals
-* Decision Queue
-* Recovery v2.4
-* Circuit Breaker / autonomy controls
-* Audit logs
-* Policy Evaluator
+```ts
+runOperationalSupervision(...)
+```
 
-O supervisor deve responder à seguinte pergunta:
-
-> “Existe alguma condição operacional que exija observação, recuperação segura, redução de autonomia ou intervenção humana?”
+O objetivo é permitir que a agência fiscalize periodicamente a própria saúde operacional.
 
 ---
 
-# 2. Princípio arquitetural obrigatório
+# 2. Princípio arquitetural
 
-O Operational Supervisor é um **coordenador de segurança operacional**, não um Executor.
-
-Fluxo conceitual:
+Fluxo obrigatório:
 
 ```text
-Operational Signals
-       ↓
-Health Assessment
-       ↓
-Incident Classification
-       ↓
-Response Policy
-       ↓
+Scheduler existente
+      ↓
+Operational Supervision Trigger
+      ↓
+runOperationalSupervision()
+      ↓
+Response Policy v2.5
+      ↓
 observe
-recover
+safe_recovery
 restrict_autonomy
 manual_attention
-       ↓
-Existing official mechanisms
-```
-
-Proibido:
-
-```text
-Supervisor
-   ↓
-LLM decide o que executar
-   ↓
-tool arbitrária
-```
-
-O LLM nunca deve decidir autonomamente:
-
-* conceder permissões;
-* ignorar approvals;
-* reativar autonomia;
-* executar shell;
-* executar SQL arbitrário;
-* chamar ferramentas fora do catálogo oficial;
-* alterar Policy Evaluator;
-* modificar roles/permissions;
-* contornar Circuit Breaker.
-
----
-
-# 3. Fontes de sinais
-
-Reaproveitar dados reais da plataforma.
-
-O supervisor deve inicialmente considerar, no mínimo:
-
-### Workflow Recovery
-
-Dados da v2.4:
-
-* stale workflows;
-* manual attention pendente;
-* última reconciliação;
-* falhas de recovery.
-
-### Jobs / Runs
-
-Detectar situações como:
-
-* runs consecutivamente falhando;
-* job com muitas falhas recentes;
-* execução presa;
-* budget excedido;
-* job desabilitado por segurança;
-* scheduler executando mas workflow não avançando.
-
-Não inventar estados: revisar schema e código existentes antes da implementação.
-
-### Event Engine
-
-Considerar:
-
-* deliveries falhando repetidamente;
-* evento sem processamento esperado;
-* event rules produzindo falhas repetidas;
-* backlog operacional anormal, caso possa ser calculado com dados existentes.
-
-### Approvals
-
-Considerar:
-
-* approvals críticas pendentes por período excessivo;
-* grande volume pendente;
-* execução bloqueada exclusivamente aguardando aprovação.
-
-A existência de approval pendente não deve automaticamente representar incidente.
-
-### Decision Queue
-
-Considerar:
-
-* decisões operacionais abertas;
-* decisões `agents.recovery.*`;
-* itens `requiresHumanAttention=true`.
-
-### Circuit Breaker / Autonomy
-
-Considerar:
-
-* circuit breaker aberto;
-* autonomy global desabilitada;
-* bloqueios recentes;
-* recorrência de trips.
-
-### Audit Logs
-
-Usar quando necessário para calcular:
-
-* falhas recentes;
-* última ocorrência;
-* histórico de incidentes;
-* mudanças de estado.
-
-Evitar criar nova persistência se a informação já puder ser derivada de forma barata e segura.
-
----
-
-# 4. Operational Health Snapshot
-
-Criar um serviço central equivalente conceitualmente a:
-
-```ts
-getOperationalHealth()
-```
-
-Ele deve produzir um snapshot estruturado semelhante a:
-
-```ts
-type OperationalHealth = {
-  status:
-    | 'healthy'
-    | 'degraded'
-    | 'attention_required'
-    | 'restricted';
-
-  generatedAt: Date;
-
-  summary: {
-    activeIncidents: number;
-    criticalIncidents: number;
-    manualAttentionPending: number;
-    staleWorkflows: number;
-    failingJobs: number;
-    failingDeliveries: number;
-  };
-
-  signals: OperationalSignal[];
-
-  incidents: OperationalIncident[];
-
-  recommendations: OperationalRecommendation[];
-};
-```
-
-Os nomes podem ser ajustados ao padrão real do projeto.
-
-Não persistir snapshots apenas por conveniência.
-
----
-
-# 5. Operational Signals
-
-Criar um vocabulário pequeno e explícito.
-
-Exemplo:
-
-```ts
-type OperationalSignal = {
-  type: OperationalSignalType;
-  severity: 'info' | 'warning' | 'critical';
-  source: string;
-  entityType?: string;
-  entityId?: string;
-  detectedAt: Date;
-  reason: string;
-  metadata?: Record<string, safe value>;
-};
-```
-
-Nunca incluir:
-
-* secrets;
-* tokens;
-* credentials;
-* payloads sensíveis;
-* stack traces completos contendo informações confidenciais.
-
----
-
-# 6. Classificação de incidentes
-
-Um ou mais sinais relacionados poderão formar um incidente operacional.
-
-Tipos iniciais sugeridos:
-
-```text
-workflow_stale
-repeated_job_failure
-run_stuck
-delivery_failure
-recovery_required
-manual_attention_required
-autonomy_circuit_open
-approval_bottleneck
-operational_degradation
-```
-
-Não criar tipos que não correspondam a condições reais encontradas no código.
-
----
-
-# 7. Severidade
-
-Definir severidade deterministicamente.
-
-Sugestão inicial:
-
-### info
-
-Situação operacional observável, porém sem degradação.
-
-### warning
-
-Há degradação ou risco operacional, mas o sistema continua funcionando.
-
-### critical
-
-Existe risco de:
-
-* loop operacional;
-* execução repetidamente falhando;
-* perda de controle da autonomia;
-* impossibilidade de reconciliar automaticamente;
-* integridade operacional ameaçada.
-
-Severity nunca deve ser escolhida por LLM.
-
----
-
-# 8. Response Policy
-
-Criar um componente explícito semelhante a:
-
-```text
-operational-response-policy.ts
-```
-
-A política recebe o incidente e retorna exclusivamente uma destas decisões:
-
-```ts
-type OperationalResponse =
-  | 'observe'
-  | 'safe_recovery'
-  | 'restrict_autonomy'
-  | 'manual_attention';
-```
-
-Se houver necessidade real, pode existir:
-
-```text
 already_handled
 ```
 
-ou equivalente.
+O scheduler não toma decisões operacionais.
 
-Evitar vocabulário excessivo.
-
----
-
-# 9. Observe
-
-Usado quando:
-
-* condição merece monitoramento;
-* não existe correção automática comprovadamente segura;
-* ainda não atingiu threshold de intervenção.
-
-Nenhuma mutação operacional deve ocorrer.
-
-Deve haver auditabilidade adequada.
-
----
-
-# 10. Safe Recovery
-
-Safe Recovery significa exclusivamente chamar mecanismos de recovery já considerados seguros.
-
-Inicialmente:
-
-```text
-Recovery v2.4
-```
-
-O Supervisor NÃO deve implementar reconciliação própria.
-
-Exemplo:
-
-```text
-incident
-   ↓
-Response Policy = safe_recovery
-   ↓
-runRecovery/reconcileOne existente
-```
-
-Nunca:
-
-```text
-incident
-   ↓
-Supervisor altera diretamente tabela de workflow
-```
-
----
-
-# 11. Restrict Autonomy
-
-Esta é uma ação de segurança.
-
-Usar somente quando existir condição objetiva que torne perigoso continuar executando autonomamente.
-
-Exemplos possíveis:
-
-* falhas repetidas acima de threshold;
-* circuit breaker já indicando degradação;
-* loop de execução detectado;
-* volume de falhas superior a limite de segurança.
-
-Preferencialmente utilizar mecanismo de autonomia/circuit breaker já existente.
-
-Não criar um segundo kill switch.
-
-### Regra fundamental
-
-O Supervisor pode:
-
-```text
-reduzir autonomia
-```
-
-mas NÃO pode automaticamente:
-
-```text
-aumentar autonomia
-```
-
-Se autonomia foi reduzida por segurança, restaurá-la deve obedecer ao mecanismo existente e, quando apropriado, exigir CEO/admin.
-
----
-
-# 12. Manual Attention
-
-Reutilizar a Director Decision Queue.
-
-Não criar:
-
-* incident inbox separada;
-* segunda tabela de decisões;
-* segunda central de aprovações.
-
-Para incidentes que exigem atenção humana:
-
-```text
-domain='agents'
-signalType='agents.operations.<tipo>'
-requiresHumanAttention=true
-```
-
-ou padrão equivalente coerente com v1.9/v2.4.
-
-Deduplicação obrigatória.
-
-O mesmo incidente não pode criar uma nova decisão a cada scan.
-
----
-
-# 13. Incident Correlation
-
-Implementar correlação simples e determinística.
-
-Exemplo:
-
-```text
-job X
-↓
-run failure
-↓
-novo run
-↓
-failure
-↓
-novo run
-↓
-failure
-```
-
-Deve representar uma condição operacional única de:
-
-```text
-repeated_job_failure: job X
-```
-
-e não três incidentes independentes, se semanticamente forem o mesmo problema.
-
-Não implementar machine learning.
-
-Não utilizar LLM para correlation.
-
-Preferir:
-
-```text
-incidentType + entityType + entityId
-```
-
-como identidade/deduplication key quando aplicável.
-
----
-
-# 14. Thresholds
-
-Todos os thresholds operacionais devem:
-
-* possuir defaults conservadores;
-* ser configuráveis;
-* ter limites mínimos/máximos razoáveis;
-* ficar centralizados em env/config;
-* não aparecer como números mágicos espalhados pelo código.
-
-Exemplos que podem ser necessários:
-
-```text
-AGENT_OPERATIONAL_JOB_FAILURE_THRESHOLD
-AGENT_OPERATIONAL_FAILURE_WINDOW_SECONDS
-AGENT_OPERATIONAL_STUCK_AFTER_SECONDS
-AGENT_OPERATIONAL_APPROVAL_WARNING_AFTER_SECONDS
-```
-
-Criar SOMENTE variáveis realmente utilizadas.
-
-Não criar uma grande coleção especulativa de env vars.
-
----
-
-# 15. Supervisor scan
-
-Implementar algo conceitualmente equivalente a:
-
-```ts
-runOperationalSupervision({
-  dryRun?: boolean
-})
-```
-
-Fluxo:
-
-```text
-collect signals
-     ↓
-classify incidents
-     ↓
-evaluate response policy
-     ↓
-apply allowed responses
-     ↓
-audit
-     ↓
-return structured report
-```
-
-Resultado sugerido:
-
-```ts
-type OperationalSupervisionReport = {
-  startedAt: Date;
-  finishedAt: Date;
-
-  dryRun: boolean;
-
-  signalsDetected: number;
-  incidentsDetected: number;
-
-  observed: number;
-  recovered: number;
-  autonomyRestricted: number;
-  escalated: number;
-
-  results: OperationalIncidentResult[];
-};
-```
-
----
-
-# 16. Dry-run obrigatório
-
-Antes de execução real, deve existir modo:
-
-```text
-dryRun=true
-```
-
-No dry-run:
-
-Permitido:
-
-* ler banco;
-* detectar sinais;
-* classificar incidentes;
-* aplicar Response Policy;
-* produzir recomendações;
-* registrar scan somente se consistente com nossa política atual de auditoria.
+Ele apenas dispara o serviço já existente.
 
 Proibido:
 
-* executar recovery;
-* alterar autonomia;
-* criar Decision Item;
-* modificar workflows.
+```text
+Scheduler
+   ↓
+interpreta sinais
+   ↓
+altera workflows diretamente
+```
 
-O resultado deve mostrar claramente:
+Toda classificação continua dentro da arquitetura da v2.5.
+
+---
+
+# 3. Revisão obrigatória antes de implementar
+
+Antes de escrever código, revisar o scheduler real existente, principalmente:
 
 ```text
-would_observe
-would_recover
-would_restrict_autonomy
-would_escalate
+agents/jobs/scheduler.ts
+agents/jobs/job-runner.ts
+```
+
+e qualquer serviço responsável por:
+
+* inicialização do scheduler;
+* timers;
+* polling;
+* graceful shutdown;
+* execução concorrente;
+* lifecycle da aplicação.
+
+Documentar rapidamente no relatório:
+
+* como o scheduler atual inicia;
+* qual frequência utiliza;
+* se existe um loop central;
+* como evita sobreposição;
+* como trata exceptions;
+* como encerra no shutdown.
+
+Não inferir a arquitetura apenas pelos nomes dos arquivos.
+
+---
+
+# 4. Não criar um Job normal
+
+A supervisão operacional NÃO deve ser implementada como um Job comum criado pelo usuário.
+
+Motivo:
+
+Jobs pertencem ao domínio de objetivos dos agentes.
+
+Operational Supervision é infraestrutura interna de segurança.
+
+Portanto:
+
+```text
+Operational Supervisor != AgentJob
+```
+
+Mas deve reaproveitar o mesmo scheduler/lifecycle da infraestrutura quando tecnicamente apropriado.
+
+---
+
+# 5. Configuração
+
+Criar somente configurações realmente necessárias.
+
+Sugestão:
+
+```text
+AGENT_OPERATIONAL_SUPERVISION_ENABLED
+AGENT_OPERATIONAL_SUPERVISION_INTERVAL_SECONDS
+```
+
+Defaults conservadores sugeridos:
+
+```text
+enabled = false
+interval = 300
+```
+
+ou outro intervalo tecnicamente justificado após revisar o scheduler real.
+
+A ativação automática deve começar desabilitada por default.
+
+Não queremos que simplesmente atualizar a aplicação faça o Supervisor começar a executar ações reais sem decisão administrativa explícita.
+
+---
+
+# 6. Limites do intervalo
+
+O intervalo deve possuir:
+
+* mínimo razoável;
+* default conservador;
+* validação centralizada;
+* ausência de número mágico espalhado.
+
+Sugestão mínima:
+
+```text
+60 segundos
+```
+
+Não permitir frequência excessiva.
+
+---
+
+# 7. Estado de ativação
+
+Avaliar se o estado deve vir de:
+
+1. env/config;
+2. settings já existentes;
+3. combinação dos dois.
+
+Preferência:
+
+Se o projeto já possui mecanismo apropriado de settings administrativos persistidos e auditáveis, utilizar esse mecanismo.
+
+Ideal conceitual:
+
+```text
+env = capacidade/default de infraestrutura
+setting = decisão operacional atual
+```
+
+Por exemplo:
+
+```text
+AGENT_OPERATIONAL_SUPERVISION_ENABLED=true
+```
+
+pode significar que o recurso está disponível, enquanto um setting persistido controla se ele está operacionalmente ativo.
+
+Porém não criar complexidade artificial.
+
+Revisar arquitetura existente antes de decidir.
+
+---
+
+# 8. Execução automática
+
+Implementar uma função pequena, por exemplo:
+
+```ts
+runScheduledOperationalSupervision()
+```
+
+Ela deve:
+
+1. verificar se supervisão automática está habilitada;
+2. garantir que não exista execução anterior ainda ativa;
+3. chamar `runOperationalSupervision({ dryRun: false })`;
+4. registrar resultado;
+5. capturar qualquer erro;
+6. liberar o lock/guard em `finally`.
+
+Não duplicar lógica da v2.5.
+
+---
+
+# 9. Proteção contra overlap
+
+Obrigatório impedir duas execuções automáticas simultâneas no mesmo processo.
+
+Exemplo conceitual:
+
+```text
+tick N
+  ↓
+supervisor ainda executando
+  ↓
+tick N+1
+  ↓
+skip
+```
+
+O segundo tick NÃO deve iniciar nova supervisão.
+
+Implementar usando o mecanismo mais simples compatível com a arquitetura real.
+
+Se houver possibilidade de múltiplas instâncias do backend em produção, avaliar também proteção distribuída.
+
+Não inventar Redis lock se a aplicação atualmente roda somente em uma instância e não houver necessidade real, mas documentar a implicação.
+
+---
+
+# 10. Multi-instance safety
+
+Revisar o modelo real de deploy.
+
+Se a arquitetura permite múltiplos containers/backend replicas simultâneos, a supervisão recorrente não pode rodar independentemente em todas as réplicas produzindo efeitos redundantes.
+
+Nesse caso, utilizar mecanismo distribuído já existente, se houver:
+
+* Redis lock;
+* advisory lock;
+* scheduler leader;
+* outro mecanismo oficial.
+
+Se atualmente existe uma única instância, pode ser usado guard local nesta versão, desde que a limitação seja explicitamente documentada.
+
+Não construir um sistema complexo de eleição de líder sem necessidade comprovada.
+
+---
+
+# 11. Falha do Supervisor
+
+Regra obrigatória:
+
+> Uma falha do Operational Supervisor jamais deve derrubar o scheduler principal.
+
+Toda chamada automática deve ser isolada:
+
+```ts
+try {
+  await runOperationalSupervision(...)
+} catch (error) {
+  // audit/log
+}
+```
+
+O erro não pode escapar ao ponto de:
+
+* parar loop do scheduler;
+* impedir Jobs futuros;
+* encerrar processo;
+* interromper Event Engine.
+
+---
+
+# 12. Failure isolation
+
+Testar explicitamente:
+
+```text
+Supervisor lança exception
+        ↓
+scheduler permanece funcional
+        ↓
+próximo ciclo continua ocorrendo
+        ↓
+Jobs normais continuam podendo executar
+```
+
+Este é um critério bloqueante de aprovação.
+
+---
+
+# 13. Circuit breaker
+
+A supervisão automática nunca deve:
+
+* fechar circuit breaker;
+* alterar `circuit_state` para estado menos restritivo;
+* religar Job;
+* reativar autonomia global.
+
+Ela continua obedecendo exatamente à política da v2.5.
+
+---
+
+# 14. Auto-recovery permitido
+
+Quando executado automaticamente, `safe_recovery` continua permitido porque a v2.5 já restringe essa ação aos mecanismos de Recovery v2.4 considerados seguros.
+
+Nenhuma diferença de política deve existir entre:
+
+```text
+manual supervision
+```
+
+e
+
+```text
+scheduled supervision
+```
+
+A única diferença é o `trigger source`.
+
+---
+
+# 15. Trigger source
+
+Adicionar contexto à execução para auditabilidade.
+
+Conceitualmente:
+
+```ts
+runOperationalSupervision({
+  dryRun: false,
+  triggeredBy: 'scheduler'
+})
+```
+
+e manual:
+
+```text
+triggeredBy = user/admin
+```
+
+Ajustar contrato apenas se realmente necessário.
+
+Evitar alterar dezenas de funções apenas por isso.
+
+Se já existir metadata/contexto de auditoria equivalente, reutilizar.
+
+---
+
+# 16. Auditoria da automação
+
+Adicionar eventos somente quando úteis.
+
+Sugestões:
+
+```text
+agents.operations.scheduler.started
+agents.operations.scheduler.skipped
+agents.operations.scheduler.failed
+```
+
+Não duplicar todos os eventos já emitidos por `runOperationalSupervision()`.
+
+O scan já produz:
+
+```text
+agents.operations.scan.started
+agents.operations.scan.completed
+```
+
+Portanto não criar ruído redundante.
+
+`skipped` deve ser usado somente para situações operacionais relevantes, como overlap, não a cada tick em que o recurso está desabilitado.
+
+---
+
+# 17. Observabilidade do scheduler
+
+Adicionar status ao Operational Health ou endpoint apropriado.
+
+Informações úteis:
+
+```ts
+type OperationalSupervisionSchedulerStatus = {
+  enabled: boolean;
+  running: boolean;
+  intervalSeconds: number;
+
+  lastStartedAt?: Date;
+  lastCompletedAt?: Date;
+  lastFailedAt?: Date;
+
+  lastDurationMs?: number;
+  lastResult?: 'success' | 'failed' | 'skipped';
+
+  nextRunAt?: Date;
+};
+```
+
+Não é obrigatório persistir tudo.
+
+Avaliar o que pode ser derivado de:
+
+* audit logs;
+* config;
+* estado em memória.
+
+---
+
+# 18. Persistência
+
+Evitar nova tabela.
+
+Preferência:
+
+* configuração via mecanismo existente;
+* timestamps históricos derivados de audit logs;
+* `running` e próximo tick em memória quando aplicável.
+
+Criar persistência somente se necessária para funcionamento correto e justificar.
+
+---
+
+# 19. Restart behavior
+
+Após restart do backend:
+
+* scheduler deve reiniciar normalmente;
+* não deve tentar “compensar” todos os ticks perdidos;
+* não deve disparar múltiplas supervisões acumuladas.
+
+Princípio:
+
+```text
+missed supervision tick != queued work
+```
+
+A supervisão observa estado atual, portanto basta executar no próximo ciclo normal.
+
+---
+
+# 20. Startup behavior
+
+Não executar imediatamente na inicialização sem avaliar consequências.
+
+Preferência conservadora:
+
+```text
+startup
+↓
+scheduler inicia
+↓
+aguarda primeiro intervalo
+↓
+supervision
+```
+
+Se o scheduler existente possui padrão diferente, manter coerência com ele.
+
+Documentar decisão.
+
+---
+
+# 21. Graceful shutdown
+
+Se o processo iniciar shutdown enquanto supervisor está rodando:
+
+* não iniciar nova execução;
+* evitar corromper estado;
+* permitir conclusão conforme política atual de shutdown, quando possível;
+* não deixar timers novos vivos.
+
+Reutilizar lifecycle existente.
+
+Não criar handlers de SIGTERM duplicados caso já existam.
+
+---
+
+# 22. Administração
+
+A execução automática deve poder ser habilitada/desabilitada administrativamente.
+
+Antes de criar endpoint, verificar se existe sistema apropriado de settings.
+
+Se necessário:
+
+```http
+GET   /agents/operations/scheduler
+PATCH /agents/operations/scheduler
 ```
 
 ou equivalente.
 
----
+PATCH só pode aceitar campos previamente definidos, por exemplo:
 
-# 17. Idempotência
-
-Executar o supervisor duas vezes sobre o mesmo estado não pode:
-
-* criar decisões duplicadas;
-* abrir incidentes duplicados;
-* repetir recuperação destrutiva;
-* desabilitar repetidamente algo já desabilitado;
-* multiplicar side effects.
-
-Todos os efeitos reais devem possuir predicados condicionais, deduplicação ou reutilizar serviços já idempotentes.
-
----
-
-# 18. Concorrência
-
-Duas execuções simultâneas do supervisor devem ser seguras.
-
-Não exigir necessariamente lock global caso a arquitetura consiga ser naturalmente idempotente.
-
-Porém:
-
-```text
-SELECT
-↓
-decisão em memória
-↓
-UPDATE incondicional
+```json
+{
+  "enabled": true
+}
 ```
 
-não é aceitável para operações críticas.
+Talvez:
 
-Usar mecanismos condicionais/transacionais existentes.
-
----
-
-# 19. Scheduler
-
-Diferentemente da v2.4, a arquitetura da v2.5 DEVE estar pronta para execução recorrente.
-
-Entretanto:
-
-### primeira entrega
-
-Implementar execução manual e serviço reutilizável.
-
-### execução automática
-
-Só integrar ao scheduler existente se puder ser feito de forma pequena, segura e sem criar outro scheduler.
-
-Se o scheduler atual puder chamar o serviço diretamente, pode ser integrado.
-
-Caso a integração aumente muito o escopo, deixar serviço pronto e documentar a ativação automática para v2.5.1.
-
-Não criar:
-
-* cron interno concorrente;
-* segundo scheduler;
-* setInterval solto dentro do backend.
-
----
-
-# 20. Persistência de incidentes
-
-Antes de criar uma tabela `operational_incidents`, avaliar se incidentes podem ser derivados de:
-
-* estado atual;
-* audit logs;
-* Decision Queue.
-
-Preferência:
-
-```text
-não criar tabela nova
+```json
+{
+  "enabled": true,
+  "intervalSeconds": 300
+}
 ```
 
-nesta versão, desde que status e histórico possam ser representados adequadamente.
+somente se o intervalo for realmente administrável em runtime.
 
-Criar persistência somente se tecnicamente necessária e justificar no relatório.
+Nunca aceitar:
 
----
-
-# 21. Auditoria
-
-Eventos sugeridos:
-
-```text
-agents.operations.scan.started
-agents.operations.signal.detected
-agents.operations.incident.detected
-agents.operations.safe_recovery
-agents.operations.autonomy_restricted
-agents.operations.manual_attention
-agents.operations.scan.completed
+```json
+{
+  "command": "..."
+}
 ```
 
-Ajustar conforme arquitetura real.
-
-Registrar somente eventos significativos.
-
-Evitar gerar dezenas de audit logs por entidade saudável.
-
 ---
 
-# 22. Permissions
+# 23. Permissions
 
-Avaliar permissions existentes antes de criar novas.
-
-Leitura provavelmente poderá usar:
+Leitura:
 
 ```text
 agents.operations.read
 ```
 
-Execução administrativa deve avaliar se:
-
-```text
-agents.recovery.manage
-```
-
-é semanticamente suficiente ou se realmente precisamos de:
+Alteração da supervisão automática:
 
 ```text
 agents.operations.manage
 ```
 
-Criar nova permission somente se houver necessidade semântica real.
+Reaproveitar permission da v2.5.
 
-Autorização sempre no backend.
-
-Frontend nunca deve ser barreira de segurança.
-
----
-
-# 23. API
-
-Sugestão inicial:
-
-```http
-GET /agents/operations/health
-GET /agents/operations/incidents
-POST /agents/operations/supervise?dryRun=true
-POST /agents/operations/supervise?dryRun=false
-```
-
-Só criar endpoints adicionais se houver necessidade objetiva.
-
-O endpoint de execução nunca deve aceitar instruções livres do usuário como:
-
-```json
-{
-  "action": "execute anything"
-}
-```
-
-Ele executa apenas a política operacional previamente codificada.
+Não criar nova permission sem necessidade objetiva.
 
 ---
 
 # 24. Frontend
 
-Criar uma página administrativa:
+Na página existente:
 
 ```text
 /agents/operations
 ```
 
-Nome visual sugerido:
+Adicionar seção pequena:
 
-```text
-Operações
-```
-
-ou:
-
-```text
-Saúde Operacional
-```
-
-Adicionar à sub-nav de Agentes.
-
-Tela deve ser claramente operacional, não uma ferramenta cotidiana.
-
----
-
-# 25. Dashboard operacional
+## Supervisão automática
 
 Exibir:
 
-### Overall health
+* habilitada/desabilitada;
+* intervalo;
+* executando agora;
+* último início;
+* última conclusão;
+* última falha;
+* duração;
+* próximo ciclo.
+
+---
+
+# 25. Controle de ativação
+
+Usuário com `agents.operations.manage` pode:
 
 ```text
-Healthy
-Degraded
-Attention Required
-Restricted
+Habilitar supervisão automática
+Desabilitar supervisão automática
 ```
 
-### Indicadores
+Se alteração for persistente e operacional, usar confirmação apropriada.
 
-* incidentes ativos;
-* incidentes críticos;
-* stale workflows;
-* jobs com falhas;
-* falhas de eventos/deliveries;
-* atenção humana;
-* estado da autonomia;
-* estado do circuit breaker;
-* último scan.
-
-### Incidentes
-
-Tabela:
+Para habilitar, exibir mensagem:
 
 ```text
-Severity
-Type
-Entity
-Problem
-Detected
-Recommended response
-Current state
+A supervisão operacional passará a executar automaticamente e poderá
+realizar recoveries seguros, restringir autonomia em situações críticas
+e escalar incidentes para atenção humana conforme as políticas atuais.
 ```
 
----
-
-# 26. Ações da UI
-
-Permitir:
-
-### Simular supervisão
-
-Executa `dryRun=true`.
-
-Sem confirmação obrigatória.
-
-### Executar supervisão
-
-Executa operação real.
-
-Exigir diálogo de confirmação.
-
-Mostrar antes:
+Nunca apresentar como:
 
 ```text
-Esta operação poderá executar recoveries previamente autorizados,
-restringir autonomia em condições de segurança e criar itens de
-atenção humana.
+Permitir que a IA corrija o sistema sozinha
 ```
 
-Não apresentar como “IA vai corrigir tudo”.
+---
+
+# 26. Intervalo
+
+Se permitir edição via UI:
+
+* validar backend;
+* definir mínimo;
+* não permitir frequência perigosa;
+* mostrar unidade claramente;
+* não aceitar zero ou negativo.
+
+Caso não seja necessário editar em runtime, mostrar apenas o intervalo configurado.
+
+Não adicionar edição apenas porque é fácil.
 
 ---
 
-# 27. Autonomous safety rules
+# 27. Manual supervision permanece
 
-Adicionar regras explícitas e testes para provar que o Supervisor:
+Os botões da v2.5:
 
-1. nunca concede permission;
-2. nunca altera role;
-3. nunca executa SQL arbitrário;
-4. nunca executa shell;
-5. nunca executa tool arbitrária;
-6. nunca cria Action Plan por conta própria;
-7. nunca ignora approval;
-8. nunca altera decisão do Policy Evaluator;
-9. nunca remove bloqueio imposto por Circuit Breaker;
-10. nunca aumenta autonomia automaticamente;
-11. só executa recovery pelos serviços oficiais;
-12. só escala humanos pela Decision Queue oficial.
+```text
+Simular supervisão
+Executar supervisão
+```
 
----
+devem continuar funcionando mesmo com supervisão automática ativa.
 
-# 28. Testes obrigatórios
+Entretanto, evitar overlap entre:
 
-Cobrir no mínimo:
+```text
+execução automática
+```
 
-## Signal detection
+e
 
-1. estado saudável não gera incidente;
-2. stale workflow gera signal;
-3. falha isolada de job abaixo do threshold não gera incidente crítico;
-4. falhas consecutivas atingindo threshold geram incidente;
-5. condição de autonomia restrita aparece no health;
-6. Decision Queue com recovery pendente aparece no health.
+```text
+execução manual
+```
 
-## Classification
+Avaliar um guard compartilhado.
 
-7. severity correta para warning;
-8. severity correta para critical;
-9. incident correlation evita duplicação;
-10. entidade diferente produz incidente independente.
+Uma operação manual enquanto outra está em andamento pode:
 
-## Policy
+* retornar conflito;
+* informar "supervisão já em execução";
+* ou aguardar, se isso já for padrão no projeto.
 
-11. condição observável → observe;
-12. stale recuperável → safe_recovery;
-13. condição perigosa → restrict_autonomy;
-14. condição não reconciliável → manual_attention.
-
-## Safety
-
-15. supervisor nunca cria Action Plan;
-16. nunca cria approval;
-17. nunca chama ferramenta arbitrária;
-18. nunca modifica permissions;
-19. nunca aumenta autonomia;
-20. nunca ignora Circuit Breaker.
-
-## Execution
-
-21. dry-run sem side effects;
-22. dry-run informa ações que seriam executadas;
-23. safe recovery chama Recovery v2.4;
-24. manual attention reutiliza Decision Queue;
-25. restrict autonomy reutiliza mecanismo oficial.
-
-## Idempotency
-
-26. dois scans não duplicam Decision Item;
-27. recovery já realizado não roda novamente;
-28. autonomy já restrita não sofre efeito duplicado.
-
-## Concurrency
-
-29. dois supervisors concorrentes não provocam dois efeitos reais incompatíveis.
-
-## API/Auth
-
-30. leitura sem permission → 403;
-31. leitura com permission adequada → 200;
-32. execução sem permission administrativa → 403;
-33. dry-run autorizado → 200;
-34. execução real autorizada → 200.
-
-## Status
-
-35. health summary matematicamente consistente;
-36. contagem por severity consistente;
-37. último scan auditado corretamente.
-
-Adicionar outros testes que forem necessários após leitura do código real.
+Preferência: **não enfileirar**.
 
 ---
 
-# 29. Compatibilidade
+# 28. HTTP status para overlap
 
-A v2.5 deve preservar integralmente:
+Se uma supervisão manual for solicitada enquanto outra já está rodando, considerar:
 
-* Agentes v1.x;
-* Action Planning;
-* Approvals;
-* Jobs;
-* Runs;
-* Events;
-* Event Rules;
-* Director Decision Queue;
-* Strategy;
-* Executive Reviews;
-* Strategic Memory;
-* Recovery v2.4;
-* Circuit Breaker;
-* permissions atuais;
-* audit logs atuais.
+```text
+409 Conflict
+```
 
-Nenhum fluxo existente deve ser reimplementado.
+com mensagem clara.
+
+Somente fazer isso se o guard puder ser centralizado no serviço e não apenas no scheduler.
 
 ---
 
-# 30. Migração
+# 29. Guard central
 
-Evitar migration.
+Preferência arquitetural:
 
-Antes de criar nova tabela/coluna:
+```text
+runOperationalSupervision()
+```
 
-1. verificar schema atual;
-2. verificar audit logs;
-3. verificar Decision Queue;
-4. verificar estado do Job/Run/Event;
-5. verificar Recovery.
+ou wrapper oficial correspondente deve conhecer exclusão mútua.
 
-Se for inevitável criar migration:
+Assim:
 
-* justificar;
-* manter mínima;
-* adicionar índices necessários;
-* garantir compatibilidade com dados existentes.
+```text
+scheduler → mesmo guard
+API → mesmo guard
+```
 
----
+Não criar:
 
-# 31. Processo obrigatório de implementação
+```text
+schedulerGuard
+apiGuard
+```
 
-Antes de escrever código:
+independentes.
 
-1. revisar implementação real de Jobs/Runs;
-2. revisar Event Engine;
-3. revisar Approvals;
-4. revisar Decision Queue;
-5. revisar Circuit Breaker/autonomy;
-6. revisar Recovery v2.4;
-7. revisar audit logs;
-8. mapear quais estados reais representam degradação;
-9. documentar rapidamente o mapa encontrado.
-
-Somente então implementar.
-
-Não inferir estados apenas pelos nomes.
+Dois guards separados não resolvem concorrência entre os dois caminhos.
 
 ---
 
-# 32. Validação final
+# 30. Dry-run
 
-Executar:
+Dry-run manual continua sem efeitos.
 
-### Backend
+A execução automática nunca precisa usar dry-run.
+
+Não criar scheduler em modo dry-run.
+
+---
+
+# 31. Segurança
+
+Testes explícitos devem provar que execução automática:
+
+1. não aumenta autonomia;
+2. não fecha Circuit Breaker;
+3. não modifica roles;
+4. não modifica permissions;
+5. não executa tool arbitrária;
+6. não cria Action Plan diretamente;
+7. não cria approval diretamente;
+8. usa Recovery v2.4;
+9. usa Decision Queue oficial;
+10. reutiliza Response Policy da v2.5.
+
+---
+
+# 32. Testes obrigatórios — scheduler
+
+Adicionar no mínimo:
+
+1. supervisão automática desabilitada não executa;
+2. habilitada executa supervisor;
+3. utiliza intervalo configurado;
+4. intervalo abaixo do mínimo é rejeitado;
+5. segundo tick durante execução ativa é ignorado;
+6. execução termina e guard é liberado;
+7. exception também libera guard;
+8. exception do supervisor não encerra scheduler;
+9. próximo ciclo após exception continua possível;
+10. scheduler não cria segundo mecanismo de supervisão.
+
+---
+
+# 33. Testes obrigatórios — concorrência
+
+11. manual + automático simultâneos não produzem duas execuções reais;
+12. duas chamadas automáticas simultâneas produzem no máximo uma execução;
+13. guard retorna ao estado livre após sucesso;
+14. guard retorna ao estado livre após erro.
+
+Se houver lock distribuído:
+
+15. segunda instância não adquire lock;
+16. lock é liberado após conclusão;
+17. lock possui proteção contra abandono/crash conforme mecanismo usado.
+
+Executar somente os testes correspondentes à arquitetura realmente implementada.
+
+---
+
+# 34. Testes obrigatórios — configuração
+
+18. default de supervisão automática é seguro;
+19. configuração enabled é validada;
+20. intervalo é validado;
+21. valores inválidos não alteram setting;
+22. alteração exige `agents.operations.manage`;
+23. leitura usa `agents.operations.read`.
+
+---
+
+# 35. Testes obrigatórios — observabilidade
+
+24. status mostra enabled corretamente;
+25. status mostra running durante execução;
+26. lastStartedAt atualizado;
+27. lastCompletedAt atualizado;
+28. lastFailedAt atualizado em erro;
+29. duração calculada corretamente;
+30. nextRunAt coerente com intervalo.
+
+Adaptar caso alguns campos sejam derivados via audit logs em vez de memória.
+
+---
+
+# 36. Testes obrigatórios — restart/lifecycle
+
+Quando testável de forma isolada:
+
+31. inicialização não cria timers duplicados;
+32. `start()` repetido é idempotente;
+33. `stop()` limpa timer;
+34. `stop()` repetido é seguro;
+35. shutdown impede novos ticks.
+
+Não criar testes artificiais impossíveis de representar com a arquitetura real.
+
+---
+
+# 37. Testes de regressão
+
+Executar toda suíte backend.
+
+Baseline v2.5:
+
+```text
+567 / 567
+```
+
+Confirmar:
+
+```text
+todos os 567 anteriores continuam passando
+```
+
+Executar suite frontend.
+
+Baseline v2.5:
+
+```text
+92 / 92
+```
+
+Registrar incremento líquido de testes.
+
+---
+
+# 38. Typecheck/build
+
+Backend:
 
 ```bash
 npx tsc --noEmit
 ```
 
-Suite completa usando o mesmo runner/concurrency oficial do projeto.
-
-Registrar números exatos:
-
-```text
-tests
-pass
-fail
-skipped
-```
-
-Comparar contra baseline da v2.4:
-
-```text
-526 / 526
-```
-
-### Frontend
-
-Executar suite completa.
-
-Baseline da v2.4:
-
-```text
-87 / 87
-```
-
-Executar:
+Frontend:
 
 ```bash
 npx tsc --noEmit
 npm run build
 ```
 
-Executar lint somente se houver script/config real.
+Lint somente se existir script/config real.
 
-Não afirmar lint OK se lint não existir.
+Não afirmar que lint passou quando lint não existe.
 
 ---
 
-# 33. Relatório final
+# 39. Migrations
+
+Evitar migration.
+
+Se precisar persistir setting e o sistema atual já possui tabela genérica de settings, reutilizar.
+
+Não criar:
+
+```text
+agent_operational_supervision_settings
+```
+
+só para armazenar dois campos, se a infraestrutura de settings já resolver isso.
+
+---
+
+# 40. Critérios bloqueantes
+
+A v2.5.1 NÃO será aprovada se:
+
+* criar segundo scheduler;
+* implementar supervisão como AgentJob;
+* permitir execuções concorrentes desprotegidas;
+* erro do supervisor puder parar scheduler;
+* ativação automática ocorrer silenciosamente por default;
+* supervisor automático puder aumentar autonomia;
+* scheduler alterar workflows diretamente;
+* política da execução automática divergir da execução manual;
+* houver timers duplicados após restart/start repetido;
+* permissões existirem apenas no frontend;
+* lock puder ficar permanentemente preso após exception normal;
+* testes anteriores regredirem.
+
+---
+
+# 41. Relatório final
 
 Entregar relatório contendo:
 
 1. resumo;
-2. mapa operacional encontrado;
-3. arquitetura;
-4. fontes de sinais;
-5. signal types;
-6. incident types;
-7. severity;
-8. health calculation;
-9. response policy;
-10. safe recovery;
-11. autonomy restriction;
-12. manual attention;
-13. correlation/deduplication;
-14. thresholds;
-15. dry-run;
-16. concorrência;
-17. idempotência;
-18. scheduler;
-19. auditoria;
-20. API;
-21. permissions;
-22. frontend;
-23. migrations;
-24. arquivos criados;
-25. arquivos alterados;
-26. testes adicionados;
-27. números exatos backend;
-28. números exatos frontend;
+2. scheduler existente encontrado;
+3. forma de integração adotada;
+4. lifecycle;
+5. configuração;
+6. default de segurança;
+7. intervalo;
+8. trigger automático;
+9. guard de concorrência;
+10. concorrência manual × automática;
+11. multi-instance;
+12. tratamento de exception;
+13. isolamento do scheduler;
+14. graceful shutdown;
+15. restart behavior;
+16. auditoria;
+17. observabilidade;
+18. API;
+19. permissions;
+20. frontend;
+21. migrations;
+22. arquivos criados;
+23. arquivos alterados;
+24. testes adicionados;
+25. testes de concorrência;
+26. testes de lifecycle;
+27. números backend;
+28. números frontend;
 29. typecheck/build;
 30. git diff --stat;
 31. git status;
-32. bugs/limitações reais encontrados.
+32. bugs encontrados;
+33. limitações reais;
+34. débitos técnicos identificados.
 
-### Regra final
+## Regra final
 
-**NÃO FAZER COMMIT.**
+**NÃO REALIZAR COMMIT.**
 
-Todas as mudanças devem permanecer no working tree aguardando análise e autorização do Diretor/CEO.
-
----
-
-# 34. Critérios de aprovação
-
-A v2.5 somente será aprovada se:
-
-* não criar segundo Executor;
-* não criar segundo scheduler;
-* não criar segundo Circuit Breaker;
-* não criar segunda Decision Queue;
-* não criar mecanismo paralelo de recovery;
-* incidentes forem derivados de estados reais;
-* classificação for determinística;
-* Response Policy não depender de LLM;
-* recovery usar exclusivamente v2.4;
-* supervisor nunca elevar autonomia;
-* condição perigosa puder restringir autonomia;
-* condição ambígua for escalada ao humano;
-* dry-run não produzir side effects;
-* execução real for idempotente;
-* concorrência for segura;
-* operations health estiver disponível;
-* auditoria estiver implementada;
-* backend authorization estiver correta;
-* testes de segurança cobrirem proibições críticas;
-* suíte completa permanecer verde;
-* frontend build permanecer verde;
-* nenhuma regressão arquitetural for introduzida.
-
-Não mascarar bugs encontrados durante a implementação. Registrar todos no relatório final, mesmo quando forem corrigidos durante o desenvolvimento.
+Todas as mudanças devem permanecer no working tree aguardando revisão e autorização do Diretor/CEO.

@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import { AgentsSubNav } from "@/components/agents/agents-sub-nav";
 import { OperationsDashboard } from "@/components/agents/operations/operations-dashboard";
 import { OperationsSupervisorDashboard } from "@/components/agents/operations/operations-supervisor-dashboard";
+import { OperationalSupervisionSchedulerCard } from "@/components/agents/operations/operational-supervision-scheduler-card";
 
 export const metadata: Metadata = { title: "Operações de Agentes" };
 
@@ -31,6 +32,8 @@ export default function AgentOperationsPage() {
           Detecção e resposta segura a degradações operacionais — tela administrativa, não uma ferramenta de uso diário.
         </p>
       </div>
+      <OperationalSupervisionSchedulerCard />
+
       <OperationsSupervisorDashboard />
     </div>
   );

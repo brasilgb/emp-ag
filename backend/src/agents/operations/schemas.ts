@@ -28,3 +28,9 @@ const booleanQueryFlag = z
 export const superviseQuerySchema = z.object({
   dryRun: booleanQueryFlag,
 });
+
+// Agentes v2.5.1 (correio.md seção 22) — PATCH só aceita `enabled`
+// (nunca `intervalSeconds`, decisão documentada em `config/env.ts`:
+// intervalo não é editável em runtime nesta versão) — `.strict()`
+// rejeita qualquer campo extra, nunca aceita `{"command": "..."}`.
+export const patchSupervisionSchedulerSchema = z.object({ enabled: z.boolean() }).strict();

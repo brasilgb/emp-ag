@@ -29,6 +29,7 @@ import {
   recommendationTypeLabel,
   recoveryResultLabel,
   reviewOutcomeLabel,
+  schedulerLastResultLabel,
   workflowTypeLabel,
   initiativeStatusLabel,
   isCriticalSetting,
@@ -429,5 +430,19 @@ describe("operationalResponseLabel", () => {
     assert.equal(operationalResponseLabel("restrict_autonomy"), "Restringir autonomia");
     assert.equal(operationalResponseLabel("manual_attention"), "Atenção manual");
     assert.equal(operationalResponseLabel("already_handled"), "Já tratado");
+  });
+});
+
+// Agentes v2.5.1 — Automatic Operational Supervision.
+describe("schedulerLastResultLabel", () => {
+  test("todo resultado conhecido tem rótulo em pt-BR", () => {
+    assert.equal(schedulerLastResultLabel("success"), "Sucesso");
+    assert.equal(schedulerLastResultLabel("failed"), "Falhou");
+    assert.equal(schedulerLastResultLabel("skipped"), "Ignorado (sobreposição)");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(schedulerLastResultLabel("nunca_existiu"), "nunca_existiu");
   });
 });

@@ -188,4 +188,33 @@ export const env = {
   get AGENT_OPERATIONAL_APPROVAL_WARNING_AFTER_SECONDS(): number {
     return positiveIntEnv('AGENT_OPERATIONAL_APPROVAL_WARNING_AFTER_SECONDS', 3600, 60);
   },
+
+  // Agentes v2.5.1 — Automatic Operational Supervision (correio.md
+  // seção 7). Dois níveis deliberadamente distintos, mesmo racional já
+  // usado por AGENT_LLM_ENABLED (capacidade) + a decisão operacional
+  // real (Shadow Mode) em outro domínio do projeto:
+  // - ENABLED (env, aqui): "capacidade de infraestrutura" — se `false`,
+  //   o timer do scheduler nem é criado no boot (server.ts), mesmo
+  //   padrão de AGENT_JOBS_SCHEDULER_ENABLED/AGENT_EVENTS_PROCESSOR_ENABLED
+  //   acima. Default `false` (seção 5: "não queremos que atualizar a
+  //   aplicação sozinha faça o Supervisor começar a executar ações reais
+  //   sem decisão administrativa explícita").
+  // - A DECISÃO operacional atual (se o timer, já criado, efetivamente
+  //   dispara supervisão real a cada tick) fica num setting persistido e
+  //   auditável (`agents/operations/scheduler-settings.ts`, reaproveita
+  //   a mesma tabela `settings` do kill switch de autonomia v1.3) — cujo
+  //   default também é `false`, INDEPENDENTE do valor deste env (nunca
+  //   herdado dele) — só uma decisão administrativa explícita via
+  //   `PATCH /agents/operations/scheduler` liga a supervisão automática
+  //   de verdade, mesmo com o timer já rodando.
+  get AGENT_OPERATIONAL_SUPERVISION_ENABLED(): boolean {
+    return boolFlag('AGENT_OPERATIONAL_SUPERVISION_ENABLED', false);
+  },
+  // Intervalo NÃO é editável em runtime nesta versão (correio.md seção
+  // 26: "não adicionar edição apenas porque é fácil") — só via env,
+  // exigindo reinício do processo para mudar. Mínimo 60s (seção 6:
+  // "não permitir frequência excessiva"), default 300s (seção 5).
+  get AGENT_OPERATIONAL_SUPERVISION_INTERVAL_SECONDS(): number {
+    return positiveIntEnv('AGENT_OPERATIONAL_SUPERVISION_INTERVAL_SECONDS', 300, 60);
+  },
 };

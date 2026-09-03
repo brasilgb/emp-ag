@@ -31,6 +31,7 @@ import type {
   RecommendationType,
   RecoveryResult,
   ReviewOutcome,
+  SchedulerLastResult,
   WorkflowType,
   InitiativeStatus,
   InterpretationCategory,
@@ -773,6 +774,17 @@ export const OPERATIONAL_RESPONSE_LABELS: Record<OperationalResponse, string> = 
 
 export function operationalResponseLabel(response: OperationalResponse): string {
   return OPERATIONAL_RESPONSE_LABELS[response] ?? response;
+}
+
+// Agentes v2.5.1 — Automatic Operational Supervision.
+export const SCHEDULER_LAST_RESULT_LABELS: Record<SchedulerLastResult, string> = {
+  success: "Sucesso",
+  failed: "Falhou",
+  skipped: "Ignorado (sobreposição)",
+};
+
+export function schedulerLastResultLabel(result: SchedulerLastResult): string {
+  return SCHEDULER_LAST_RESULT_LABELS[result] ?? result;
 }
 
 export function formatAgeSeconds(ageSeconds: number): string {

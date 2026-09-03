@@ -13,6 +13,17 @@ function isWorkflowType(value: string): value is WorkflowType {
   return (WORKFLOW_ENTITY_TYPES as readonly string[]).includes(value);
 }
 
+export interface RunOperationalSupervisionOptions {
+  dryRun?: boolean;
+  actorUserId: number | null;
+  // Agentes v2.5.1 (correio.md seção 15) — contexto de auditabilidade,
+  // única mudança de contrato desta versão sobre a função da v2.5
+  // ("ajustar contrato apenas se realmente necessário"). Nunca cria uma
+  // segunda diferença de comportamento entre origem manual/automática
+  // (seção 14) — só viaja até o metadata de auditoria.
+  triggeredBy?: 'scheduler' | 'manual';
+}
+
 /**
  * Agentes v2.5 (correio.md seção 15) — único ponto de entrada da
  * supervisão. Fluxo exatamente como pedido: collect → classify →
@@ -23,10 +34,17 @@ function isWorkflowType(value: string): value is WorkflowType {
  * `restrictJobAutonomy` → mesmo kill switch por Job da v1.5,
  * `escalateIncidentToManualAttention` → Director Decision Queue v1.9) —
  * este serviço NUNCA toca uma tabela de negócio diretamente.
+ *
+ * Concorrência (v2.5.1 seção 29): esta função continua SEM guard próprio
+ * — de propósito, para permanecer testável isoladamente (mesmo padrão
+ * dos testes da v2.5). O guard central único vive em
+ * `supervisor-guard.ts`, chamado por TODOS os callers reais (rota HTTP
+ * manual e scheduler automático), nunca por esta função diretamente.
  */
-export async function runOperationalSupervision(params: { dryRun?: boolean; actorUserId: number | null }): Promise<OperationalSupervisionReport> {
+export async function runOperationalSupervision(params: RunOperationalSupervisionOptions): Promise<OperationalSupervisionReport> {
   const startedAt = new Date();
   const dryRun = params.dryRun ?? false;
+  const triggeredBy = params.triggeredBy ?? 'manual';
 
   await audit({
     userId: params.actorUserId,
@@ -35,7 +53,7 @@ export async function runOperationalSupervision(params: { dryRun?: boolean; acto
     action: 'agents.operations.scan.started',
     entityType: 'agent_operational_supervision',
     entityId: null,
-    metadata: { dryRun },
+    metadata: { dryRun, triggeredBy },
   });
 
   const signals = await collectOperationalSignals(startedAt);
@@ -62,7 +80,7 @@ export async function runOperationalSupervision(params: { dryRun?: boolean; acto
     action: 'agents.operations.scan.completed',
     entityType: 'agent_operational_supervision',
     entityId: null,
-    metadata: { dryRun, signalsDetected: signals.length, incidentsDetected: incidents.length },
+    metadata: { dryRun, triggeredBy, signalsDetected: signals.length, incidentsDetected: incidents.length },
   });
 
   return {

@@ -6,6 +6,7 @@ import { recoverAbandonedRuns } from './agents/jobs/job-runner.js';
 import { startJobScheduler, stopJobScheduler } from './agents/jobs/scheduler.js';
 import { recoverAbandonedEvents } from './agents/events/event-processor.js';
 import { startEventWorker, stopEventWorker } from './agents/events/worker.js';
+import { startOperationalSupervisionScheduler, stopOperationalSupervisionScheduler } from './agents/operations/scheduler.js';
 
 const app = buildApp();
 
@@ -45,11 +46,24 @@ if (env.AGENT_EVENTS_PROCESSOR_ENABLED) {
   app.log.info({ intervalMs: env.AGENT_EVENTS_POLL_INTERVAL_MS }, 'Event Engine worker iniciado.');
 }
 
+// Agentes v2.5.1 (correio.md seção 20) — mesmo padrão dos dois acima:
+// timer só existe quando a CAPACIDADE de infraestrutura está ligada
+// (`AGENT_OPERATIONAL_SUPERVISION_ENABLED`, default false); mesmo com o
+// timer ativo, cada tick só dispara supervisão real se a DECISÃO
+// operacional (setting persistido, também default false) estiver
+// ligada — nunca dispara no boot, só após o primeiro intervalo
+// (`setInterval`, nunca `setImmediate`/chamada direta aqui).
+if (env.AGENT_OPERATIONAL_SUPERVISION_ENABLED) {
+  startOperationalSupervisionScheduler(env.AGENT_OPERATIONAL_SUPERVISION_INTERVAL_SECONDS * 1000);
+  app.log.info({ intervalSeconds: env.AGENT_OPERATIONAL_SUPERVISION_INTERVAL_SECONDS }, 'Scheduler de Supervisão Operacional iniciado.');
+}
+
 async function shutdown(signal: string) {
   app.log.info({ signal }, 'Encerrando aplicação');
 
   stopJobScheduler();
   stopEventWorker();
+  stopOperationalSupervisionScheduler();
   await app.close();
   await database.end();
 

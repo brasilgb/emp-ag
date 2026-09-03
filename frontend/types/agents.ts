@@ -1118,6 +1118,22 @@ export interface OperationalIncidentResult {
   timestamp: string;
 }
 
+// Agentes v2.5.1 — Automatic Operational Supervision (correio.md).
+export type SchedulerLastResult = "success" | "failed" | "skipped";
+
+export interface OperationalSupervisionSchedulerStatus {
+  enabled: boolean;
+  running: boolean;
+  intervalSeconds: number;
+  active: boolean;
+  lastStartedAt: string | null;
+  lastCompletedAt: string | null;
+  lastFailedAt: string | null;
+  lastDurationMs: number | null;
+  lastResult: SchedulerLastResult | null;
+  nextRunAt: string | null;
+}
+
 export interface OperationalSupervisionReport {
   startedAt: string;
   finishedAt: string;

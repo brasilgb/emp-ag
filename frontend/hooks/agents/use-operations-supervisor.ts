@@ -3,7 +3,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { queryKeys } from "@/lib/query/keys";
-import { getOperationalHealth, getOperationalIncidents, runOperationalSupervision } from "@/services/agents";
+import {
+  getOperationalHealth,
+  getOperationalIncidents,
+  getOperationalSupervisionSchedulerStatus,
+  runOperationalSupervision,
+  setOperationalSupervisionSchedulerEnabled,
+} from "@/services/agents";
 
 /**
  * Agentes v2.5 — Operational Supervision & Autonomous Incident Response
@@ -22,6 +28,26 @@ export function useOperationalIncidents() {
   return useQuery({
     queryKey: queryKeys.agents.operationalIncidents,
     queryFn: () => getOperationalIncidents(),
+  });
+}
+
+// Agentes v2.5.1 — Automatic Operational Supervision (correio.md).
+export function useOperationalSupervisionSchedulerStatus() {
+  return useQuery({
+    queryKey: queryKeys.agents.operationalSupervisionScheduler,
+    queryFn: () => getOperationalSupervisionSchedulerStatus(),
+    // Tela operacional — refetch periódico enquanto aberta, mesmo padrão
+    // de useDirectorGoalsOverview (60s), útil para acompanhar
+    // lastCompletedAt/running sem precisar recarregar a página.
+    refetchInterval: 30000,
+  });
+}
+
+export function useSetOperationalSupervisionSchedulerEnabled() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (enabled: boolean) => setOperationalSupervisionSchedulerEnabled(enabled),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.agents.operationalSupervisionScheduler }),
   });
 }
 

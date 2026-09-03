@@ -35,6 +35,7 @@ import type {
   OperationalHealth,
   OperationalIncident,
   OperationalSupervisionReport,
+  OperationalSupervisionSchedulerStatus,
   RecoveryItemResult,
   RecoveryReport,
   RecoveryStatus,
@@ -701,4 +702,13 @@ export function getOperationalIncidents(): Promise<{ data: OperationalIncident[]
 
 export function runOperationalSupervision(dryRun: boolean): Promise<{ data: OperationalSupervisionReport }> {
   return apiFetch(`/api/agents/operations/supervise${toQueryString({ dryRun })}`, { method: "POST", body: JSON.stringify({}) });
+}
+
+// Agentes v2.5.1 — Automatic Operational Supervision (correio.md).
+export function getOperationalSupervisionSchedulerStatus(): Promise<{ data: OperationalSupervisionSchedulerStatus }> {
+  return apiFetch(`/api/agents/operations/scheduler`);
+}
+
+export function setOperationalSupervisionSchedulerEnabled(enabled: boolean): Promise<{ data: OperationalSupervisionSchedulerStatus }> {
+  return apiFetch(`/api/agents/operations/scheduler`, { method: "PATCH", body: JSON.stringify({ enabled }) });
 }

@@ -1,548 +1,523 @@
-# Agentes v2.5 — Operational Supervision & Autonomous Incident Response
+# Agentes v2.5.1 — Automatic Operational Supervision
 
-Relatório de entrega da v2.5, conforme `correio.md` seção 33 ("Relatório
-final"), 32 itens obrigatórios. **NENHUM COMMIT foi feito** — todas as
-alterações permanecem no working tree, aguardando autorização final do
-Diretor/CEO.
+Relatório de entrega da v2.5.1, conforme `correio.md` seção 41
+("Relatório final"), 34 itens obrigatórios. **NENHUM COMMIT foi feito**
+— todas as alterações permanecem no working tree, aguardando
+autorização final do Diretor/CEO.
 
 ---
 
 ## 1. Resumo
 
-Implementada uma camada de supervisão operacional que responde à
-pergunta "existe alguma condição operacional que exija observação,
-recuperação segura, redução de autonomia ou intervenção humana?" —
-inteiramente coordenando mecanismos JÁ EXISTENTES (Jobs/Runs, Event
-Engine, Approvals, Director Decision Queue, Recovery v2.4, Circuit
-Breaker/autonomy, audit logs). Nenhum segundo Executor, scheduler,
-Circuit Breaker, Decision Queue ou mecanismo de recovery foi criado.
-**Nenhuma decisão é tomada por LLM** — o Response Policy inteiro é uma
-tabela de decisão determinística, testada exaustivamente sem mock.
+O `Operational Supervisor` da v2.5 foi integrado ao mecanismo de
+agendamento já existente da plataforma — o mesmo idioma de
+`setInterval`/`start()`/`stop()` já usado 2x no projeto
+(`agents/jobs/scheduler.ts`, `agents/events/worker.ts`), agora numa
+TERCEIRA instância, nunca um segundo motor de scheduling genérico.
+Ativação automática começa desabilitada em dois níveis independentes
+(capacidade de infraestrutura via env + decisão operacional via setting
+persistido), protegida por um guard central único compartilhado entre a
+execução manual (HTTP) e a automática (scheduler) — nunca duas
+execuções reais simultâneas, nunca dois guards independentes.
 
-## 2. Mapa operacional encontrado
+## 2. Scheduler existente encontrado
 
-Revisão do código real feita ANTES de implementar (seção 31), com uma
-descoberta arquitetural central: **já existia um "Incident Center"**
-(v1.6, `agents/incidents/service.ts` + `routes/agents/incidents.ts`,
-permission `agents.incidents.read`) que já deriva `job_repeated_failure`
-e `event_delivery_failed` a partir de `agent_job_runs`/
-`agent_event_deliveries`/`agent_autonomy_blocks` — exatamente parte do
-que a v2.5 pede. **Reaproveitado diretamente** (`listIncidents()`),
-nunca reimplementado.
+Revisão feita ANTES de implementar (seção 3), dos dois pollers reais já
+existentes:
 
-| fonte real | estado transitório/degradação | mecanismo de detecção já existente | reaproveitado como |
-|---|---|---|---|
-| `agent_jobs`/`agent_job_runs` | falhas consecutivas | `incidents/service.ts:fetchRepeatedFailureIncidents` (usa `circuit.failureThreshold`) | signal `job_repeated_failure` |
-| `agent_job_runs` | Run preso (`queued/planning/running/waiting_approval` antigo) | **nenhum** — novo detector | signal `run_stuck` |
-| `agent_event_deliveries` | delivery falhada | `incidents/service.ts:fetchEventDeliveryFailedIncidents` | signal `delivery_failure` |
-| `agent_jobs.circuit_state` | circuito aberto | leitura direta (mais precisa que a projeção histórica de `agent_autonomy_blocks`) | signal `autonomy_circuit_open` |
-| `agent_approvals` | pendente há muito tempo | **nenhum** — novo detector | signal `approval_bottleneck` |
-| `agent_director_decisions` | `requires_human_attention=true`, `domain='agents'`, aberta | já existe desde v1.9/v2.4 (inclui `agents.recovery.*`) | signal `manual_attention_pending` |
-| `settings` (kill switch) | autonomia global desabilitada | `agents/jobs/global-switch.ts` (v1.3) | signal `autonomy_disabled_globally` |
-| Recovery v2.4 | workflow stale | `recovery/detector.ts:scanStaleWorkflows` | signal `workflow_stale` |
+**`agents/jobs/scheduler.ts`** (`pollDueJobs`/`startJobScheduler`/
+`stopJobScheduler`): inicia via `setInterval` só quando
+`env.AGENT_JOBS_SCHEDULER_ENABLED` (default `false`); `.unref()` — nunca
+mantém o processo vivo sozinho; primeiro tick só após o 1º intervalo
+(nunca no boot); overlap por Job é resolvido DENTRO de `runAgentJob`
+(lock+budget), não no nível do scheduler; erro por Job capturado
+individualmente, e o `.catch()` externo no `setInterval` protege contra
+qualquer rejeição escapar; `stopJobScheduler()` só limpa o timer (sem
+esperar tick em andamento); `start`/`stop` idempotentes
+(`if (schedulerInterval) return`).
 
-Documentado em código (docblocks de `signals.ts`), não só aqui.
+**`agents/events/worker.ts`** (`drainPendingEvents`/`startEventWorker`/
+`stopEventWorker`): estrutura idêntica, poller do Event Engine, mesmo
+padrão de lifecycle.
 
-## 3. Arquitetura
+**`server.ts`**: os dois são iniciados condicionalmente logo após
+recovery de boot (`recoverAbandonedRuns`/`recoverAbandonedEvents`,
+executados uma única vez), e parados em `shutdown()` (chamado por
+SIGTERM/SIGINT) antes de fechar app/DB/Redis.
 
-```
-agents/operations/
-  health-types.ts        — vocabulário (Signal, Incident, Response, Health, Report)
-  signals.ts              — collectOperationalSignals() — leitura pura, reaproveita v1.6/v2.4/v1.3/v1.9
-  incidents.ts            — classifyIncidents() — correlação/dedup determinística, pura
-  response-policy.ts      — evaluateResponsePolicy() — tabela de decisão pura, SEM LLM
-  manual-attention.ts     — escalateIncidentToManualAttention() — reaproveita Decision Queue
-  safe-actions.ts         — applySafeRecovery() (chama Recovery v2.4), restrictJobAutonomy() (mesmo kill switch v1.5)
-  health-service.ts       — getOperationalHealth() — snapshot só-leitura
-  supervisor-service.ts   — runOperationalSupervision() — orquestra tudo, aplica respostas
-```
+## 3. Forma de integração adotada
 
-Fluxo real (seção 2): `signals → classify → policy → {observe|safe_recovery|restrict_autonomy|manual_attention|already_handled} → mecanismo oficial`.
-Nenhuma camada decide "executar tool arbitrária" — estruturalmente
-impossível: nenhum destes arquivos importa `executor/`, `tool-registry`
-ou o LLM.
+Nova TERCEIRA instância do MESMO idioma —
+`agents/operations/scheduler.ts` (`startOperationalSupervisionScheduler`/
+`stopOperationalSupervisionScheduler`/`runScheduledOperationalSupervision`)
+— nunca compartilha o timer do Jobs scheduler (concerns diferentes: um
+polla `agent_jobs`, este dispara `runOperationalSupervision`).
+`Operational Supervisor != AgentJob` (seção 4): esta função nunca cria
+`agent_jobs`, nunca chama `runAgentJob`/`pollDueJobs`.
 
-## 4. Fontes de sinais
-
-Ver mapa da seção 2. Todas as 8 fontes pedidas pela seção 3 foram
-cobertas com pelo menos um detector real — nenhuma inventada.
-
-## 5. Signal types
-
-`workflow_stale, job_repeated_failure, run_stuck, delivery_failure,
-autonomy_circuit_open, approval_bottleneck, manual_attention_pending,
-autonomy_disabled_globally` (8, `health-types.ts`). Nunca secrets/tokens/
-stack traces — cada `metadata` é montado campo-a-campo pelo coletor,
-nunca um erro bruto repassado.
-
-## 6. Incident types
-
-Os 9 sugeridos pela seção 6, reduzidos a 8 reais + mapeamento
-documentado (`incidents.ts`): `workflow_stale` (signal) → incident
-`recovery_required`; `manual_attention_pending` → `manual_attention_required`;
-`autonomy_disabled_globally` → `operational_degradation`; os demais
-mantêm o nome. `operational_degradation` cobre especificamente a
-autonomia global desabilitada — o único caso real de degradação de
-escopo GLOBAL (não específica de uma entidade) encontrado no código.
-
-## 7. Severity
-
-Determinística, nunca escolhida por LLM (seção 7): `job_repeated_failure`
-e `autonomy_circuit_open` são sempre `critical` (risco de loop/perda de
-controle de autonomia, exatamente os exemplos da seção 7);
-`run_stuck`/`delivery_failure`/`approval_bottleneck`/`workflow_stale`/
-`autonomy_disabled_globally` são `warning`; `manual_attention_pending`
-herda a severidade real do Decision Item de origem. Um incidente
-correlacionado usa a MAIOR severidade entre seus sinais.
-
-## 8. Health calculation
-
-`getOperationalHealth()` — sob demanda, nunca persistido (seção 4):
-`collectOperationalSignals` (leitura) → `classifyIncidents` (pura) →
-`buildRecommendations` (Response Policy + 1 query em lote para contexto
-de `repeated_job_failure`). `status` por prioridade determinística:
-`restricted` (autonomia restrita agora — circuito aberto, kill switch
-global, ou Job desabilitado) > `attention_required` (crítico ou atenção
-manual pendente) > `degraded` (algum incidente) > `healthy`.
-
-## 9. Response policy
-
-Tabela de decisão pura (`response-policy.ts`, `evaluateResponsePolicy`),
-zero I/O, zero LLM:
-
-| incident type | condição | resposta |
-|---|---|---|
-| `recovery_required` | sempre | `safe_recovery` |
-| `repeated_job_failure` | severity warning | `observe` |
-| `repeated_job_failure` | crítico + autonomia ligada | `restrict_autonomy` |
-| `repeated_job_failure` | crítico + autonomia JÁ restrita | `manual_attention` |
-| `run_stuck` | sempre | `observe` (nenhum recovery seguro nesta versão) |
-| `delivery_failure` | sempre | `observe` |
-| `autonomy_circuit_open` | sempre | `already_handled` (Circuit Breaker já agiu) |
-| `approval_bottleneck` | sempre | `observe` |
-| `manual_attention_required` | sempre | `already_handled` (já é um Decision Item aberto) |
-| `operational_degradation` | sempre | `observe` (nunca reativa autonomia global sozinho) |
-
-## 10. Safe recovery
-
-`applySafeRecovery()` chama `recovery/recovery-service.ts:reconcileOne`
-(v2.4) diretamente — nenhuma linha de tabela tocada por este módulo.
-Provado por teste real (`23: safe_recovery chama Recovery v2.4 de
-verdade`): uma review `draft` órfã inserida diretamente no banco é
-removida pela chamada de supervisão, através do MESMO caminho de código
-já testado exaustivamente na v2.4.
-
-## 11. Autonomy restriction
-
-`restrictJobAutonomy()` escreve na MESMA coluna do kill switch por Job
-já existente (`agent_jobs.autonomy_enabled`, mesmo campo do `PATCH
-/agents/jobs/:id/autonomy` da v1.5) — nenhum segundo kill switch.
-Estruturalmente só reduz (a função não tem parâmetro para religar).
-`UPDATE ... WHERE id=? AND autonomy_enabled=true` — condicional, nunca
-incondicional (seção 18): um Job já restrito nunca sofre efeito
-duplicado (provado por teste de idempotência e de concorrência).
-
-## 12. Manual attention
-
-`escalateIncidentToManualAttention()` reutiliza a Director Decision
-Queue (`agent_director_decisions`) — `domain='agents'`,
-`signalType='agents.operations.<tipo>'`, `requiresHumanAttention=true`.
-Deduplicação por `deduplicationKey` estável
-(`agents.operations.<tipo>::<entityType>::<entityId>`) + `ON CONFLICT
-DO NOTHING` — o mesmo incidente NUNCA cria uma segunda decisão a cada
-scan (provado por teste explícito de 3 scans seguidos).
-
-## 13. Correlation/deduplication
-
-`classifyIncidents()` (`incidents.ts`) — determinística, sem ML, sem
-LLM (seção 13). Chave `${incidentType}:${entityType}:${entityId}` —
-múltiplos sinais do mesmo Job falhando viram UM incidente (provado por
-teste: 3 sinais → 1 incidente). Entidade diferente sempre produz
-incidente independente (também testado).
-
-## 14. Thresholds
-
-Avaliados ANTES de criar (seção 14/31): `job_repeated_failure` reaproveita
-`circuit.failureThreshold` (mesmo valor do Circuit Breaker real, via
-`resolveGlobalSetting`, já usado pelo Incident Center v1.6 — NUNCA um
-segundo threshold divergente); `workflow_stale` reaproveita
-`AGENT_WORKFLOW_STALE_AFTER_SECONDS` (v2.4). Só 2 variáveis
-verdadeiramente novas, sem equivalente algum no código real:
-`AGENT_OPERATIONAL_STUCK_AFTER_SECONDS` (default 1800s, min 60) e
-`AGENT_OPERATIONAL_APPROVAL_WARNING_AFTER_SECONDS` (default 3600s, min
-60) — ambas via o helper `positiveIntEnv` já existente, getters (não
-capturadas no import, mesmo padrão de `AGENT_WORKFLOW_STALE_AFTER_SECONDS`).
-
-## 15. Dry-run
-
-`dryRun` propagado até `adapter.reconcile()`/`restrictJobAutonomy()` —
-quando `true`, NENHUM `UPDATE`/`DELETE`/`INSERT` real acontece; cada
-resultado usa outcomes prefixados `would_*` (seção 16). Provado por
-teste: dry-run detecta os mesmos incidentes, reporta `would_recover`/
-`would_restrict_autonomy`, e o banco permanece bit-a-bit inalterado
-(review draft continua existindo, `autonomy_enabled` continua `true`).
-
-## 16. Concorrência
-
-Nunca `SELECT → decisão em memória → UPDATE incondicional` (seção 18).
-`restrictJobAutonomy` usa `UPDATE ... WHERE autonomy_enabled=true
-RETURNING`; `safe_recovery` reaproveita os predicados condicionais já
-provados da v2.4; `manual_attention` reaproveita `ON CONFLICT DO
-NOTHING`. Provado por teste real: duas chamadas de
-`runOperationalSupervision` concorrentes sobre o MESMO Job falhando
-produzem exatamente UMA restrição real (auditoria com
-`triggeredBy=operational_supervisor` aparece exatamente uma vez).
-
-## 17. Idempotência
-
-Executar o supervisor duas vezes sobre o mesmo estado nunca duplica
-efeito (seção 17) — provado por teste de 3 scans consecutivos: 1º
-restringe a autonomia, 2º (Job já restrito, falhas continuam) escala
-para `manual_attention` em vez de tentar restringir de novo, 3º não
-duplica o Decision Item já existente.
-
-## 18. Scheduler
-
-Não integrado ao scheduler automático nesta entrega (seção 19: "só
-integrar se puder ser feito de forma pequena e segura... caso a
-integração aumente muito o escopo, deixar serviço pronto e documentar
-a ativação automática para v2.5.1"). `runOperationalSupervision()` é
-um serviço reutilizável e independente de transporte — chamável de
-dentro do scheduler de Jobs já existente
-(`agents/jobs/job-runner.ts`/o `setInterval` do scheduler v1.3) sem
-nenhuma mudança de contrato, quando a ativação automática for decidida.
-Nenhum cron interno concorrente, nenhum segundo scheduler, nenhum
-`setInterval` solto foi criado.
-
-## 19. Auditoria
-
-Implementados os 7 eventos sugeridos (seção 21), ajustados ao fluxo
-real: `agents.operations.scan.started` (início, com `dryRun`),
-`agents.operations.incident.detected` (por incidente correlacionado —
-NUNCA por sinal bruto, "evitar dezenas de audit logs" seção 14/21),
-`agents.operations.safe_recovery`, `agents.operations.autonomy_restricted`,
-`agents.operations.manual_attention` (só quando a ação real acontece,
-nunca em dry-run), `agents.operations.scan.completed` (fim, com
-contagens). `agents.operations.signal.detected` (sugerido pela seção
-21) foi DELIBERADAMENTE OMITIDO — ver item 32 (limitações).
-
-## 20. API
+## 4. Lifecycle
 
 ```
-GET  /agents/operations/health       agents.operations.read
-GET  /agents/operations/incidents    agents.operations.read
-POST /agents/operations/supervise?dryRun=  agents.operations.manage
+server.ts boot
+  → if (env.AGENT_OPERATIONAL_SUPERVISION_ENABLED) startOperationalSupervisionScheduler(intervalMs)
+  → timer criado, primeiro tick só após 1 intervalo completo (nunca no boot)
+  → a cada tick: runScheduledOperationalSupervision()
+       → if (!setting persistido) return (sem nenhum audit — seção 16)
+       → runGuardedOperationalSupervision({triggeredBy:'scheduler'})
+            → guard livre? executa runOperationalSupervision() real
+            → guard ocupado? SupervisionAlreadyRunningError → audit scheduler.skipped
+       → exceção não capturada pelo guard? audit scheduler.failed (nunca escapa)
+server.ts shutdown (SIGTERM/SIGINT)
+  → stopOperationalSupervisionScheduler() (limpa o timer — nenhum tick novo)
+  → app.close()/database.end()/redis.disconnect()
 ```
 
-`POST /:type/:id` individual (equivalente ao de Recovery v2.4) NÃO foi
-criado — nenhuma necessidade objetiva encontrada (seção 23: "só criar
-endpoints adicionais se houver necessidade objetiva"); reconciliação
-manual de item único já existe em `POST /agents/recovery/:type/:id`
-(v2.4), reaproveitável diretamente quando necessário. O endpoint de
-execução (`/supervise`) nunca aceita instrução livre do usuário — só
-`dryRun` (boolean); a política aplicada é sempre a codificada.
+## 5. Configuração
 
-## 21. Permissions
+`AGENT_OPERATIONAL_SUPERVISION_ENABLED` (env, default `false`) +
+`AGENT_OPERATIONAL_SUPERVISION_INTERVAL_SECONDS` (env, default `300`,
+min `60`) — só 2 variáveis, exatamente as sugeridas.
 
-Leitura reaproveita `agents.operations.read` (mesma já usada por
-`/operations/summary` desde a v1.6 — mesma natureza de observabilidade).
-Execução: avaliado se `agents.recovery.manage` bastava (seção 22) —
-**não**: sua descrição já existente é explicitamente escopada a
-"reconciliação de workflows stale" (só Initiative/Review/Memory); o
-Supervisor também restringe autonomia de Job e escala incidentes mais
-amplos (Job failures, delivery failures, approval bottlenecks) — uma
-capacidade administrativa genuinamente mais ampla. Criada
-`agents.operations.manage`, justificada. Authorization sempre no
-backend (`requirePermission()`); frontend só esconde botões via
-`PermissionGate`, nunca é a barreira real.
+## 6. Default de segurança
 
-## 22. Frontend
+Dois níveis independentes (seção 7, "env = capacidade, setting =
+decisão operacional atual" — exemplo literal do próprio correio.md):
 
-Reaproveitada a página `/agents/operations` JÁ EXISTENTE (v1.6) —
-**nunca criada uma segunda rota paralela** para "operações" (a sugestão
-da seção 24 colidiria exatamente com essa página real; decisão
-documentada em código). Nova seção "Supervisão Operacional" adicionada
-abaixo do dashboard v1.6 existente:
+- `AGENT_OPERATIONAL_SUPERVISION_ENABLED` (env): se `false`, o timer
+  NEM É CRIADO no boot — capacidade de infraestrutura.
+- Setting persistido (`agents_operational_supervision_enabled`, tabela
+  `settings`, MESMO mecanismo do kill switch de autonomia v1.3) —
+  decisão operacional atual, default `false` SEMPRE, independente do
+  valor do env (nunca herdado dele) — só uma chamada explícita a
+  `PATCH /agents/operations/scheduler` liga de verdade, mesmo com o
+  timer já rodando. Direção do default deliberadamente OPOSTA à do kill
+  switch de autonomia (que é `true` por padrão) — documentado em código
+  (`scheduler-settings.ts`): aqui a supervisão automática só liga com
+  decisão administrativa explícita (seção 5).
 
-- Card "Saúde operacional": status badge (Healthy/Degraded/Attention
-  Required/Restricted), incidentes ativos/críticos, stale workflows,
-  Jobs com falha, falhas de delivery, atenção humana pendente, gerado em.
-- Card "Incidentes": tabela Severity/Type/Entity/Problem/Detected/
-  Recommended response/Current state (seção 25).
-- "Simular supervisão" (dry-run, sem confirmação — seção 26) / "Executar
-  supervisão" (dialog de confirmação explícito, texto exato da seção
-  26: "poderá executar recoveries previamente autorizados, restringir
-  autonomia... criar itens de atenção humana", nunca "IA vai corrigir
-  tudo").
-- Ações atrás de `PermissionGate agents.operations.manage`; leitura
-  segue a permission já existente da página.
+## 7. Intervalo
 
-## 23. Migrations
+Só via env, NÃO editável em runtime nesta versão (seção 26: "não
+adicionar edição apenas porque é fácil") — mínimo 60s (via
+`positiveIntEnv`, mesmo helper já usado por todos os outros thresholds
+do projeto), default 300s. `PATCH /agents/operations/scheduler` só
+aceita `{enabled}`, nunca `{intervalSeconds}`.
 
-**Nenhuma migration foi necessária** (seção 30: "evitar migration... se
-status e histórico puderem ser representados adequadamente"). Toda a
-observabilidade é derivada de tabelas/colunas já existentes
-(`agent_jobs`, `agent_job_runs`, `agent_event_deliveries`,
-`agent_approvals`, `agent_director_decisions`, `audit_logs`, tabelas da
-v2.4) — nenhuma tabela `operational_incidents` foi criada, exatamente a
-preferência da seção 20.
+## 8. Trigger automático
 
-## 24. Arquivos criados
+`runScheduledOperationalSupervision()` — checa o setting, e se ligado,
+chama `runGuardedOperationalSupervision({dryRun: false, actorUserId:
+null, triggeredBy: 'scheduler'})`. `triggeredBy` é a única mudança de
+contrato sobre `runOperationalSupervision` da v2.5 (seção 15: "ajustar
+contrato só se realmente necessário") — viaja até o metadata de
+`agents.operations.scan.started`/`.scan.completed` (auditoria já
+existente, reaproveitada — nenhum evento novo duplicado).
+
+## 9. Guard de concorrência
+
+`agents/operations/supervisor-guard.ts` — `runGuardedOperationalSupervision()`
+é o guard CENTRAL único (seção 29: "não criar schedulerGuard/apiGuard
+independentes") — usado pela rota HTTP manual E pelo scheduler
+automático, nunca dois guards separados. Guard em memória (`let
+running`), sem `await` entre checagem e escrita (event loop
+single-threaded de Node — nunca há janela de corrida real entre as duas
+linhas, ao contrário dos guards inter-processo das v2.1-v2.5 que
+precisam de `SELECT`/`UPDATE` condicional). `runner` injetável só para
+teste (mesmo padrão de `collectors?` em `sync-service.ts`).
+
+## 10. Concorrência manual × automática
+
+`POST /agents/operations/supervise` (rota HTTP) agora chama
+`runGuardedOperationalSupervision(..., triggeredBy:'manual')` em vez de
+`runOperationalSupervision` direto — MESMO guard do scheduler. Uma
+chamada manual enquanto outra (manual OU automática) já está em
+andamento devolve **409 Conflict** com mensagem clara (seção 28),
+**nunca enfileira** (seção 27 preferência explícita). Provado por teste
+real via HTTP: duas chamadas `POST /supervise` concorrentes → uma 200,
+uma 409.
+
+## 11. Multi-instance
+
+`docker-compose.yml` real do projeto não define `replicas`/`scale` —
+uma única instância de backend hoje. O guard em memória (`supervisor-guard.ts`)
+é, portanto, suficiente nesta versão (seção 10: "se atualmente existe
+uma única instância, pode ser usado guard local, desde que a limitação
+seja documentada"). **Limitação real e documentada**: se o deploy
+migrar para múltiplas réplicas, este guard NÃO protege contra execuções
+automáticas simultâneas em processos DIFERENTES — precisaria de um
+lock distribuído (Redis, já usado em outras partes do projeto, seria o
+candidato natural) — não implementado, não necessário hoje.
+
+## 12. Tratamento de exception
+
+`runScheduledOperationalSupervision()` envolve a chamada em
+`try/catch` — uma exceção real (não `SupervisionAlreadyRunningError`,
+tratada separadamente) é capturada, auditada como
+`agents.operations.scheduler.failed`, e NUNCA relançada. O
+`.catch()` adicional no callback do `setInterval` (mesmo padrão dos
+outros 2 pollers) protege em profundidade contra qualquer rejeição
+residual. Provado por teste: injetando um `runner` que lança, o guard
+libera, o erro é auditado, e o PRÓXIMO tick funciona normalmente — a
+suíte completa (599/599) prova que nenhum teste subsequente foi afetado.
+
+## 13. Isolamento do scheduler
+
+Este é o critério bloqueante da seção 12 — provado por teste real
+(`8/9/28` em `scheduler.test.ts`): supervisor lança exceção → guard
+libera → auditoria `scheduler.failed` registrada → chamada seguinte a
+`runScheduledOperationalSupervision()` executa normalmente, sem
+nenhum estado residual travado.
+
+## 14. Graceful shutdown
+
+`stopOperationalSupervisionScheduler()` adicionado a `server.ts:shutdown()`,
+ao lado de `stopJobScheduler()`/`stopEventWorker()` já existentes —
+reaproveita o MESMO handler de SIGTERM/SIGINT já registrado (seção 21:
+"não criar handlers duplicados"). `stop()` só limpa o timer — nenhum
+tick NOVO dispara depois disso; um tick JÁ em andamento no momento do
+sinal continua até resolver naturalmente (mesmo comportamento dos 2
+pollers já existentes — nenhum mecanismo de "aguardar conclusão" foi
+adicionado, por consistência com o padrão real já estabelecido).
+
+## 15. Restart behavior
+
+Nenhuma tentativa de "compensar" ticks perdidos — `lastTickAt`/
+`schedulerStartedAt` são estado em memória, perdido no restart; o
+scheduler simplesmente recomeça a contar do zero (seção 19: "missed
+supervision tick != queued work" — a supervisão observa estado ATUAL,
+nunca uma fila). Nenhuma supervisão acumulada é disparada no boot.
+
+## 16. Auditoria
+
+Eventos implementados (ajustados aos fluxos reais, seção 16):
+`agents.operations.scheduler.skipped` (overlap real, nunca a cada tick
+desabilitado — provado por teste: tick desabilitado gera ZERO audit
+logs de scheduler), `agents.operations.scheduler.failed` (exceção não
+tratada). `agents.operations.scheduler.started` foi DELIBERADAMENTE
+OMITIDO — `agents.operations.scan.started`/`.scan.completed` (já
+existentes desde a v2.5, agora carregando `triggeredBy` no metadata) já
+cobrem exatamente essa informação; duplicar seria "ruído redundante"
+(seção 16, texto literal). `PATCH /operations/scheduler` também audita
+`agents.operations.scheduler.enabled`/`.disabled` (mesmo padrão do
+`PATCH /agents/autonomy` v1.6).
+
+## 17. Observabilidade
+
+`GET /agents/operations/scheduler` → `OperationalSupervisionSchedulerStatus`
+(`agents/operations/scheduler-status.ts`) — combina 3 fontes, nenhuma
+tabela nova (seção 17/18): `enabled` do setting persistido;
+`running`/`nextRunAt`/`intervalSeconds`/`active` de estado em memória do
+próprio processo (`supervisor-guard.ts`/`scheduler.ts`);
+`lastStartedAt`/`lastCompletedAt`/`lastFailedAt`/`lastDurationMs`/
+`lastResult` DERIVADOS da trilha de auditoria já existente
+(`agents.operations.scan.started`/`.scan.completed`/`.scheduler.failed`)
+— best-effort por ordem temporal (não por ID compartilhado, documentado
+em código), suficiente para uma tela de observabilidade.
+
+## 18. API
+
+```
+GET   /agents/operations/scheduler   agents.operations.read
+PATCH /agents/operations/scheduler   agents.operations.manage  (só aceita {enabled: boolean})
+```
+
+`POST /agents/operations/supervise` (v2.5) alterado para passar pelo
+guard central (item 10) — comportamento externo idêntico exceto o novo
+409 em caso de overlap. `PATCH` rejeita qualquer campo além de
+`enabled` (`.strict()` do Zod) — nunca aceita `{"command": "..."}`
+(provado por teste HTTP real).
+
+## 19. Permissions
+
+Reaproveitadas INTEGRALMENTE da v2.5 (seção 23: "não criar nova
+permission sem necessidade objetiva") — `agents.operations.read`
+(leitura) e `agents.operations.manage` (alteração). Nenhuma permission
+nova criada nesta versão.
+
+## 20. Frontend
+
+Nova seção "Supervisão automática" (`OperationalSupervisionSchedulerCard`)
+adicionada à MESMA página `/agents/operations` (v1.6/v2.5, nunca uma
+rota nova) — mostra habilitada/desabilitada, executando agora,
+intervalo, último início/conclusão/falha, duração, resultado, próximo
+ciclo (seção 24). Botão Habilitar/Desabilitar atrás de `PermissionGate
+agents.operations.manage`, com `window.confirm` (mesmo mecanismo já
+usado por `GlobalAutonomyToggle`, v1.6) mostrando o TEXTO EXATO pedido
+pela seção 25 ao habilitar — nunca "permitir que a IA corrija o sistema
+sozinha". Os botões "Simular supervisão"/"Executar supervisão" da v2.5
+continuam funcionando sem alteração de UI (seção 27) — um 409 real (se
+houver overlap) aparece como toast de erro, mesmo mecanismo já usado em
+todo o módulo.
+
+## 21. Migrations
+
+**Nenhuma migration foi necessária** (seção 39) — o setting reaproveita
+a tabela `settings` já existente (mesmo padrão do kill switch de
+autonomia v1.3), nenhuma tabela
+`agent_operational_supervision_settings` foi criada.
+
+## 22. Arquivos criados
 
 Backend:
 ```
-backend/src/agents/operations/health-types.ts
-backend/src/agents/operations/signals.ts
-backend/src/agents/operations/incidents.ts
-backend/src/agents/operations/response-policy.ts
-backend/src/agents/operations/manual-attention.ts
-backend/src/agents/operations/safe-actions.ts
-backend/src/agents/operations/health-service.ts
-backend/src/agents/operations/supervisor-service.ts
-backend/src/agents/operations/incidents.test.ts
-backend/src/agents/operations/response-policy.test.ts
-backend/src/agents/operations/signals.test.ts
-backend/src/agents/operations/supervisor-service.test.ts
-backend/src/routes/agents/operations-supervisor.test.ts
+backend/src/agents/operations/scheduler-settings.ts
+backend/src/agents/operations/scheduler-settings.test.ts
+backend/src/agents/operations/supervisor-guard.ts
+backend/src/agents/operations/supervisor-guard.test.ts
+backend/src/agents/operations/scheduler.ts
+backend/src/agents/operations/scheduler.test.ts
+backend/src/agents/operations/scheduler-status.ts
+backend/src/agents/operations/scheduler-status.test.ts
+backend/src/routes/agents/operations-scheduler.test.ts
 ```
 
 Frontend:
 ```
-frontend/app/api/agents/operations/health/route.ts
-frontend/app/api/agents/operations/incidents/route.ts
-frontend/app/api/agents/operations/supervise/route.ts
-frontend/components/agents/operations/operations-supervisor-dashboard.tsx
-frontend/hooks/agents/use-operations-supervisor.ts
+frontend/app/api/agents/operations/scheduler/route.ts
+frontend/components/agents/operations/operational-supervision-scheduler-card.tsx
 ```
 
-## 25. Arquivos alterados
+## 23. Arquivos alterados
 
 ```
-backend/src/agents/operations/schemas.ts     (+superviseQuerySchema)
-backend/src/config/env.ts                     (+AGENT_OPERATIONAL_STUCK_AFTER_SECONDS, +AGENT_OPERATIONAL_APPROVAL_WARNING_AFTER_SECONDS)
-backend/src/db/seed.ts                        (+permission agents.operations.manage)
-backend/src/routes/agents/operations.ts       (+GET /health, +GET /incidents, +POST /supervise)
-frontend/app/(dashboard)/agents/operations/page.tsx  (+seção Supervisão Operacional)
-frontend/components/agents/status-badge.tsx   (+4 badges novos)
-frontend/lib/agents/derived.ts                (+4 famílias de label)
-frontend/lib/agents/derived.test.ts           (+10 testes)
-frontend/lib/query/keys.ts                    (+operationalHealth, operationalIncidents)
-frontend/services/agents.ts                   (+getOperationalHealth, getOperationalIncidents, runOperationalSupervision)
-frontend/types/agents.ts                      (+SupervisorSignal/OperationalIncident/OperationalHealth/OperationalSupervisionReport e vocabulário)
+backend/src/agents/operations/schemas.ts          (+patchSupervisionSchedulerSchema)
+backend/src/agents/operations/supervisor-service.ts (+triggeredBy no contrato e na auditoria)
+backend/src/config/env.ts                          (+AGENT_OPERATIONAL_SUPERVISION_ENABLED, +AGENT_OPERATIONAL_SUPERVISION_INTERVAL_SECONDS)
+backend/src/routes/agents/operations.ts             (+GET/PATCH /scheduler; POST /supervise agora usa o guard central)
+backend/src/server.ts                                (+start/stopOperationalSupervisionScheduler no boot/shutdown)
+frontend/app/(dashboard)/agents/operations/page.tsx (+OperationalSupervisionSchedulerCard)
+frontend/hooks/agents/use-operations-supervisor.ts  (+useOperationalSupervisionSchedulerStatus, +useSetOperationalSupervisionSchedulerEnabled)
+frontend/lib/agents/derived.ts                       (+schedulerLastResultLabel)
+frontend/lib/agents/derived.test.ts                 (+2 testes)
+frontend/lib/query/keys.ts                           (+operationalSupervisionScheduler)
+frontend/services/agents.ts                          (+getOperationalSupervisionSchedulerStatus, +setOperationalSupervisionSchedulerEnabled)
+frontend/types/agents.ts                             (+OperationalSupervisionSchedulerStatus, +SchedulerLastResult)
 ```
 
-## 26. Testes adicionados
+## 24. Testes adicionados
 
-Cobrindo os 37 itens da seção 28 do correio.md:
+- `scheduler-settings.test.ts` (novo) — **3 testes**: itens 18/19/21
+  (default seguro, round-trip persistido, nunca insere segunda linha).
+- `supervisor-guard.test.ts` (novo) — **5 testes**: itens 5/6/7/9/11/
+  12/13/14 (guard livre após sucesso/erro, chamada normal após falha
+  anterior, duas chamadas concorrentes só uma executa, `running`
+  reflete estado real).
+- `scheduler.test.ts` (novo) — **12 testes**: itens 1/2/3/4/5/8/9/20/28
+  (comportamento por tick) + itens 30-35 (lifecycle: start/stop
+  idempotentes, `nextRunAt` coerente).
+- `scheduler-status.test.ts` (novo) — **5 testes**: itens 24-30
+  (observabilidade real, não simulada — usa `runOperationalSupervision`
+  de verdade para provar que os timestamps derivados de audit log
+  refletem a execução real).
+- `routes/agents/operations-scheduler.test.ts` (novo) — **7 testes**:
+  itens 22/23 (permissions), validação de body (`.strict()`, tipo
+  errado), e item 11 (409 real via HTTP em concorrência manual×manual,
+  mesmo guard do scheduler).
 
-- `incidents.test.ts` (novo) — **6 testes**: itens 7-10 (severity
-  warning/critical, correlação evita duplicação, entidade diferente
-  independente) + saudável sem incidente + mapeamento signal→incident.
-- `response-policy.test.ts` (novo) — **10 testes**: itens 11-14
-  (observe/safe_recovery/restrict_autonomy/manual_attention) + os 6
-  demais tipos de incidente exaustivamente.
-- `signals.test.ts` (novo) — **8 testes**: itens 1-6 (saudável, stale,
-  falha isolada vs. threshold, autonomia restrita, Decision Queue) +
-  run_stuck + approval_bottleneck (novos detectores desta versão).
-- `supervisor-service.test.ts` (novo) — **12 testes**: execução (itens
-  21-25: dry-run, safe_recovery real, manual_attention real),
-  segurança (itens 15-20: nunca Action Plan/approval/tool/permission,
-  nunca aumenta autonomia, nunca toca Circuit Breaker), idempotência
-  (itens 26-28), concorrência (item 29), status (itens 35-37).
-- `routes/agents/operations-supervisor.test.ts` (novo) — **5 testes**:
-  itens 30-34 (403 sem permission, 200 com `agents.operations.read`,
-  dry-run real via HTTP, execução real via HTTP, shape do health).
+Total: **32 testes novos no backend**. Nenhum teste novo de frontend
+além dos 2 de label — mesma justificativa das entregas anteriores.
 
-Total: **41 testes novos no backend**. Nenhum teste novo de frontend
-além dos 10 de label (`derived.test.ts`) — mesma justificativa das
-entregas anteriores: a UI é validada indiretamente pelos testes de rota
-reais que ela consome.
+## 25. Testes de concorrência
+
+Itens 11-14 (seção 33) cobertos em `supervisor-guard.test.ts` (nível de
+serviço, com `runner` injetado e delay controlado) e item 11 também
+via HTTP real em `routes/agents/operations-scheduler.test.ts`
+(`Promise.all` de duas chamadas `POST /supervise` → exatamente uma 200
+e uma 409). Itens 15-17 (lock distribuído) **não aplicáveis** — seção
+33: "executar somente os testes correspondentes à arquitetura realmente
+implementada" — não há lock distribuído nesta versão (ver item 11 acima).
+
+## 26. Testes de lifecycle
+
+Itens 31-35 (seção 36) cobertos em `scheduler.test.ts`: `start()`
+idempotente (chamar duas vezes não recria o timer — mesmo
+`nextRunAt`), `stop()` limpa o timer e é seguro chamado repetidamente,
+estado `inactive` correto quando nunca iniciado/já parado. Shutdown
+real (SIGTERM matando o processo) não foi testado via `node:test` (exigiria
+subprocesso real) — a garantia vem de `stopOperationalSupervisionScheduler()`
+ser chamada de dentro do MESMO `shutdown()` já testado implicitamente
+pela suíte de integração existente (nenhum handler novo, nenhuma
+lógica nova de sinal).
 
 ## 27. Números exatos backend (medidos pelo runner real)
 
-**Baseline após v2.4**: `526 testes / 526 pass / 0 fail`.
+**Baseline após v2.5**: `567 testes / 567 pass / 0 fail`.
 
-**Suíte completa após a v2.5** (`npx tsx --test --test-concurrency=1
+**Suíte completa após a v2.5.1** (`npx tsx --test --test-concurrency=1
 'src/**/*.test.ts'`, via Docker):
 
 ```
-ℹ tests 567
-ℹ suites 99
-ℹ pass 567
+ℹ tests 599
+ℹ suites 107
+ℹ pass 599
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 0
 ℹ todo 0
 ```
 
-**Reconciliação:** 526 → 567 = **+41 testes líquidos**, batendo
-exatamente com a soma por arquivo (6+10+8+12+5=41). Nenhuma regressão —
-todos os 526 testes anteriores continuam passando.
+**Reconciliação:** 567 → 599 = **+32 testes líquidos**, batendo
+exatamente com a soma por arquivo (3+5+12+5+7=32). Nenhuma regressão —
+todos os 567 testes anteriores continuam passando.
 
 ## 28. Números exatos frontend (medidos pelo runner real)
 
 `npx tsx --test 'lib/**/*.test.ts'`:
 
 ```
-ℹ tests 92
-ℹ suites 35
-ℹ pass 92
+ℹ tests 94
+ℹ suites 36
+ℹ pass 94
 ℹ fail 0
 ```
 
-Baseline anterior 87/87 → 92/92 = **+5 testes líquidos** (labels de
-Operational Health Status/Severity/Incident Type/Response — 4 describes,
-alguns com múltiplos `assert` num único `test`). Nenhuma regressão.
+Baseline anterior 92/92 → 94/94 = **+2 testes líquidos**
+(`schedulerLastResultLabel`). Nenhuma regressão.
 
 ## 29. Typecheck/build
 
 - Backend typecheck (`npx tsc --noEmit`, via Docker): **OK, sem erros.**
 - Frontend typecheck (`npx tsc --noEmit`): **OK, sem erros.**
-- Frontend build (`npm run build`): **OK** — rotas
-  `/api/agents/operations/health`, `/api/agents/operations/incidents`,
-  `/api/agents/operations/supervise` presentes na saída.
-- Lint: continua sem script/config configurado — reconfirmado, nada
-  adicionado.
+- Frontend build (`npm run build`): **OK** — rota
+  `/api/agents/operations/scheduler` presente na saída.
+- Lint: continua sem script/config configurado — reconfirmado.
 
 ## 30. `git diff --stat`
 
 ```
- backend/src/agents/operations/schemas.ts           | 13 +++
- backend/src/config/env.ts                          | 16 ++++
- backend/src/db/seed.ts                              |  6 ++
- backend/src/routes/agents/operations.ts             | 39 ++++++++-
- frontend/app/(dashboard)/agents/operations/page.tsx | 14 ++++
- frontend/components/agents/status-badge.tsx         | 62 ++++++++++++++
- frontend/lib/agents/derived.test.ts                 | 50 ++++++++++++
- frontend/lib/agents/derived.ts                      | 53 ++++++++++++
- frontend/lib/query/keys.ts                          |  2 +
- frontend/services/agents.ts                         | 16 ++++
- frontend/types/agents.ts                            | 95 ++++++++++++++++++++++
- 11 files changed, 364 insertions(+), 2 deletions(-)
+ backend/src/agents/operations/schemas.ts           |  6 +++
+ .../src/agents/operations/supervisor-service.ts    | 24 +++++++--
+ backend/src/config/env.ts                          | 29 +++++++++++
+ backend/src/routes/agents/operations.ts            | 58 ++++++++++++++++++++--
+ backend/src/server.ts                              | 14 ++++++
+ .../app/(dashboard)/agents/operations/page.tsx     |  3 ++
+ frontend/hooks/agents/use-operations-supervisor.ts | 28 ++++++++++-
+ frontend/lib/agents/derived.test.ts                | 15 ++++++
+ frontend/lib/agents/derived.ts                     | 12 +++++
+ frontend/lib/query/keys.ts                         |  1 +
+ frontend/services/agents.ts                        | 10 ++++
+ frontend/types/agents.ts                            | 16 ++++++
+ 12 files changed, 208 insertions(+), 8 deletions(-)
 ```
 
 Novos arquivos (sem histórico prévio, fora do `diff --stat`):
 ```
-backend/src/agents/operations/health-service.ts
-backend/src/agents/operations/health-types.ts
-backend/src/agents/operations/incidents.test.ts
-backend/src/agents/operations/incidents.ts
-backend/src/agents/operations/manual-attention.ts
-backend/src/agents/operations/response-policy.test.ts
-backend/src/agents/operations/response-policy.ts
-backend/src/agents/operations/safe-actions.ts
-backend/src/agents/operations/signals.test.ts
-backend/src/agents/operations/signals.ts
-backend/src/agents/operations/supervisor-service.test.ts
-backend/src/agents/operations/supervisor-service.ts
-backend/src/routes/agents/operations-supervisor.test.ts
-frontend/app/api/agents/operations/health/
-frontend/app/api/agents/operations/incidents/
-frontend/app/api/agents/operations/supervise/
-frontend/components/agents/operations/operations-supervisor-dashboard.tsx
-frontend/hooks/agents/use-operations-supervisor.ts
+backend/src/agents/operations/scheduler-settings.ts
+backend/src/agents/operations/scheduler-settings.test.ts
+backend/src/agents/operations/supervisor-guard.ts
+backend/src/agents/operations/supervisor-guard.test.ts
+backend/src/agents/operations/scheduler.ts
+backend/src/agents/operations/scheduler.test.ts
+backend/src/agents/operations/scheduler-status.ts
+backend/src/agents/operations/scheduler-status.test.ts
+backend/src/routes/agents/operations-scheduler.test.ts
+frontend/app/api/agents/operations/scheduler/route.ts
+frontend/components/agents/operations/operational-supervision-scheduler-card.tsx
 ```
 
 ## 31. `git status`
 
 ```
  M backend/src/agents/operations/schemas.ts
+ M backend/src/agents/operations/supervisor-service.ts
  M backend/src/config/env.ts
- M backend/src/db/seed.ts
  M backend/src/routes/agents/operations.ts
+ M backend/src/server.ts
  M correio.md
  M executed.md
  M frontend/app/(dashboard)/agents/operations/page.tsx
- M frontend/components/agents/status-badge.tsx
+ M frontend/hooks/agents/use-operations-supervisor.ts
  M frontend/lib/agents/derived.test.ts
  M frontend/lib/agents/derived.ts
  M frontend/lib/query/keys.ts
  M frontend/services/agents.ts
  M frontend/types/agents.ts
-?? backend/src/agents/operations/health-service.ts
-?? backend/src/agents/operations/health-types.ts
-?? backend/src/agents/operations/incidents.test.ts
-?? backend/src/agents/operations/incidents.ts
-?? backend/src/agents/operations/manual-attention.ts
-?? backend/src/agents/operations/response-policy.test.ts
-?? backend/src/agents/operations/response-policy.ts
-?? backend/src/agents/operations/safe-actions.ts
-?? backend/src/agents/operations/signals.test.ts
-?? backend/src/agents/operations/signals.ts
-?? backend/src/agents/operations/supervisor-service.test.ts
-?? backend/src/agents/operations/supervisor-service.ts
-?? backend/src/routes/agents/operations-supervisor.test.ts
-?? frontend/app/api/agents/operations/health/
-?? frontend/app/api/agents/operations/incidents/
-?? frontend/app/api/agents/operations/supervise/
-?? frontend/components/agents/operations/operations-supervisor-dashboard.tsx
-?? frontend/hooks/agents/use-operations-supervisor.ts
+?? backend/src/agents/operations/scheduler-settings.test.ts
+?? backend/src/agents/operations/scheduler-settings.ts
+?? backend/src/agents/operations/scheduler-status.test.ts
+?? backend/src/agents/operations/scheduler-status.ts
+?? backend/src/agents/operations/scheduler.test.ts
+?? backend/src/agents/operations/scheduler.ts
+?? backend/src/agents/operations/supervisor-guard.test.ts
+?? backend/src/agents/operations/supervisor-guard.ts
+?? backend/src/routes/agents/operations-scheduler.test.ts
+?? frontend/app/api/agents/operations/scheduler/
+?? frontend/components/agents/operations/operational-supervision-scheduler-card.tsx
 ```
 
-## 32. Bugs/limitações reais encontradas
+## 32. Bugs encontrados
 
-1. **Colisão de nome de tipo no frontend, corrigida antes de rodar
-   qualquer teste:** `OperationalSignal` já existia em `types/agents.ts`
-   (módulo Director v1.8, sinais de negócio) — meu tipo novo tinha o
-   MESMO nome com shape incompatível (`severity`/`entityId` com tipos
-   diferentes). `npx tsc --noEmit` acusou o conflito imediatamente
-   (`TS2717`); renomeado para `SupervisorSignal` (nunca chegou a ser
-   usado incorretamente em nenhum componente).
-2. **`agents.operations.signal.detected` (sugerido pela seção 21) foi
-   deliberadamente omitido** — auditar cada SINAL bruto (antes da
-   correlação) geraria potencialmente dezenas de eventos por scan para
-   o mesmo Job/incidente, exatamente o ruído que a própria seção 14/21
-   pede para evitar ("evitar gerar dezenas de audit logs por entidade
-   saudável" / "registrar somente eventos significativos"). Optei por
-   auditar só `agents.operations.incident.detected` (já correlacionado/
-   deduplicado) — decisão documentada em código
-   (`supervisor-service.ts`).
-3. **`run_stuck` e `delivery_failure` não têm nenhuma resposta
-   automática além de `observe` nesta versão** — não existe, no código
-   real, nenhum mecanismo comprovadamente seguro para "destravar" um
-   Job Run preso ou reprocessar uma delivery falha (Recovery v2.4 cobre
-   só Initiative/Executive Review/Strategic Memory). Implementar algo
-   aqui seria "o Supervisor implementa reconciliação própria",
-   proibido pela seção 10. Ambos ficam só como observabilidade — uma
-   limitação real, não escondida.
-4. **`GET /operations/incidents` recalcula o health inteiro
-   internamente** (chama `getOperationalHealth()` e devolve só
-   `.incidents`) — decisão simples e correta (nunca duas
-   implementações divergentes da mesma classificação), mas
-   tecnicamente refaz o trabalho de `GET /operations/health` quando as
-   duas rotas são chamadas em sequência pelo frontend (mesmo padrão/
-   mesma limitação já documentada na v2.4 para `GET /recovery/stale` +
-   `GET /recovery/status`). Aceitável no volume esperado.
-5. **Nenhuma integração automática com o scheduler** foi feita nesta
-   versão (documentado no item 18) — ativação automática fica para uma
-   v2.5.1, exatamente como a seção 19 permite explicitamente.
-6. **`entityId` em `OperationalIncident`/Decision Item é sempre uma
-   string** (para acomodar entidades sem id numérico, como
-   `agent_approvals_backlog:global`) — ao escalar para a Director
-   Decision Queue, `escalateIncidentToManualAttention` converte para
-   `number` quando possível (`Number.isFinite`) e usa `null` quando não
-   (ex.: incidentes agregados globais como `approval_bottleneck` ou
-   `operational_degradation`) — comportamento correto e testado, só
-   registrado aqui por transparência de design.
+1. **Bug no meu PRIMEIRO teste de `scheduler-status.test.ts`, corrigido
+   antes do relatório final:** o teste "26/27/29" injetava um `runner`
+   fake em `runScheduledOperationalSupervision(runner)` para medir
+   `lastStartedAt`/`lastCompletedAt` — mas esses timestamps são
+   derivados dos eventos `agents.operations.scan.started`/`.scan.completed`,
+   emitidos DENTRO da função REAL `runOperationalSupervision` (nunca
+   pelo guard/scheduler) — injetar um runner fake SUBSTITUI essa função
+   inteira, então nenhum desses eventos era emitido pelo teste, e a
+   asserção acabava lendo uma auditoria STALE de uma execução de teste
+   anterior (de outro arquivo, minutos antes) presente na mesma janela
+   de "20 mais recentes" da query. Corrigido usando a
+   `runOperationalSupervision` REAL (sem override) nesse teste
+   específico — os demais testes que precisam de um runner controlado
+   (falha simulada, delay) continuam injetando, corretamente, porque
+   testam um comportamento que NÃO depende dos audits internos da
+   função real. Bug de teste, nunca chegou a existir em código de
+   produção.
+
+## 33. Limitações reais
+
+1. **Guard local, não distribuído** (item 11 acima) — documentado,
+   aceitável para a única instância real hoje.
+2. **`lastDurationMs`/`lastResult` são best-effort** (item 17 acima) —
+   correlacionados por ordem temporal dos audit logs, não por um ID de
+   execução compartilhado. Nunca produz um valor SILENCIOSAMENTE errado
+   de forma perigosa (na pior hipótese, mostra `null`/um valor levemente
+   impreciso numa tela de observabilidade), mas não é uma garantia
+   transacional.
+3. **`intervalSeconds` não é editável em runtime** (item 7 acima) —
+   decisão deliberada, documentada, para não adicionar complexidade sem
+   necessidade comprovada (seção 26).
+4. **Nenhum teste real de "restart não duplica timers"** com um
+   processo Node de verdade reiniciando — a garantia é estrutural
+   (estado 100% em memória, module-level `let`, zerado a cada novo
+   processo) mas não há um teste de integração que suba/derrube o
+   processo real (fora do escopo prático de `node:test` para este
+   projeto).
+
+## 34. Débitos técnicos identificados
+
+1. **`agents.operations.scan.started`/`.scan.completed` agora carregam
+   `triggeredBy`, mas nenhuma tela de auditoria filtra/destaca por essa
+   dimensão ainda** — o dado está disponível (útil para responder "essa
+   supervisão foi manual ou automática?"), mas a UI de audit logs
+   genérica do projeto não foi estendida para exibi-lo de forma
+   destacada. Não bloqueante — o dado está lá, consultável.
+2. **`scheduler-status.ts` faz uma query de até 20 linhas de audit log
+   a cada `GET /operations/scheduler`** — barato no volume atual, mas
+   se o número de scans por dia crescer MUITO (não é o caso hoje, dado
+   o intervalo mínimo de 60s e o baixo custo de cada tick), valeria
+   revisitar (ex.: índice dedicado por `action`, ou cache de curta
+   duração).
 
 ---
 
 ## Conclusão
 
-Todos os 21 critérios da seção 34 do correio.md foram atendidos:
-nenhum segundo Executor/scheduler/Circuit Breaker/Decision Queue/
-mecanismo de recovery criado; incidentes derivados de estados reais
-(mapeados na seção 2, nunca inventados); classificação determinística
-(testada exaustivamente); Response Policy sem LLM (garantido
-estruturalmente); recovery usa exclusivamente v2.4; supervisor nunca
-eleva autonomia (testado); condição perigosa restringe autonomia
-(testado); condição ambígua escala ao humano (testado); dry-run sem
-side effects (testado); execução real idempotente (testado);
-concorrência segura (testado); operations health disponível; auditoria
-implementada; backend authorization correta (nova permission
-justificada); testes de segurança cobrem as 12 proibições da seção 27;
-suíte completa verde (567/567); frontend build verde; nenhuma regressão
-arquitetural.
+Todos os 12 critérios bloqueantes da seção 40 do correio.md foram
+atendidos: nenhum segundo scheduler (terceira instância do MESMO
+padrão, documentado); supervisão nunca implementada como `AgentJob`;
+execuções concorrentes protegidas (guard central, testado); erro do
+supervisor nunca para o scheduler (testado); ativação automática nunca
+silenciosa por default (dois níveis, ambos `false`); supervisor
+automático nunca aumenta autonomia (mesma Response Policy da v2.5,
+inalterada); scheduler nunca altera workflows diretamente (só dispara
+`runOperationalSupervision`); política idêntica entre manual/automática
+(mesma função, só `triggeredBy` difere); nenhum timer duplicado após
+restart/start repetido (testado); permissões sempre no backend
+(`requirePermission`, nunca só frontend); lock nunca fica preso após
+exceção normal (testado exaustivamente); suíte completa permanece
+verde (599/599, nenhuma regressão dos 567 anteriores).
 
 **NENHUM COMMIT foi realizado.** Todas as alterações permanecem no
 working tree, aguardando autorização final do Diretor/CEO.

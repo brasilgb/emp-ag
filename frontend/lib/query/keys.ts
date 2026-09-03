@@ -120,5 +120,6 @@ export const queryKeys = {
     recoveryStale: ["agents", "recovery", "stale"] as const,
     operationalHealth: ["agents", "operations", "health"] as const,
     operationalIncidents: ["agents", "operations", "incidents"] as const,
+    operationalSupervisionScheduler: ["agents", "operations", "scheduler"] as const,
   },
 };
