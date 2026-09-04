@@ -396,32 +396,60 @@ describe('Agentes v1.7 - API de configuracao operacional (/agents/settings)', ()
 
       // trigger 'schedule' (nao 'manual'): recordAutonomousOutcome so e
       // chamado para triggers nao-manuais (circuit.ts, comentario da
-      // v1.5) - execucao manual nunca abre/fecha o circuito. Com
-      // AGENT_LLM_ENABLED desligado (default do describe), o Run termina
-      // 'failed' de forma deterministica, mesma tecnica de
-      // job-runner.autonomy.test.ts.
-      const result = await runAgentJob(job.id, { type: 'schedule' });
-      assert.ok(result.ok, `Run deveria ter sido criado mesmo terminando failed: ${JSON.stringify(result)}`);
-      assert.equal(result.run.status, 'failed');
+      // v1.5) - execucao manual nunca abre/fecha o circuito.
+      //
+      // Forca AGENT_LLM_ENABLED=false explicitamente aqui (nunca confia
+      // no default do processo) — bug real encontrado no saneamento
+      // pos-v3.4: este teste sempre presumiu que o Run terminaria
+      // 'failed' de forma deterministica por causa do DEFAULT de
+      // AGENT_LLM_ENABLED (false, env.ts), mas o .env real usado para
+      // rodar a suite tem AGENT_LLM_ENABLED=true com uma OPENAI_API_KEY
+      // real — nesse caso planEvaluateAndPersistActionPlan chama a API
+      // de verdade (create-action-plan.ts) e o Run termina 'completed',
+      // nunca abrindo o circuito. Nao e um bug de circuit.ts nem de
+      // create-action-plan.ts (ambos se comportam exatamente como
+      // desenhado); e um teste que nao isolava sua propria dependencia
+      // de ambiente, ao contrario de todo outro teste de Jobs+LLM neste
+      // projeto (mesma tecnica de job-runner.autonomy.test.ts/
+      // jobs.test.ts: mutar process.env.AGENT_LLM_ENABLED diretamente,
+      // restaurando o valor original no finally). Com o LLM
+      // deterministicamente desligado aqui, o Run termina 'failed' com
+      // codigo 'llm_unavailable' (create-action-plan.ts), sem nenhuma
+      // chamada real de rede.
+      const previousLlmEnabled = process.env.AGENT_LLM_ENABLED;
+      process.env.AGENT_LLM_ENABLED = 'false';
 
-      const [afterFirstFailure] = await db.select().from(agentJobs).where(eq(agentJobs.id, job.id));
-      assert.equal(afterFirstFailure.circuitState, 'open', 'com threshold=1, uma unica falha ja deveria abrir o circuito.');
-      assert.equal(afterFirstFailure.circuitFailureCount, 1);
+      try {
+        const result = await runAgentJob(job.id, { type: 'schedule' });
+        assert.ok(result.ok, `Run deveria ter sido criado mesmo terminando failed: ${JSON.stringify(result)}`);
+        assert.equal(result.run.status, 'failed');
 
-      // Limpeza imediata (nao so no afterEach): este e o unico teste do
-      // arquivo que deixa um override GLOBAL de circuit.failureThreshold
-      // vivo entre a criacao e o fim do teste - qualquer outro arquivo de
-      // teste que rode circuit breaker com o threshold default enquanto
-      // essa linha existir vai abrir o circuito na 1a falha em vez do
-      // threshold real (bug real encontrado: derrubou 6 testes de
-      // job-runner.autonomy.test.ts rodando na mesma invocacao). Fechar a
-      // janela aqui, no fim do proprio teste, e mais robusto que confiar
-      // so no afterEach.
-      await app.inject({
-        method: 'DELETE',
-        url: '/agents/settings/circuit.failureThreshold',
-        headers: authHeader(ceoToken),
-      });
+        const [afterFirstFailure] = await db.select().from(agentJobs).where(eq(agentJobs.id, job.id));
+        assert.equal(afterFirstFailure.circuitState, 'open', 'com threshold=1, uma unica falha ja deveria abrir o circuito.');
+        assert.equal(afterFirstFailure.circuitFailureCount, 1);
+      } finally {
+        if (previousLlmEnabled === undefined) {
+          delete process.env.AGENT_LLM_ENABLED;
+        } else {
+          process.env.AGENT_LLM_ENABLED = previousLlmEnabled;
+        }
+
+        // Limpeza imediata (nao so no afterEach, e agora tambem dentro
+        // do finally): este e o unico teste do arquivo que deixa um
+        // override GLOBAL de circuit.failureThreshold vivo entre a
+        // criacao e o fim do teste - qualquer outro arquivo de teste que
+        // rode circuit breaker com o threshold default enquanto essa
+        // linha existir vai abrir o circuito na 1a falha em vez do
+        // threshold real (bug real encontrado: derrubou 6 testes de
+        // job-runner.autonomy.test.ts rodando na mesma invocacao). Rodar
+        // a limpeza dentro do finally garante que ela acontece mesmo se
+        // uma assertion acima falhar.
+        await app.inject({
+          method: 'DELETE',
+          url: '/agents/settings/circuit.failureThreshold',
+          headers: authHeader(ceoToken),
+        });
+      }
     });
   });
 });

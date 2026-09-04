@@ -74,8 +74,28 @@ describe('Agentes v1.6 — Execution Timeline / Chain View (job-runs detail/line
     return event;
   }
 
+  // Bug real encontrado no saneamento pos-v3.4: este arquivo inteiro
+  // presume "Run manual sem LLM falha antes de gerar Action Plan" (ver
+  // comentario da fixture `createJob`/dos testes abaixo), mas nunca
+  // isolava essa dependencia — ao contrario de todo outro teste de
+  // Jobs+LLM no projeto (job-runner.autonomy.test.ts, jobs.test.ts,
+  // settings.test.ts), ele confiava apenas no DEFAULT de
+  // AGENT_LLM_ENABLED (false, env.ts). Com o .env real usado para rodar
+  // a suite tendo AGENT_LLM_ENABLED=true e uma OPENAI_API_KEY real, os
+  // dois testes abaixo passavam a chamar a API de verdade
+  // (create-action-plan.ts → getLLMProvider()), produzindo um Action
+  // Plan nao-deterministico em vez do 'llm_unavailable' esperado.
+  // Forcado aqui, uma unica vez para todo o describe (nenhum teste deste
+  // arquivo jamais precisa do LLM ligado), restaurado no `after` — nunca
+  // introduz nenhuma chamada real de LLM, so garante que ela nunca
+  // acontece.
+  let previousLlmEnabled: string | undefined;
+
   before(async () => {
     await app.ready();
+
+    previousLlmEnabled = process.env.AGENT_LLM_ENABLED;
+    process.env.AGENT_LLM_ENABLED = 'false';
 
     const ceoEmail = process.env.CEO_EMAIL;
     const ceoPassword = process.env.CEO_PASSWORD;
@@ -92,6 +112,12 @@ describe('Agentes v1.6 — Execution Timeline / Chain View (job-runs detail/line
   });
 
   after(async () => {
+    if (previousLlmEnabled === undefined) {
+      delete process.env.AGENT_LLM_ENABLED;
+    } else {
+      process.env.AGENT_LLM_ENABLED = previousLlmEnabled;
+    }
+
     if (createdEventIds.length > 0) {
       await db.delete(agentEvents).where(inArray(agentEvents.id, createdEventIds));
     }
