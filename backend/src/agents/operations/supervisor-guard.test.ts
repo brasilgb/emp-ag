@@ -7,6 +7,7 @@ import {
   isOperationalSupervisionRunning,
   OPERATIONAL_SUPERVISION_LOCK_KEY,
   runGuardedOperationalSupervision,
+  setForcedUnlockFailureForTests,
   SupervisionAlreadyRunningError,
 } from './supervisor-guard.js';
 import type { OperationalSupervisionReport } from './health-types.js';
@@ -95,7 +96,7 @@ describe('Agentes v2.5.1/v3.3 - supervisor-guard (guard central + advisory lock)
     assert.equal(report.incidentsDetected, 5);
   });
 
-  test('5: o ADVISORY LOCK (não só o guard local em memória) é liberado de verdade após sucesso', async () => {
+  test('1 (v3.3.1): unlock normal — lock é liberado após sucesso, conexão volta ao pool, outra sessão consegue adquirir a mesma chave', async () => {
     await runGuardedOperationalSupervision({ actorUserId: null }, async () => fakeReport());
     assert.ok(await lockIsFreeRightNow(), 'uma sessão PostgreSQL totalmente nova deveria conseguir adquirir o lock depois de uma execução bem-sucedida');
   });
@@ -103,6 +104,45 @@ describe('Agentes v2.5.1/v3.3 - supervisor-guard (guard central + advisory lock)
   test('6/7 (lock): o advisory lock também é liberado depois de uma falha estrutural do runner — nunca fica preso no Postgres', async () => {
     await assert.rejects(() => runGuardedOperationalSupervision({ actorUserId: null }, throwingRunner('falha estrutural')));
     assert.ok(await lockIsFreeRightNow(), 'mesmo após o runner lançar, o lock deveria ter sido liberado no Postgres, não só a flag local');
+  });
+
+  test('2 (v3.3.1): falha FORÇADA em pg_advisory_unlock → conexão problemática é DESCARTADA (nunca devolvida saudável); uma sessão nova consegue adquirir o mesmo lock depois', async () => {
+    setForcedUnlockFailureForTests(true);
+    const report = await runGuardedOperationalSupervision({ actorUserId: null }, async () => fakeReport({ incidentsDetected: 7 }));
+    assert.equal(report.incidentsDetected, 7, 'o runner deveria ter executado e devolvido seu resultado normalmente — só o UNLOCK falhou depois, nunca a execução em si');
+    assert.equal(isOperationalSupervisionRunning(), false, 'guard local libera normalmente mesmo quando o unlock falha');
+
+    // A prova real (correio.md "Testes obrigatórios" #2): se a conexão
+    // problemática tivesse voltado "saudável" ao pool
+    // (`client.release()` sem argumento), ela continuaria segurando o
+    // lock de sessão de verdade no Postgres — uma tentativa nova
+    // encontraria `acquired: false`. Como ela foi DESCARTADA
+    // (`client.release(unlockError)`, o mecanismo oficial do driver
+    // `pg`), o Postgres já removeu os locks daquela sessão junto com o
+    // encerramento da conexão — uma sessão totalmente nova consegue
+    // adquirir o MESMO lock imediatamente.
+    assert.ok(await lockIsFreeRightNow(), 'depois do unlock falhar e a conexão ser descartada, uma sessão nova deveria conseguir adquirir o mesmo lock imediatamente — nunca um bloqueio falso/indefinido');
+  });
+
+  test('3 (v3.3.1): runner lança erro estrutural A + unlock também falha (erro B) → A é o erro que propaga (nunca B), conexão é descartada mesmo assim', async () => {
+    setForcedUnlockFailureForTests(true);
+
+    await assert.rejects(
+      () => runGuardedOperationalSupervision({ actorUserId: null }, throwingRunner('erro estrutural do runner (A)')),
+      (error: unknown) => {
+        // A precedência é garantida pela semântica nativa de
+        // try/finally do JavaScript: o `catch` interno do unlock nunca
+        // relança `unlockError` (erro B) — só o registra — então o
+        // `finally` inteiro completa sem lançar, e a exceção ORIGINAL
+        // (A, ainda pendente do `try` de `runner(params)`) é a que
+        // continua se propagando.
+        assert.ok(error instanceof Error);
+        assert.match((error as Error).message, /erro estrutural do runner \(A\)/, 'o erro que propaga precisa ser A (do runner), nunca B (do unlock, que é só registrado)');
+        return true;
+      },
+    );
+
+    assert.ok(await lockIsFreeRightNow(), 'mesmo com runner E unlock falhando ao mesmo tempo, a conexão deveria ter sido descartada e o lock liberado por consequência — nunca um bloqueio operacional indefinido');
   });
 
   test('2/3/5/11/12: duas chamadas concorrentes → só a primeira executa de verdade, a segunda recebe SupervisionAlreadyRunningError (nunca erro genérico)', async () => {

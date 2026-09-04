@@ -28,6 +28,19 @@ import type { OperationalSupervisionReport } from './health-types.js';
  * é sempre o advisory lock — o guard local só pode ficar `true` quando
  * este processo genuinamente detém o lock, nunca antes, nunca
  * independentemente dele.
+ *
+ * v3.3.1 (correio.md "Fechamento do lifecycle do advisory lock") —
+ * fechamento de uma lacuna deixada em aberto pela v3.3: se
+ * `pg_advisory_unlock` falhar, a `PoolClient` NUNCA volta ao pool como
+ * saudável (`client.release()` sem argumento) — isso devolveria ao pool
+ * uma conexão que ainda pode estar segurando o lock de sessão, causando
+ * um bloqueio falso e potencialmente indefinido do Operational
+ * Supervisor. Em vez disso, `client.release(unlockError)` (a assinatura
+ * oficial do driver `pg` para "descarte esta conexão") força o pool a
+ * FECHAR a conexão de verdade — e o próprio Postgres libera todos os
+ * locks de sessão pertencentes a ela como consequência direta do
+ * encerramento. Ver o `finally` de `runGuardedOperationalSupervision`
+ * abaixo para o mecanismo completo.
  */
 export class SupervisionAlreadyRunningError extends Error {
   constructor() {
@@ -50,6 +63,21 @@ let running = false;
 
 export function isOperationalSupervisionRunning(): boolean {
   return running;
+}
+
+// Gancho SOMENTE de teste (mesmo padrão já usado em
+// `agents/llm/factory.ts`/`agents/followups/action-proposals-service.ts`/
+// `agents/operations/supervisor-service.ts`), nunca referenciado fora de
+// `*.test.ts`: força a PRÓXIMA tentativa de `pg_advisory_unlock` a falhar,
+// para provar deterministicamente o descarte de conexão (v3.3.1) sem
+// depender de uma falha real e imprevisível de infraestrutura. Autolimpa
+// (volta a `false`) assim que consumido — nunca precisa ser resetado
+// manualmente entre testes. `false` (default) nunca altera o
+// comportamento em produção.
+let forcedUnlockFailureForTests = false;
+
+export function setForcedUnlockFailureForTests(force: boolean): void {
+  forcedUnlockFailureForTests = force;
 }
 
 /**
@@ -121,28 +149,54 @@ export async function runGuardedOperationalSupervision(
     // o processo inteiro morrer no meio.
     running = false;
     try {
+      // v3.3.1 (correio.md "Fechamento do lifecycle do advisory lock") —
+      // tentativa NORMAL de liberação. Se `forcedUnlockFailureForTests`
+      // (gancho SOMENTE de teste, ver export acima) estiver armado, simula uma
+      // falha real de `pg_advisory_unlock` sem sequer rodar a query —
+      // nesse caso o lock nunca é liberado por este caminho; a única
+      // forma de liberá-lo passa a ser destruir a sessão (branch do catch
+      // abaixo), exatamente o mecanismo real do Postgres que esta versão
+      // existe para provar.
+      if (forcedUnlockFailureForTests) {
+        forcedUnlockFailureForTests = false;
+        throw new Error('Falha forçada para teste (v3.3.1): pg_advisory_unlock.');
+      }
+
       await client.query('SELECT pg_advisory_unlock($1)', [OPERATIONAL_SUPERVISION_LOCK_KEY]);
-    } catch (unlockError) {
-      // correio.md seção 10 — uma falha ao LIBERAR não pode ser
-      // confundida com sucesso completo, mas também não deve mascarar a
-      // exceção estrutural original do `runner` (se o `try` acima já
-      // lançou, É ELA que precisa propagar, nunca esta). Nunca um catch
-      // silencioso (v3.2 seção 20, mesmo princípio): logada explicitamente
-      // — mesmo padrão já usado pelo `.catch()` externo do scheduler
-      // (`agents/operations/scheduler.ts`) para erros verdadeiramente
-      // inesperados, nunca `console.log`/silêncio total. Não há
-      // recuperação complexa a fazer aqui (correio.md: "não inventar
-      // mecanismo complexo de recuperação nesta versão") — o pior caso é
-      // a conexão voltar ao pool com o lock ainda preso; como o pool
-      // reusa conexões (nunca fecha entre usos), isso deixaria o lock
-      // preso até o processo encerrar (cenário só possível com o
-      // Postgres ficando indisponível exatamente no instante do unlock,
-      // depois de já ter aceitado o lock — extremamente raro). Um
-      // mecanismo de retry/recuperação fica fora do escopo desta versão.
-      // eslint-disable-next-line no-console
-      console.error('[operational-supervision-guard] falha ao liberar o advisory lock:', unlockError);
-    } finally {
+      // Unlock confirmado — a sessão está limpa, devolvê-la ao pool como
+      // uma conexão saudável e reutilizável é seguro e é o fluxo normal.
       client.release();
+    } catch (unlockError) {
+      // correio.md (rodada de fechamento) — uma falha ao LIBERAR não pode
+      // ser confundida com sucesso completo, e a conexão problemática
+      // NUNCA pode voltar ao pool como se estivesse saudável: se o
+      // unlock não pôde ser confirmado, não há como garantir que o lock
+      // de sessão foi de fato removido enquanto a conexão continuar viva
+      // — a única garantia real do Postgres é que locks de SESSÃO somem
+      // quando a sessão termina. Por isso `client.release(unlockError)`
+      // (nunca `client.release()` sem argumento): a assinatura oficial do
+      // driver `pg` (`release(err?: Error | boolean)`) trata um argumento
+      // truthy como "descarte esta conexão, não a devolva ao pool" — o
+      // pool então fecha a conexão de verdade, e o PRÓPRIO Postgres libera
+      // todos os locks de sessão pertencentes a ela como consequência
+      // direta do encerramento (documentado desde a implementação
+      // original do lock, seção "release" — aqui é onde essa propriedade
+      // deixa de ser só uma rede de segurança teórica e passa a ser o
+      // mecanismo de recuperação ativo deste branch específico). Nunca um
+      // catch silencioso (v3.2 seção 20, mesmo princípio): logada
+      // explicitamente, mesmo padrão já usado pelo `.catch()` externo do
+      // scheduler para erros inesperados.
+      //
+      // Precedência de erros: se o `try` de `runner(params)` acima já
+      // lançou (falha estrutural do runner), a exceção ORIGINAL dele é a
+      // que se propaga deste `finally` (comportamento nativo do
+      // JavaScript — um `finally` que não lança substitui nada; só
+      // lançaria por cima se ESTE catch relançasse, o que ele
+      // deliberadamente NÃO faz). `unlockError` é só registrado, nunca
+      // relançado — nunca mascara a causa original.
+      // eslint-disable-next-line no-console
+      console.error('[operational-supervision-guard] falha ao liberar o advisory lock — conexão será descartada, não devolvida ao pool:', unlockError);
+      client.release(unlockError instanceof Error ? unlockError : new Error(String(unlockError)));
     }
   }
 }
