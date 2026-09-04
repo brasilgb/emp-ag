@@ -46,6 +46,8 @@ import {
   isGoalClosed,
   isInitiativeClosed,
   signalEntityHref,
+  formatSlaRemainingLabel,
+  operationalIncidentSlaStatusLabel,
 } from "./derived";
 
 const NOW = new Date("2026-08-30T12:00:00.000Z");
@@ -581,5 +583,42 @@ describe("actionProposalStatusLabel", () => {
   test("valor desconhecido faz fallback para o próprio valor", () => {
     // @ts-expect-error — testando o fallback de valor não mapeado.
     assert.equal(actionProposalStatusLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+// Agentes v4.1 — Operational Incident Aging & SLA Visibility. Único
+// pedaço de lógica client-side desta versão (correio.md "20. Testes
+// frontend": "adicionar testes frontend apenas se houver lógica
+// client-side relevante") — pura formatação de `remainingSeconds` já
+// decidido pelo backend, nunca uma segunda política de SLA.
+describe("formatSlaRemainingLabel", () => {
+  test("tempo restante positivo → 'Restam Xmin'", () => {
+    assert.equal(formatSlaRemainingLabel(12 * 60), "Restam 12min");
+  });
+
+  test("tempo restante negativo (vencido) → 'Vencido há Xmin'", () => {
+    assert.equal(formatSlaRemainingLabel(-7 * 60), "Vencido há 7min");
+  });
+
+  test("exatamente no prazo (0s restantes) conta como 'Restam 0s'", () => {
+    assert.equal(formatSlaRemainingLabel(0), "Restam 0s");
+  });
+
+  test("null (sem prazo aplicável) → '--'", () => {
+    assert.equal(formatSlaRemainingLabel(null), "--");
+  });
+});
+
+describe("operationalIncidentSlaStatusLabel", () => {
+  test("todo status conhecido tem rótulo em pt-BR", () => {
+    assert.equal(operationalIncidentSlaStatusLabel("within_sla"), "Dentro do prazo");
+    assert.equal(operationalIncidentSlaStatusLabel("warning"), "Próximo do vencimento");
+    assert.equal(operationalIncidentSlaStatusLabel("breached"), "SLA vencido");
+    assert.equal(operationalIncidentSlaStatusLabel("completed"), "Encerrado");
+  });
+
+  test("valor desconhecido faz fallback para o próprio valor", () => {
+    // @ts-expect-error — testando o fallback de valor não mapeado.
+    assert.equal(operationalIncidentSlaStatusLabel("nunca_existiu"), "nunca_existiu");
   });
 });

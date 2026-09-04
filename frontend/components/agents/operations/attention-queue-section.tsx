@@ -14,7 +14,7 @@ import { LoadingState } from "@/components/states/loading-state";
 import { useAttentionQueue } from "@/hooks/agents/use-operations";
 import { useUsersDirectory } from "@/hooks/use-users-directory";
 import { useAuth } from "@/lib/auth/use-auth";
-import { attentionReasonLabel, incidentReviewStatusLabel, operationalIncidentTypeLabel, supervisionIncidentOutcomeLabel } from "@/lib/agents/derived";
+import { attentionReasonLabel, formatSlaRemainingLabel, incidentReviewStatusLabel, operationalIncidentTypeLabel, supervisionIncidentOutcomeLabel } from "@/lib/agents/derived";
 import { formatDateTime } from "@/lib/agents/format";
 import {
   AGING_BUCKETS,
@@ -29,7 +29,7 @@ import {
   type SupervisionIncidentOutcome,
 } from "@/types/agents";
 
-import { AgingBucketBadge, IncidentReviewStatusBadge, OperationalIncidentTypeBadge, OperationalSeverityBadge, SupervisionIncidentOutcomeBadge } from "../status-badge";
+import { AgingBucketBadge, IncidentReviewStatusBadge, OperationalIncidentSlaStatusBadge, OperationalIncidentTypeBadge, OperationalSeverityBadge, SupervisionIncidentOutcomeBadge } from "../status-badge";
 import { SupervisionIncidentDetailDialog } from "./supervision-insights-section";
 
 const LIMIT = 20;
@@ -277,6 +277,7 @@ export function AttentionQueueSection({ assigneeFilter, onAssigneeFilterChange }
                   <TableHead>Entidade</TableHead>
                   <TableHead>Severidade</TableHead>
                   <TableHead>Idade</TableHead>
+                  <TableHead>SLA</TableHead>
                   <TableHead>Recorrência</TableHead>
                   <TableHead>Responsável</TableHead>
                   <TableHead>Review</TableHead>
@@ -300,6 +301,10 @@ export function AttentionQueueSection({ assigneeFilter, onAssigneeFilterChange }
                     <TableCell>
                       <AgingBucketBadge bucket={item.agingBucket} />
                       {item.sinceReviewBucket ? <div className="mt-1 text-[11px] text-muted-foreground">reconhecido há {item.sinceReviewBucket}</div> : null}
+                    </TableCell>
+                    <TableCell>
+                      <OperationalIncidentSlaStatusBadge status={item.sla.status} />
+                      <div className="mt-1 text-[11px] text-muted-foreground">{formatSlaRemainingLabel(item.sla.remainingSeconds)}</div>
                     </TableCell>
                     <TableCell className="text-xs">{item.isRecurring ? `${item.recurrenceCount}x` : "--"}</TableCell>
                     <TableCell className="text-xs">{item.assignment ? assigneeName(item.assignment.assigneeUserId) : <span className="text-muted-foreground">Não atribuído</span>}</TableCell>

@@ -27,10 +27,12 @@ import {
   superviseQuerySchema,
   updateIncidentAssignmentSchema,
   updateIncidentReviewSchema,
+  updateSlaSettingsSchema,
 } from '../../agents/operations/schemas.js';
 import { getOperationalHealth } from '../../agents/operations/health-service.js';
 import { getIncidentReview, upsertIncidentReview } from '../../agents/operations/incident-review-service.js';
 import { assignIncident, getIncidentAssignment, unassignIncident } from '../../agents/operations/incident-assignment-service.js';
+import { getOperationalSlaMinutesBySeverity, setOperationalSlaMinutesBySeverity } from '../../agents/operations/sla-settings.js';
 import { getOperationalSupervisionSchedulerStatus } from '../../agents/operations/scheduler-status.js';
 import { isOperationalSupervisionEnabled, setOperationalSupervisionEnabled } from '../../agents/operations/scheduler-settings.js';
 import { SupervisionAlreadyRunningError } from '../../agents/operations/supervisor-guard.js';
@@ -578,5 +580,37 @@ export async function operationsRoutes(app: FastifyInstance) {
     '/operations/supervision-insights/ownership-workload',
     { preHandler: [authenticate, requirePermission('agents.operations.read')] },
     async () => ({ data: await getOperationalOwnershipWorkload() }),
+  );
+
+  // Agentes v4.1 (correio.md "Operational Incident Aging & SLA
+  // Visibility", seções 3/12/13) — configuração pequena e fechada (só
+  // minutos por severidade, reaproveitando a tabela genérica `settings`
+  // — ver docblock de `sla-settings.ts`). Leitura em
+  // `agents.operations.read` (mesma de toda esta seção — "não criar
+  // permission nova apenas para visualizar informação derivada de um
+  // incidente que o usuário já pode consultar"); escrita em
+  // `agents.operations.manage` (mesma permission já usada por
+  // `PATCH /operations/scheduler` acima — "permission administrativa/
+  // gerencial já adequada", nenhuma nova). Cada alteração é auditada
+  // dentro do próprio `setOperationalSlaMinutesBySeverity`; leitura
+  // nunca gera audit log (seção 13).
+  app.get(
+    '/operations/sla-settings',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async () => ({ data: await getOperationalSlaMinutesBySeverity() }),
+  );
+
+  app.patch(
+    '/operations/sla-settings',
+    { preHandler: [authenticate, requirePermission('agents.operations.manage')] },
+    async (request, reply) => {
+      const body = updateSlaSettingsSchema.safeParse(request.body);
+      if (!body.success) return badRequest(reply, body.error);
+
+      const result = await setOperationalSlaMinutesBySeverity(body.data, currentUserId(request));
+      if (!result.ok) return reply.code(400).send({ error: 'invalid_request', message: result.message });
+
+      return { data: result.value };
+    },
   );
 }

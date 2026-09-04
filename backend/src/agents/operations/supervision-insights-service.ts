@@ -10,6 +10,8 @@ import { OPERATIONAL_INCIDENT_TYPES, OPERATIONAL_RESPONSES, OPERATIONAL_SEVERITI
 import type { OperationalIncidentType, OperationalResponse, OperationalSeverity } from './health-types.js';
 import { SUPERVISION_RUN_STATUSES } from './supervision-run-history.js';
 import type { SupervisionRunStatus } from './supervision-run-history.js';
+import { getOperationalSlaMinutesBySeverity } from './sla-settings.js';
+import type { OperationalSlaMinutesBySeverity } from './sla-settings.js';
 
 /**
  * Agentes v3.5 (correio.md "Operational Supervision Insights & Incident
@@ -255,6 +257,124 @@ export async function getSupervisionOverview(params: SupervisionInsightsFilterPa
   };
 }
 
+/**
+ * Agentes v4.1 (correio.md "Operational Incident Aging & SLA
+ * Visibility") — vocabulário fechado do status temporal (correio.md
+ * seção 4). `completed` representa um incidente cujo review já foi
+ * encerrado (`resolved`/`dismissed`) — o cálculo de `remainingSeconds`/
+ * `breachedAt` fica CONGELADO no timestamp real de encerramento (a
+ * transição exata, derivada do histórico de review — v3.6 — nunca só
+ * "agora"), então um incidente fechado nunca volta a ser reportado como
+ * breach novo (correio.md seção 7).
+ */
+export const OPERATIONAL_INCIDENT_SLA_STATUSES = ['within_sla', 'warning', 'breached', 'completed'] as const;
+export type OperationalIncidentSlaStatus = (typeof OPERATIONAL_INCIDENT_SLA_STATUSES)[number];
+
+/**
+ * Campos aplicáveis à LISTA (histórico/fila) — correio.md seção 8:
+ * "separar claramente dados necessários à lista; dados detalhados do
+ * diálogo". `lastActivityAt`/`lastActivityAgeSeconds` aqui são uma
+ * APROXIMAÇÃO barata (max(detectedAt, review.reviewedAt, assignment.assignedAt),
+ * já carregados em lote por `enrichIncidentRows` — nenhuma query extra),
+ * documentada como tal: não inclui escalation/follow-up (exigiria
+ * carregar a timeline inteira POR LINHA, exatamente o que correio.md
+ * seção 14 proíbe: "se a timeline completa não for necessária... não
+ * carregá-la individualmente para cada item"). O valor EXATO (via
+ * timeline completa) só existe em `OperationalIncidentSlaDetail`.
+ */
+export interface OperationalIncidentSla {
+  status: OperationalIncidentSlaStatus;
+  detectedAt: string;
+  ageSeconds: number;
+  deadlineAt: string | null;
+  remainingSeconds: number | null;
+  breachedAt: string | null;
+  assignedAt: string | null;
+  assignmentAgeSeconds: number | null;
+  lastActivityAt: string;
+  lastActivityAgeSeconds: number;
+}
+
+/**
+ * Superset só do DETALHE (um item, nunca uma lista — mesmo racional já
+ * aceito para `review`/`escalation`/`timeline` desde v3.5/v4.0): exige a
+ * transição REAL de "primeiro acknowledge" (do histórico de audits de
+ * review, v3.6) e a timeline completa (v4.0) para `lastActivityAt`
+ * exato — caro demais para calcular por linha numa lista, barato o
+ * bastante para UM incidente.
+ */
+export interface OperationalIncidentSlaDetail extends OperationalIncidentSla {
+  acknowledgedAt: string | null;
+  acknowledgementSeconds: number | null;
+}
+
+// Fração do prazo total que, restando, já conta como "warning" — a
+// política mais simples que satisfaz o requisito (correio.md seção 3),
+// nunca persistida (constante de apresentação, mesmo idioma de
+// `AGING_BUCKETS`/`HOUR_MS` acima). 20% do prazo restante: para SLA
+// critical (60min) o warning começa a 12min do prazo; para info
+// (1440min), a 288min (4.8h) do prazo — proporcional à severidade,
+// nunca um limiar fixo que faria o SLA inteiro de `critical` virar
+// "warning" desde o primeiro minuto.
+const SLA_WARNING_REMAINING_FRACTION = 0.2;
+
+export interface ComputeIncidentSlaInput {
+  severity: OperationalSeverity;
+  detectedAt: Date;
+  reviewStatus: IncidentReviewStatusOrUnreviewed;
+  // Timestamp REAL da transição de encerramento (resolved/dismissed),
+  // derivado do histórico — `null` quando o incidente não está
+  // encerrado. Nunca inferido de "agora".
+  closedAt: Date | null;
+  assignedAt: Date | null;
+  lastActivityAt: Date;
+  now: Date;
+  slaMinutesBySeverity: OperationalSlaMinutesBySeverity;
+}
+
+/**
+ * Pura, sem I/O — testável isoladamente (correio.md "16. Testes
+ * obrigatórios", itens 1-5/11/12/19). Nunca persiste nada (correio.md
+ * seção 2: "age/timeToBreach/overdue/breachedAt... não devem ser
+ * persistidos").
+ */
+// Exportada para teste unitário puro, sem banco (mesmo padrão de
+// `sortOperationalIncidentTimelineEvents`, v4.0) — a maioria dos itens
+// obrigatórios de teste da v4.1 (dentro do SLA/warning/breached/deadline/
+// tempo restante/completed) são testáveis diretamente aqui, sem precisar
+// de fixtures no Postgres.
+export function computeIncidentSla(input: ComputeIncidentSlaInput): OperationalIncidentSla {
+  const { severity, detectedAt, reviewStatus, closedAt, assignedAt, lastActivityAt, now, slaMinutesBySeverity } = input;
+
+  const ageSeconds = Math.max(0, Math.round((now.getTime() - detectedAt.getTime()) / 1000));
+  const slaSeconds = slaMinutesBySeverity[severity] * 60;
+  const deadlineAt = new Date(detectedAt.getTime() + slaSeconds * 1000);
+
+  const isCompleted = reviewStatus === 'resolved' || reviewStatus === 'dismissed';
+  const referenceTime = isCompleted && closedAt ? closedAt : now;
+  const remainingSeconds = Math.round((deadlineAt.getTime() - referenceTime.getTime()) / 1000);
+  const isPastDeadline = remainingSeconds < 0;
+
+  let status: OperationalIncidentSlaStatus;
+  if (isCompleted) status = 'completed';
+  else if (isPastDeadline) status = 'breached';
+  else if (remainingSeconds <= slaSeconds * SLA_WARNING_REMAINING_FRACTION) status = 'warning';
+  else status = 'within_sla';
+
+  return {
+    status,
+    detectedAt: detectedAt.toISOString(),
+    ageSeconds,
+    deadlineAt: deadlineAt.toISOString(),
+    remainingSeconds,
+    breachedAt: isPastDeadline ? deadlineAt.toISOString() : null,
+    assignedAt: assignedAt ? assignedAt.toISOString() : null,
+    assignmentAgeSeconds: assignedAt ? Math.max(0, Math.round((now.getTime() - assignedAt.getTime()) / 1000)) : null,
+    lastActivityAt: lastActivityAt.toISOString(),
+    lastActivityAgeSeconds: Math.max(0, Math.round((now.getTime() - lastActivityAt.getTime()) / 1000)),
+  };
+}
+
 export interface SupervisionIncidentSummary {
   auditLogId: number;
   incidentType: OperationalIncidentType;
@@ -295,6 +415,12 @@ export interface SupervisionIncidentSummary {
   // `review.reviewedBy`, evita uma segunda estratégia de resolução de
   // nomes e um segundo join batched só para isso).
   assignment: { assigneeUserId: number; assignedBy: number; assignedAt: string } | null;
+  // Agentes v4.1 — visibilidade de aging/SLA (correio.md "Operational
+  // Incident Aging & SLA Visibility"). Calculado em tempo de leitura,
+  // NUNCA persistido (correio.md seção 2). Ver docblock de
+  // `OperationalIncidentSla` acima para a diferença entre este campo
+  // (lista) e o superset exposto em `SupervisionIncidentDetail.sla`.
+  sla: OperationalIncidentSla;
 }
 
 export interface ListSupervisionIncidentsParams {
@@ -317,6 +443,9 @@ export interface ListSupervisionIncidentsParams {
   // filtro entre histórico e fila").
   outcome?: SupervisionOutcome;
   recurringOnly?: boolean;
+  // Agentes v4.1 — mesmo relógio injetável de `listAttentionQueue`
+  // (aging/SLA calculados aqui também, via `enrichIncidentRows`).
+  now?: Date;
 }
 
 const OUTCOME_AUDIT_ACTIONS = ['agents.operations.safe_recovery', 'agents.operations.autonomy_restricted', 'agents.operations.manual_attention', 'agents.operations.incident.failed'] as const;
@@ -348,6 +477,10 @@ function outcomeFromAction(action: (typeof OUTCOME_AUDIT_ACTIONS)[number] | unde
  */
 async function enrichIncidentRows(
   rows: { id: number; entityType: string | null; entityId: string | null; metadata: unknown; createdAt: Date }[],
+  // Agentes v4.1 — relógio injetável (mesmo padrão de `listAttentionQueue`
+  // desde a v3.7: "preferir relógio controlável/injetável nos testes de
+  // aging") — default `new Date()` em produção, fixo nos testes.
+  now: Date = new Date(),
 ): Promise<SupervisionIncidentSummary[]> {
   if (rows.length === 0) return [];
 
@@ -363,7 +496,7 @@ async function enrichIncidentRows(
     return `${metadata?.incidentType ?? 'unknown'}:${row.entityType}:${row.entityId}`;
   });
 
-  const [candidateRuns, outcomeAudits, escalationRows, reviewsByAuditLogId, recurrenceRows, assignmentsByAuditLogId] = await Promise.all([
+  const [candidateRuns, outcomeAudits, escalationRows, reviewsByAuditLogId, recurrenceRows, assignmentsByAuditLogId, slaMinutesBySeverity] = await Promise.all([
     db
       .select({ id: agentOperationalSupervisionRuns.id, status: agentOperationalSupervisionRuns.status, startedAt: agentOperationalSupervisionRuns.startedAt, finishedAt: agentOperationalSupervisionRuns.finishedAt })
       .from(agentOperationalSupervisionRuns)
@@ -415,6 +548,10 @@ async function enrichIncidentRows(
     // transformar listAttentionQueue em consulta por linha"), mesmo
     // padrão de `getIncidentReviewsByAuditLogIds` acima.
     getIncidentAssignmentsByAuditLogIds(rows.map((row) => row.id)),
+
+    // Agentes v4.1 — UMA única leitura de config (nunca por linha,
+    // nunca por severidade) compartilhada por toda a página.
+    getOperationalSlaMinutesBySeverity(),
   ]);
 
   const recurrenceByIncidentId = new Map(recurrenceRows.map((row) => [`${row.incidentType}:${row.entityType}:${row.entityId}`, Number(row.occurrences)]));
@@ -441,6 +578,20 @@ async function enrichIncidentRows(
       })
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())[0];
 
+    const review = reviewsByAuditLogId.get(row.id);
+    const reviewStatus = review?.status ?? 'unreviewed';
+    const assignment = toAssignmentSummary(assignmentsByAuditLogId.get(row.id));
+
+    // Agentes v4.1 — `lastActivityAt` aproximado (documentado no
+    // docblock de `OperationalIncidentSla`): max(detecção, review,
+    // assignment) — tudo já em memória, nenhuma query extra.
+    const activityTimestamps = [row.createdAt.getTime()];
+    if (review?.reviewedAt) activityTimestamps.push(new Date(review.reviewedAt).getTime());
+    if (assignment?.assignedAt) activityTimestamps.push(new Date(assignment.assignedAt).getTime());
+    const lastActivityAt = new Date(Math.max(...activityTimestamps));
+
+    const isCompleted = reviewStatus === 'resolved' || reviewStatus === 'dismissed';
+
     return {
       auditLogId: row.id,
       incidentType,
@@ -454,10 +605,25 @@ async function enrichIncidentRows(
       runStatus: (run?.status as SupervisionRunStatus | undefined) ?? null,
       outcome: outcomeFromAction(outcomeAudit?.action as (typeof OUTCOME_AUDIT_ACTIONS)[number] | undefined, response),
       hasEscalation: escalatedIncidentIds.has(incidentId),
-      reviewStatus: reviewsByAuditLogId.get(row.id)?.status ?? 'unreviewed',
+      reviewStatus,
       recurrenceCount: recurrenceByIncidentId.get(incidentId) ?? 1,
       isRecurring: (recurrenceByIncidentId.get(incidentId) ?? 1) > 1,
-      assignment: toAssignmentSummary(assignmentsByAuditLogId.get(row.id)),
+      assignment,
+      sla: computeIncidentSla({
+        severity,
+        detectedAt: row.createdAt,
+        reviewStatus,
+        // Aproximação ao nível de lista (documentada acima): usa
+        // `review.reviewedAt` como o timestamp de encerramento quando o
+        // status corrente já é resolved/dismissed — é exatamente a
+        // transição de fechamento nesse caso, porque `reviewedAt` é
+        // sempre atualizado na ÚLTIMA transição (upsertIncidentReview).
+        closedAt: isCompleted && review?.reviewedAt ? new Date(review.reviewedAt) : null,
+        assignedAt: assignment?.assignedAt ? new Date(assignment.assignedAt) : null,
+        lastActivityAt,
+        now,
+        slaMinutesBySeverity,
+      }),
     };
   });
 }
@@ -501,7 +667,7 @@ export async function listSupervisionIncidents(params: ListSupervisionIncidentsP
     db.select({ total: count() }).from(auditLogs).where(where),
   ]);
 
-  let enriched = await enrichIncidentRows(rows);
+  let enriched = await enrichIncidentRows(rows, params.now);
 
   // `runStatus`/`hasEscalation`/`reviewStatus` só existem depois do
   // enriquecimento (não são campos nativos do audit log) — filtrados
@@ -653,12 +819,19 @@ export interface SupervisionIncidentDetail extends SupervisionIncidentSummary {
   // dedicado adicional, já que o diálogo de detalhe sempre carrega os
   // dois juntos.
   timeline: OperationalIncidentTimelineEvent[];
+  // Agentes v4.1 — SOBRESCREVE `SupervisionIncidentSummary.sla` (a
+  // aproximação de lista) com os valores EXATOS: `acknowledgedAt`
+  // derivado da transição real unreviewed→acknowledged (histórico de
+  // review, v3.6) e `lastActivityAt` derivado do último evento da
+  // timeline completa (v4.0) — ambos baratos o bastante só porque este
+  // é o detalhe de UM incidente, nunca uma lista.
+  sla: OperationalIncidentSlaDetail;
 }
 
 const REVIEW_CHANGED_ACTION = 'agents.operations.incident_review.changed';
 const ASSIGNMENT_CHANGED_ACTIONS = ['agents.operations.incident.assigned', 'agents.operations.incident.reassigned', 'agents.operations.incident.unassigned'] as const;
 
-export async function getSupervisionIncidentDetail(auditLogId: number): Promise<SupervisionIncidentDetail | null> {
+export async function getSupervisionIncidentDetail(auditLogId: number, now: Date = new Date()): Promise<SupervisionIncidentDetail | null> {
   const [row] = await db
     .select({ id: auditLogs.id, userId: auditLogs.userId, entityType: auditLogs.entityType, entityId: auditLogs.entityId, metadata: auditLogs.metadata, createdAt: auditLogs.createdAt })
     .from(auditLogs)
@@ -667,12 +840,12 @@ export async function getSupervisionIncidentDetail(auditLogId: number): Promise<
 
   if (!row) return null;
 
-  const [summary] = await enrichIncidentRows([row]);
+  const [summary] = await enrichIncidentRows([row], now);
   if (!summary) return null;
 
   const incidentId = `${summary.incidentType}:${summary.entityType}:${summary.entityId}`;
 
-  const [relatedAudits, [escalationRow], review, reviewAudits, assignmentAudits] = await Promise.all([
+  const [relatedAudits, [escalationRow], review, reviewAudits, assignmentAudits, slaMinutesBySeverity] = await Promise.all([
     db
       .select({ id: auditLogs.id, action: auditLogs.action, entityType: auditLogs.entityType, entityId: auditLogs.entityId, metadata: auditLogs.metadata, createdAt: auditLogs.createdAt })
       .from(auditLogs)
@@ -710,6 +883,12 @@ export async function getSupervisionIncidentDetail(auditLogId: number): Promise<
       .from(auditLogs)
       .where(and(inArray(auditLogs.action, [...ASSIGNMENT_CHANGED_ACTIONS]), eq(sql<string>`${auditLogs.metadata}->>'incidentAuditLogId'`, String(auditLogId))))
       .orderBy(auditLogs.createdAt),
+
+    // Agentes v4.1 — mesma config já lida por `enrichIncidentRows`
+    // acima, relida aqui só porque `getOperationalSlaMinutesBySeverity`
+    // não devolve o valor usado internamente; UMA query extra, aceitável
+    // no detalhe de um item só (mesmo racional de `getIncidentReview`).
+    getOperationalSlaMinutesBySeverity(),
   ]);
 
   // Agentes v4.0 — FollowUps ligados ao incidente só existem via a MESMA
@@ -789,6 +968,35 @@ export async function getSupervisionIncidentDetail(auditLogId: number): Promise<
     });
   }
 
+  const sortedTimeline = sortOperationalIncidentTimelineEvents(timelineEvents);
+
+  // Agentes v4.1 — valores EXATOS para o detalhe (correio.md seção 8):
+  // `lastActivityAt` é o último evento da timeline COMPLETA (não a
+  // aproximação de `enrichIncidentRows`); `acknowledgedAt` é a transição
+  // REAL unreviewed→acknowledged (não inferida do estado corrente,
+  // correio.md seção 6.2/7: "não inferir... quando o histórico fornecer
+  // a transição exata").
+  const lastActivityAt = sortedTimeline.length > 0 ? new Date(sortedTimeline[sortedTimeline.length - 1]!.occurredAt) : row.createdAt;
+  const acknowledgedEvent = sortedTimeline.find((event) => event.type === 'review_acknowledged');
+  const acknowledgedAt = acknowledgedEvent ? new Date(acknowledgedEvent.occurredAt) : null;
+
+  const isCompleted = summary.reviewStatus === 'resolved' || summary.reviewStatus === 'dismissed';
+  const slaBase = computeIncidentSla({
+    severity: summary.severity,
+    detectedAt: row.createdAt,
+    reviewStatus: summary.reviewStatus,
+    closedAt: isCompleted && review?.reviewedAt ? new Date(review.reviewedAt) : null,
+    assignedAt: summary.assignment ? new Date(summary.assignment.assignedAt) : null,
+    lastActivityAt,
+    now,
+    slaMinutesBySeverity,
+  });
+  const sla: OperationalIncidentSlaDetail = {
+    ...slaBase,
+    acknowledgedAt: acknowledgedAt ? acknowledgedAt.toISOString() : null,
+    acknowledgementSeconds: acknowledgedAt ? Math.max(0, Math.round((acknowledgedAt.getTime() - row.createdAt.getTime()) / 1000)) : null,
+  };
+
   return {
     ...summary,
     problem: (row.metadata as { reason?: string } | null)?.reason ?? `${summary.incidentType} em ${summary.entityType} #${summary.entityId}.`,
@@ -810,7 +1018,8 @@ export async function getSupervisionIncidentDetail(auditLogId: number): Promise<
     // `incident.detected` válido — a mesma condição que faria
     // `getIncidentReview` devolver `null`.
     review: review!,
-    timeline: sortOperationalIncidentTimelineEvents(timelineEvents),
+    timeline: sortedTimeline,
+    sla,
   };
 }
 
@@ -952,11 +1161,15 @@ export async function listAttentionQueue(params: ListAttentionQueueParams): Prom
     // deste sistema; documentado como limitação conhecida.
     .limit(500);
 
+  const now = params.now ?? new Date();
+
   // Uma query batched extra (não N+1) só para `reviewedAt` — `enrichIncidentRows`
   // já expõe `reviewStatus`, mas não o timestamp do review; precisamos dele
-  // aqui para "tempo desde o último review" (correio.md "Aging").
-  const [enriched, reviewsByAuditLogId] = await Promise.all([enrichIncidentRows(rows), getIncidentReviewsByAuditLogIds(rows.map((row) => row.id))]);
-  const now = params.now ?? new Date();
+  // aqui para "tempo desde o último review" (correio.md "Aging"). Mesmo
+  // `now` injetável repassado a `enrichIncidentRows` (v4.1) — aging/SLA
+  // usam exatamente o mesmo relógio do resto desta função, nunca dois
+  // "agoras" divergentes na mesma resposta.
+  const [enriched, reviewsByAuditLogId] = await Promise.all([enrichIncidentRows(rows, now), getIncidentReviewsByAuditLogIds(rows.map((row) => row.id))]);
 
   let withAging: AttentionQueueItem[] = enriched.map((item) => {
     const ageMs = Math.max(0, now.getTime() - new Date(item.detectedAt).getTime());

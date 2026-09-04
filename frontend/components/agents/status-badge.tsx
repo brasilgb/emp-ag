@@ -32,6 +32,7 @@ import {
   memoryImportanceLabel,
   memoryStatusLabel,
   operationalHealthStatusLabel,
+  operationalIncidentSlaStatusLabel,
   operationalIncidentTypeLabel,
   operationalResponseLabel,
   operationalSeverityLabel,
@@ -74,6 +75,7 @@ import type {
   MemoryImportance,
   MemoryStatus,
   OperationalHealthStatus,
+  OperationalIncidentSlaStatus,
   OperationalIncidentType,
   OperationalResponse,
   OperationalSeverity,
@@ -754,6 +756,26 @@ export function AgingBucketBadge({ bucket }: { bucket: AgingBucket }) {
   return (
     <Badge variant="secondary" className={cn("border-transparent", AGING_BUCKET_STYLES[bucket])}>
       {agingBucketLabel(bucket)}
+    </Badge>
+  );
+}
+
+// Agentes v4.1 — Operational Incident Aging & SLA Visibility. `breached`
+// destacado (vermelho, nunca deve passar despercebido); `warning` âmbar;
+// `within_sla` neutro; `completed` neutro riscado (mesmo idioma de
+// `dismissed`/`cancelled` já usado em outros vocabulários deste projeto —
+// nunca é um alerta, é só "não se aplica mais").
+const OPERATIONAL_INCIDENT_SLA_STATUS_STYLES: Record<OperationalIncidentSlaStatus, string> = {
+  within_sla: "bg-muted text-muted-foreground",
+  warning: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  breached: "bg-red-500/10 text-red-700 dark:text-red-400",
+  completed: "bg-muted text-muted-foreground line-through",
+};
+
+export function OperationalIncidentSlaStatusBadge({ status }: { status: OperationalIncidentSlaStatus }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", OPERATIONAL_INCIDENT_SLA_STATUS_STYLES[status])}>
+      {operationalIncidentSlaStatusLabel(status)}
     </Badge>
   );
 }

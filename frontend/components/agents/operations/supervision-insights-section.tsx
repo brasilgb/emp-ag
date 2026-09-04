@@ -16,7 +16,7 @@ import { ErrorState } from "@/components/states/error-state";
 import { LoadingState } from "@/components/states/loading-state";
 import { useAssignIncident, useRecurringIncidents, useSupervisionIncidentDetail, useSupervisionIncidents, useSupervisionOverview, useUnassignIncident, useUpdateIncidentReview } from "@/hooks/agents/use-operations";
 import { useUsersDirectory } from "@/hooks/use-users-directory";
-import { incidentReviewStatusLabel, operationalIncidentTimelineEventLabel, operationalIncidentTypeLabel } from "@/lib/agents/derived";
+import { formatAgeSeconds, formatSlaRemainingLabel, incidentReviewStatusLabel, operationalIncidentTimelineEventLabel, operationalIncidentTypeLabel } from "@/lib/agents/derived";
 import { formatDateTime } from "@/lib/agents/format";
 import { toErrorMessage } from "@/services/http";
 import {
@@ -27,6 +27,7 @@ import {
   OPERATIONAL_SEVERITIES,
   type IncidentReviewStatus,
   type IncidentReviewStatusOrUnreviewed,
+  type OperationalIncidentSlaDetail,
   type OperationalIncidentTimelineEvent,
   type OperationalIncidentTimelineEventType,
   type OperationalIncidentType,
@@ -34,7 +35,7 @@ import {
   type OperationalSeverity,
 } from "@/types/agents";
 
-import { IncidentReviewStatusBadge, OperationalIncidentTypeBadge, OperationalResponseBadge, OperationalSeverityBadge, SupervisionIncidentOutcomeBadge } from "../status-badge";
+import { IncidentReviewStatusBadge, OperationalIncidentSlaStatusBadge, OperationalIncidentTypeBadge, OperationalResponseBadge, OperationalSeverityBadge, SupervisionIncidentOutcomeBadge } from "../status-badge";
 
 const LIMIT = 20;
 
@@ -350,6 +351,8 @@ export function SupervisionIncidentDetailDialog({ auditLogId, onOpenChange }: { 
 
             <IncidentAssignmentSection auditLogId={detailQuery.data.data.auditLogId} assignment={detailQuery.data.data.assignment} />
 
+            <IncidentSlaSection sla={detailQuery.data.data.sla} />
+
             <IncidentTimelineSection events={detailQuery.data.data.timeline} />
           </div>
         )}
@@ -505,6 +508,31 @@ function IncidentAssignmentSection({ auditLogId, assignment }: { auditLogId: num
 
 const REVIEW_STATUS_EVENT_TYPES = new Set<OperationalIncidentTimelineEventType>(["review_acknowledged", "review_status_changed"]);
 const ASSIGNMENT_EVENT_TYPES = new Set<OperationalIncidentTimelineEventType>(["assigned", "reassigned", "unassigned"]);
+
+/**
+ * Agentes v4.1 (correio.md "Operational Incident Aging & SLA
+ * Visibility", "10. Frontend") — "seção de contexto temporal coerente
+ * com a timeline da v4.0". Só formatação de valores já decididos pelo
+ * backend (`sla`) — nenhuma política de SLA aqui (correio.md seção 11).
+ */
+function IncidentSlaSection({ sla }: { sla: OperationalIncidentSlaDetail }) {
+  return (
+    <div className="rounded-md border p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-medium text-muted-foreground">Prazo (SLA)</p>
+        <OperationalIncidentSlaStatusBadge status={sla.status} />
+      </div>
+      <dl className="mt-2 grid grid-cols-2 gap-2 text-xs">
+        <DetailField label="Detectado há" value={formatAgeSeconds(sla.ageSeconds)} />
+        <DetailField label={sla.status === "completed" ? "Situação no encerramento" : "Prazo"} value={formatSlaRemainingLabel(sla.remainingSeconds)} />
+        {sla.deadlineAt ? <DetailField label="Prazo limite" value={formatDateTime(sla.deadlineAt)} /> : null}
+        {sla.acknowledgedAt ? <DetailField label="Reconhecido em" value={formatDateTime(sla.acknowledgedAt)} /> : null}
+        {sla.assignedAt ? <DetailField label="Atribuído há" value={formatAgeSeconds(sla.assignmentAgeSeconds ?? 0)} /> : null}
+        <DetailField label="Última atividade há" value={formatAgeSeconds(sla.lastActivityAgeSeconds)} />
+      </dl>
+    </div>
+  );
+}
 
 /**
  * Agentes v4.0 (correio.md "Operational Incident Collaboration &

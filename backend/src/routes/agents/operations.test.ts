@@ -412,6 +412,71 @@ describe('Agentes v1.6 — Operations, Incidents, Audit, Autonomy switch', () =>
     });
   });
 
+  // Agentes v4.1 (correio.md "Operational Incident Aging & SLA
+  // Visibility", "16. Testes obrigatórios" — itens 14/15/16 (read-only/
+  // autorização)). Cobertura de cálculo/invariantes/N+1 já vive em
+  // `agents/operations/incident-sla.test.ts` (função pura) e
+  // `incident-sla.integration.test.ts` (nível de serviço) — aqui só a
+  // borda HTTP.
+  describe('GET/PATCH /operations/sla-settings', () => {
+    let originalSlaSettings: unknown;
+
+    before(async () => {
+      const get = await app.inject({ method: 'GET', url: '/agents/operations/sla-settings', headers: authHeader(ceoToken) });
+      originalSlaSettings = get.json().data;
+    });
+
+    after(async () => {
+      // Config global (Agentes v4.1 reaproveita a tabela genérica
+      // `settings` — nunca escopado por teste) — restaurada para nunca
+      // vazar o valor alterado por "PATCH bem-sucedido reflete..." abaixo
+      // para outros testes/ambientes.
+      await app.inject({ method: 'PATCH', url: '/agents/operations/sla-settings', headers: authHeader(ceoToken), payload: originalSlaSettings as Record<string, number> });
+    });
+
+    test('15: sem permission → 403 (GET e PATCH)', async () => {
+      const get = await app.inject({ method: 'GET', url: '/agents/operations/sla-settings', headers: authHeader(limitedToken) });
+      assert.equal(get.statusCode, 403);
+
+      const patch = await app.inject({ method: 'PATCH', url: '/agents/operations/sla-settings', headers: authHeader(limitedToken), payload: { critical: 30 } });
+      assert.equal(patch.statusCode, 403);
+    });
+
+    test('16: agents.operations.read → 200, forma esperada (minutos por severidade)', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/sla-settings', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 200, response.body);
+      const { data } = response.json();
+      assert.equal(typeof data.info, 'number');
+      assert.equal(typeof data.warning, 'number');
+      assert.equal(typeof data.critical, 'number');
+    });
+
+    test('14: GET permanece read-only — não grava audit log', async () => {
+      const [{ total: auditCountBefore }] = await db.select({ total: count() }).from(auditLogs);
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/sla-settings', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 200);
+      const [{ total: auditCountAfter }] = await db.select({ total: count() }).from(auditLogs);
+      assert.equal(Number(auditCountAfter), Number(auditCountBefore));
+    });
+
+    test('campos extras/valores inválidos no payload → 400', async () => {
+      const extraField = await app.inject({ method: 'PATCH', url: '/agents/operations/sla-settings', headers: authHeader(ceoToken), payload: { critical: 30, extra: 1 } });
+      assert.equal(extraField.statusCode, 400);
+
+      const outOfRange = await app.inject({ method: 'PATCH', url: '/agents/operations/sla-settings', headers: authHeader(ceoToken), payload: { critical: 999999 } });
+      assert.equal(outOfRange.statusCode, 400);
+    });
+
+    test('PATCH bem-sucedido reflete no GET subsequente e no cálculo real de um incidente', async () => {
+      const patch = await app.inject({ method: 'PATCH', url: '/agents/operations/sla-settings', headers: authHeader(ceoToken), payload: { critical: 45 } });
+      assert.equal(patch.statusCode, 200, patch.body);
+      assert.equal(patch.json().data.critical, 45);
+
+      const get = await app.inject({ method: 'GET', url: '/agents/operations/sla-settings', headers: authHeader(ceoToken) });
+      assert.equal(get.json().data.critical, 45);
+    });
+  });
+
   // Agentes v3.6 (correio.md "Operational Incident Acknowledgement &
   // Review Workflow", "11. Testes obrigatórios" — itens 10 (autorização
   // leitura/escrita), 7 (status inválido), 8 (404), 13 (filtro por review

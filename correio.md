@@ -1,825 +1,810 @@
-# Agentes v4.0 — Operational Incident Collaboration & Activity Timeline
+# Agentes v4.2 — Operational SLA Analytics & Performance Visibility
 
-## 0. Objetivo
+## Objetivo
 
-Implementar uma visão consolidada e cronológica da atividade de um incidente operacional, permitindo que supervisores entendam:
+Implementar uma camada de **analytics e visibilidade de desempenho operacional baseada nos dados de incidentes e SLA já existentes**, transformando a visão individual da v4.1 em indicadores agregados de operação.
 
-* quando o incidente foi detectado;
-* quando foi reconhecido;
-* como seu estado de review evoluiu;
-* quem assumiu sua responsabilidade;
-* quando houve assign, reassign ou unassign;
-* quais escalations e follow-ups relacionados ocorreram;
-* quem executou cada ação;
-* quando cada ação aconteceu;
-* quais eram os valores anterior e novo quando houver transição de estado.
+A v4.2 deve responder perguntas como:
 
-A v4.0 é uma camada de **rastreabilidade e colaboração humana** sobre capacidades já existentes.
+* quantos incidentes foram encerrados dentro e fora do SLA;
+* qual é o breach rate;
+* quanto tempo, em média e mediana, leva para reconhecer um incidente;
+* quanto tempo leva para resolvê-lo;
+* como esses indicadores variam por severidade;
+* como o desempenho varia entre responsáveis;
+* como o desempenho evolui no tempo.
 
-Ela NÃO deve aumentar autonomia operacional nem alterar mecanismos automáticos existentes.
+A versão é **estritamente analítica e observacional**.
+
+Não deve:
+
+* criar autoassignment;
+* alterar prioridade da fila;
+* reatribuir incidentes;
+* fechar incidentes;
+* escalar automaticamente;
+* criar follow-up automaticamente;
+* disparar ações por breach;
+* criar scheduler de SLA;
+* alterar autonomia;
+* usar LLM para classificação ou decisão;
+* modificar `supervisor-guard.ts`.
 
 ---
 
-# 1. Descoberta arquitetural obrigatória antes de qualquer implementação
+# 1. Descoberta obrigatória antes da implementação
 
-Antes de criar schema, migration, serviço, rota ou componente novo, revisar obrigatoriamente:
+Antes de criar código, revisar obrigatoriamente:
 
 * `audit_logs`;
-* `agent_operational_incident_reviews` — v3.6;
-* fila `Needs Attention` — v3.7;
-* `agent_operational_incident_assignments` — v3.8;
-* workload/ownership — v3.9;
-* Escalations — v2.6;
-* FollowUps — v2.7;
+* `agent_operational_incident_reviews`;
+* `agent_operational_incident_assignments`;
+* SLA da v4.1;
+* `computeIncidentSla`;
+* timeline v4.0;
+* fila `Needs Attention`;
+* workload/ownership v3.9;
 * `supervision-insights-service.ts`;
 * `incident-review-service.ts`;
 * `incident-assignment-service.ts`;
-* serviços de escalation/follow-up;
-* rotas atuais de `/agents/operations`;
-* `SupervisionIncidentDetailDialog`;
-* hooks React Query envolvidos;
-* RBAC atual;
-* estrutura e convenções de auditoria já usadas no projeto.
+* endpoints atuais de Operations;
+* tipos frontend relacionados a incidentes;
+* componentes atuais de `/agents/operations`;
+* RBAC de `agents.operations.read` e `agents.operations.manage`;
+* quaisquer utilitários existentes de agregação, período, paginação e data.
 
 Responder explicitamente no relatório final:
 
-1. Quais eventos necessários para a timeline já estão persistidos hoje?
-2. Qual é a fonte canônica de cada tipo de evento?
-3. `audit_logs` já contém informação suficiente para reconstruir alguma ou todas as transições?
-4. Reviews e assignments já possuem timestamps/atores suficientes?
-5. Escalations e FollowUps possuem relação inequívoca com o incidente original?
-6. Existe alguma informação necessária à timeline que NÃO possa ser derivada das estruturas atuais?
-7. Existe necessidade real de migration?
-8. Há risco de criar uma segunda fonte de verdade caso novos registros sejam persistidos?
-9. A timeline pode ser obtida sem N+1?
-10. Existe necessidade real de uma tabela específica de comentários/notas humanas?
+1. Os dados necessários para analytics já existem?
+2. Algum indicador exige estado novo persistido?
+3. É necessária migration?
+4. Quais timestamps são fontes canônicas para:
 
-Não criar migration antes de responder essas perguntas por meio da análise do repositório real.
+   * detecção;
+   * acknowledgement;
+   * assignment;
+   * fechamento;
+   * deadline?
+5. É possível calcular os indicadores diretamente dos dados existentes?
+6. O volume esperado permite agregação em tempo de leitura?
+7. Existe risco de N+1?
+8. Algum indicador requer reconstrução histórica via `audit_logs`?
+9. Qual é a diferença entre métricas de incidentes abertos e fechados?
+10. Quais métricas seriam semanticamente incorretas sem um intervalo temporal explícito?
 
----
-
-# 2. Regra de persistência
-
-## 2.1 Eventos já existentes
-
-É proibido criar uma nova tabela para duplicar eventos que já possuem fonte canônica.
-
-Exemplos:
-
-* detecção do incidente;
-* acknowledge;
-* mudança de review status;
-* assign;
-* reassign;
-* unassign;
-* escalation;
-* follow-up.
-
-A timeline deve consolidar esses eventos a partir das estruturas já existentes.
-
-Não criar uma tabela genérica de timeline contendo cópias desses eventos.
-
-A timeline é uma **projeção de leitura**, não uma nova fonte de verdade.
+Não criar migration antes de responder essas perguntas.
 
 ---
 
-## 2.2 Notas/comentários humanos
+# 2. Regra arquitetural principal
 
-Notas humanas são opcionais nesta versão.
+A v4.2 deve trabalhar, sempre que possível, como uma camada de leitura.
 
-Somente implementar comentários/notas se a descoberta provar que:
+Não persistir:
 
-1. não existe estrutura persistente adequada atualmente;
-2. `audit_logs` não deve semanticamente representar conteúdo colaborativo;
-3. uma nota é realmente um conceito independente dos estados já existentes;
-4. existe uso claro no detalhe do incidente.
+* breach rate;
+* médias;
+* medianas;
+* percentuais;
+* tempos médios;
+* séries temporais;
+* rankings;
+* contadores derivados;
+* snapshots de analytics.
 
-Se uma tabela nova for necessária, documentar ANTES da migration:
+Esses valores devem ser derivados dos registros canônicos.
 
-* por que estruturas existentes não servem;
-* por que a informação não pode ser derivada;
-* por que `audit_logs` não é suficiente;
-* qual será a relação com o incidente;
-* política de edição/exclusão;
-* autoria;
-* timestamps;
-* autorização;
-* comportamento de auditoria.
+Uma tabela/materialized view/cache só pode ser considerada se houver evidência concreta de que a leitura direta é inadequada.
 
-Preferência arquitetural, caso notas sejam necessárias:
-
-* append-only;
-* nota não substitui nem altera review;
-* nota não altera ownership;
-* nota não altera escalation;
-* nota não muda prioridade;
-* nota não aciona automações;
-* nota não pode ser interpretada por LLM nesta versão.
-
-Se não houver justificativa forte, NÃO implementar notas na v4.0.
+Se isso não for comprovado, não criar infraestrutura adicional.
 
 ---
 
-# 3. Contrato conceitual da timeline
+# 3. Escopo temporal
 
-Criar um contrato de leitura equivalente conceitualmente a:
+Toda métrica agregada deve possuir período explícito.
+
+Implementar filtro temporal com pelo menos:
+
+* `from`;
+* `to`.
+
+Preferencialmente suportar presets no frontend:
+
+* 24 horas;
+* 7 dias;
+* 30 dias;
+* período personalizado.
+
+Definir claramente qual timestamp determina a inclusão do incidente em cada métrica.
+
+Regra sugerida:
+
+### Métricas de entrada
+
+Para:
+
+* incidentes detectados;
+* severidade;
+* volume de entrada;
+
+usar `detectedAt`.
+
+### Métricas de fechamento
+
+Para:
+
+* incidentes resolvidos;
+* SLA cumprido;
+* SLA violado;
+* resolution time;
+
+usar `closedAt`.
+
+Essa distinção deve ficar documentada no código e nos contratos.
+
+---
+
+# 4. Métricas mínimas
+
+Criar um contrato agregado equivalente a:
 
 ```ts
-type OperationalIncidentTimelineEventType =
-  | 'incident_detected'
-  | 'review_acknowledged'
-  | 'review_status_changed'
-  | 'assigned'
-  | 'reassigned'
-  | 'unassigned'
-  | 'escalation_created'
-  | 'follow_up_created'
-  | 'human_note';
+interface OperationalSlaAnalytics {
+  period: {
+    from: string
+    to: string
+  }
 
-interface OperationalIncidentTimelineEvent {
-  id: string;
-  type: OperationalIncidentTimelineEventType;
-  occurredAt: string;
+  incidents: {
+    detected: number
+    closed: number
+    open: number
+  }
 
-  actorUserId: number | null;
+  sla: {
+    completedWithinSla: number
+    completedOutsideSla: number
+    breachRate: number | null
+  }
 
-  from?: string | number | null;
-  to?: string | number | null;
+  acknowledgement: {
+    count: number
+    averageSeconds: number | null
+    medianSeconds: number | null
+  }
 
-  metadata?: Record<string, unknown>;
-}
-
-interface OperationalIncidentTimeline {
-  incidentAuditLogId: number;
-  events: OperationalIncidentTimelineEvent[];
+  resolution: {
+    count: number
+    averageSeconds: number | null
+    medianSeconds: number | null
+  }
 }
 ```
 
-O contrato real deve seguir as convenções existentes do projeto.
+Os nomes finais podem seguir as convenções já existentes do projeto.
 
-Não introduzir campos artificiais apenas para satisfazer este exemplo.
+Não retornar `0` quando semanticamente o valor é desconhecido ou não aplicável.
 
-`human_note` só deve existir se notas forem realmente implementadas.
+Exemplo:
 
----
+```ts
+averageSeconds: null
+```
 
-# 4. Identidade canônica do incidente
-
-A timeline deve utilizar a mesma identidade canônica já usada nas versões v3.5–v3.9.
-
-Não criar:
-
-* novo incident ID;
-* novo UUID paralelo;
-* chave artificial de timeline;
-* segunda tabela de incidentes;
-* novo conceito de ocorrência.
-
-Todas as fontes agregadas devem convergir para o mesmo incidente operacional já existente.
+quando não existem incidentes suficientes.
 
 ---
 
-# 5. Ordenação
+# 5. SLA compliance
 
-A timeline deve ser estritamente cronológica.
-
-Default:
+Para incidentes encerrados no período:
 
 ```text
-occurredAt ASC
+closedAt <= deadlineAt
+    → within SLA
+
+closedAt > deadlineAt
+    → outside SLA
 ```
 
-Em empate de timestamp, aplicar desempate determinístico.
+O status visual corrente `completed` da v4.1 não elimina o fato histórico de SLA.
 
-Não depender da ordem incidental retornada pelo PostgreSQL.
-
-O desempate pode utilizar identificador persistente ou outro critério estável já existente.
-
-Documentar o critério escolhido.
-
----
-
-# 6. Eventos obrigatórios
-
-## 6.1 Incident detected
-
-A primeira ocorrência deve derivar da fonte canônica de:
+Portanto:
 
 ```text
-agents.operations.incident.detected
+completedWithinSla
+completedOutsideSla
 ```
 
-Não persistir cópia.
+devem ser derivados comparando o fechamento real com o deadline.
+
+Não usar apenas `sla.status`.
+
+O `breachRate` deve ser calculado sobre incidentes encerrados que possuem SLA válido:
+
+```text
+completedOutsideSla
+/
+(completedWithinSla + completedOutsideSla)
+```
+
+Se o denominador for zero:
+
+```text
+breachRate = null
+```
+
+Não retornar `NaN`, `Infinity` ou `0` arbitrário.
 
 ---
 
-## 6.2 Review acknowledged
+# 6. Acknowledgement time
 
-Quando um incidente muda de não reconhecido para reconhecido, representar o evento correspondente.
+Calcular:
 
-Mostrar:
+```text
+acknowledgementSeconds =
+acknowledgedAt - detectedAt
+```
 
-* ator;
-* timestamp;
-* estado anterior, se disponível;
-* estado novo.
-
-Não inferir ator inexistente.
-
-Se a persistência atual não registrar ator de uma transição histórica, retornar `null` ou equivalente explícito em vez de inventar informação.
-
----
-
-## 6.3 Review status changed
-
-Representar mudanças reais do workflow de review.
-
-Exemplos:
+Usar o timestamp real da primeira transição:
 
 ```text
 unreviewed → acknowledged
-acknowledged → resolved
-acknowledged → dismissed
 ```
 
-Usar exatamente o vocabulário existente.
+já estabelecido na v4.1.
 
-Não criar status novos.
+Incident sem acknowledgement:
+
+* não entra em média/mediana de acknowledgement;
+* pode aparecer em um contador separado caso isso seja útil e simples.
+
+Não inferir acknowledgement a partir do estado atual.
 
 ---
 
-## 6.4 Assignment
+# 7. Resolution time
 
-Representar:
-
-* assign;
-* reassign;
-* unassign.
-
-Quando disponível, mostrar:
+Para incidentes encerrados:
 
 ```text
-fromUserId → toUserId
+resolutionSeconds =
+closedAt - detectedAt
 ```
 
-Exemplos:
+Considerar `resolved` e `dismissed`.
+
+Entretanto, se a arquitetura atual distinguir semanticamente resolução de dismiss para analytics, avaliar durante a descoberta.
+
+Não inventar essa separação antes de verificar os contratos existentes.
+
+---
+
+# 8. Média e mediana
+
+Implementar:
+
+* média;
+* mediana.
+
+A mediana é obrigatória porque incidentes operacionais podem ter distribuições com outliers e a média isolada pode ser enganosa.
+
+As funções de agregação devem ser:
+
+* puras quando possível;
+* determinísticas;
+* testáveis isoladamente.
+
+Casos obrigatórios:
 
 ```text
-null → 42
-42 → 87
-87 → null
+[]
+→ null
+
+[10]
+→ 10
+
+[10, 20]
+→ 15
+
+[10, 20, 30]
+→ 20
 ```
 
-Não confundir ownership atual com histórico de ownership.
-
-A tabela de assignment v3.8 representa o estado corrente; verificar onde o histórico da transição já está auditado.
-
-Não tentar reconstruir histórico completo apenas do valor corrente.
+Não usar arredondamento silencioso se o contrato utilizar segundos inteiros.
 
 ---
 
-## 6.5 Escalations
+# 9. Breakdown por severidade
 
-Exibir escalations relacionadas ao incidente quando a relação for inequívoca.
+Produzir os principais indicadores por:
 
-Não criar associação heurística.
+```text
+info
+warning
+critical
+```
 
-Não relacionar registros apenas por proximidade temporal, texto parecido ou usuário.
-
-Se não existir uma relação persistente confiável, documentar a limitação em vez de inventar ligação.
-
----
-
-## 6.6 FollowUps
-
-Mesma regra de escalations.
-
-Só integrar quando houver vínculo determinístico com o incidente.
-
----
-
-# 7. Backend
-
-Preferencialmente implementar a leitura no mesmo domínio das supervision insights ou no serviço já responsável pelo detalhe do incidente, dependendo da arquitetura encontrada.
-
-Exemplo de função:
+Exemplo conceitual:
 
 ```ts
-getOperationalIncidentTimeline(incidentAuditLogId)
-```
-
-Não criar serviço paralelo se um serviço existente já for o lugar natural.
-
-Endpoint preferencial:
-
-```text
-GET /agents/operations/supervision-insights/incidents/:incidentAuditLogId/timeline
-```
-
-ou integrar ao endpoint de detalhe já existente se isso for arquiteturalmente mais coerente.
-
-A escolha deve ser justificada no relatório.
-
-Não multiplicar endpoints sem necessidade.
-
----
-
-# 8. Estratégia anti-N+1
-
-A timeline deve ser resolvida com número constante ou limitado de queries.
-
-Proibido:
-
-```ts
-for (event of events) {
-  await db.query(...)
+bySeverity: {
+  info: ...
+  warning: ...
+  critical: ...
 }
 ```
 
-Proibido:
+Cada severidade deve apresentar pelo menos:
 
-* query por assignment;
-* query por usuário;
-* query por escalation;
-* query por follow-up;
-* query por evento.
+* detected;
+* closed;
+* within SLA;
+* outside SLA;
+* breach rate.
 
-Preferir:
+Se for simples e sem duplicação excessiva, incluir também:
 
-* joins;
-* CTE;
-* `UNION ALL`;
-* queries batched;
-* carregamento consolidado;
-* agregação determinística em memória após poucas queries.
+* acknowledgement average/median;
+* resolution average/median.
 
-A quantidade de queries não pode crescer linearmente conforme a quantidade de eventos.
+Usar exclusivamente `OPERATIONAL_SEVERITIES`.
 
-Adicionar teste ou instrumentação que demonstre ausência de N+1 se houver risco relevante.
+Não introduzir `high`, `medium`, `low` ou qualquer vocabulário inexistente no projeto.
 
 ---
 
-# 9. Usuários e identidade visual
+# 10. Analytics por responsável
 
-Os nomes dos atores/responsáveis devem ser resolvidos usando o diretório de usuários já existente.
+Adicionar visão de desempenho por responsável atual/histórico apenas se for possível fazê-la semanticamente correta com a persistência existente.
 
-Não criar request HTTP por usuário.
+Antes de implementar, responder:
 
-Preferir retornar IDs no backend e resolver nomes no frontend via estrutura já existente, se este for o padrão atual.
+> O assignment atual da v3.8 representa quem efetivamente tratou o incidente historicamente?
 
-Não duplicar cache ou endpoint de usuários.
+Se NÃO representar, não atribuir retrospectivamente todo o desempenho ao owner atual.
 
----
+Nesse caso, implementar apenas métricas cuja autoria seja inequívoca.
 
-# 10. Frontend
+Não criar conclusões falsas a partir de estado corrente.
 
-Integrar a timeline ao:
+Se o histórico existente permitir identificar corretamente o responsável no momento do fechamento, poderá existir algo equivalente a:
 
-```text
-SupervisionIncidentDetailDialog
+```ts
+interface OperationalSlaAssigneeAnalytics {
+  userId: string
+  displayName: string | null
+
+  closed: number
+  withinSla: number
+  outsideSla: number
+  breachRate: number | null
+
+  averageResolutionSeconds: number | null
+  medianResolutionSeconds: number | null
+}
 ```
 
-ou ao componente que atualmente representa o detalhe do incidente, caso tenha sido refatorado.
-
-A timeline deve aparecer dentro da experiência atual de Incident Review.
-
-Não criar uma segunda página de incidente apenas para a timeline.
+Não transformar essa visão em score de pessoas.
 
 ---
 
-## 10.1 Estrutura visual
+# 11. Proibição de ranking automático
 
-Usar componentes e identidade visual já presentes.
+Não criar:
 
-Mostrar cada item com:
+* employee score;
+* operator score;
+* performance score;
+* ranking de melhor/pior pessoa;
+* leaderboard;
+* classificação automática;
+* recomendação de reatribuição;
+* sugestão automática de capacidade.
 
-* tipo da atividade;
-* data/hora;
-* ator;
-* descrição;
-* mudança anterior → nova quando aplicável.
+Analytics devem apresentar fatos e indicadores.
 
-Exemplos conceituais:
+Não transformar os dados em decisão de gestão automatizada.
 
-```text
-Incidente detectado
-04/09/2026 14:31
+---
 
-João Silva reconheceu o incidente
-04/09/2026 14:35
+# 12. Série temporal
 
-Responsável alterado
-Maria Souza → Carlos Lima
-04/09/2026 14:42
+Implementar uma tendência temporal simples para volume e SLA.
 
-Status alterado
-acknowledged → resolved
-04/09/2026 15:03
+Exemplo:
+
+```ts
+interface OperationalSlaTrendPoint {
+  date: string
+  detected: number
+  closed: number
+  withinSla: number
+  outsideSla: number
+}
 ```
 
-Evitar excesso de cards independentes.
+Granularidade:
 
-Preferir uma timeline vertical simples e legível.
+* para período curto, diária;
+* não criar engine genérico de time series.
+
+Uma granularidade diária fixa é suficiente nesta versão, salvo se a descoberta mostrar utilitário existente melhor.
+
+Datas sem eventos podem ser:
+
+* retornadas com zero;
+* ou omitidas;
+
+desde que o contrato seja explícito e o frontend não invente valores.
 
 ---
 
-# 11. Estado vazio e dados incompletos
+# 13. Incidentes ainda abertos e SLA
 
-Se só existir o evento de detecção, mostrar normalmente.
+Além das métricas de encerramento, incluir uma fotografia atual dos incidentes ainda abertos:
 
-Não exibir erro apenas porque o incidente não possui review, assignment, escalation ou follow-up.
-
-Dados opcionais devem ser tratados como opcionais.
-
-Se ator histórico não puder ser determinado:
-
-```text
-Ator não disponível
+```ts
+openSla: {
+  withinSla: number
+  warning: number
+  breached: number
+}
 ```
 
-ou equivalente visual coerente.
+Esses números representam o estado **no momento da consulta**.
 
-Nunca inventar usuário.
+Não misturar esses valores com breach rate histórico.
+
+Distinção obrigatória:
+
+```text
+Historical SLA compliance
+≠
+Current open incident SLA state
+```
+
+A UI deve deixar isso claro.
 
 ---
 
-# 12. Autorização
+# 14. Endpoint
 
-A timeline é leitura operacional.
+Preferir um único endpoint agregado:
 
-Usar:
+```http
+GET /agents/operations/sla-analytics
+```
+
+Query:
+
+```text
+?from=...
+&to=...
+```
+
+Se necessário:
+
+```text
+&severity=...
+```
+
+Evitar múltiplos endpoints que executem as mesmas leituras separadamente.
+
+O endpoint deve exigir:
 
 ```text
 agents.operations.read
 ```
 
-ou a permission de leitura já utilizada pelo detalhe do incidente.
+GET deve ser 100% read-only.
 
-Não exigir `agents.operations.manage` para visualizar histórico.
-
-Caso notas humanas sejam implementadas:
-
-* avaliar se `agents.operations.manage` já representa corretamente a escrita;
-* não criar permission nova automaticamente;
-* nova permission exige justificativa semântica explícita.
+Nenhum audit log de mutação deve ser criado por leitura de analytics.
 
 ---
 
-# 13. Auditoria
+# 15. Performance
 
-Chamadas GET da timeline devem ser estritamente read-only.
-
-Uma leitura da timeline:
-
-* não cria `audit_logs`;
-* não altera review;
-* não altera assignment;
-* não atualiza `updated_at`;
-* não dispara escalation;
-* não cria follow-up;
-* não produz side effects.
-
-Se notas forem implementadas, criação de nota deve seguir a convenção de auditoria existente.
-
----
-
-# 14. Relação com v3.6
-
-A timeline não substitui o estado de review.
-
-`agent_operational_incident_reviews` continua sendo a fonte de verdade para o estado corrente.
-
-A timeline apenas mostra transições históricas disponíveis.
-
-Não introduzir:
+Evitar:
 
 ```text
-timelineStatus
-activityStatus
-incidentTimelineState
+1 query por incidente
+1 query por usuário
+1 query por severidade
 ```
 
----
+Preferir:
 
-# 15. Relação com v3.8
+* queries agregadas;
+* leitura em lote;
+* reconstrução em memória quando o volume é razoável;
+* `Promise.all` apenas quando semanticamente apropriado.
 
-`agent_operational_incident_assignments` continua sendo a fonte de verdade para ownership corrente.
+Criar teste que demonstre ausência de N+1.
 
-A timeline não deve derivar ownership atual pelo "último evento".
+Idealmente instrumentar novamente `db.select` ou equivalente, como já feito na v4.1.
 
-O estado corrente continua vindo da estrutura v3.8.
-
-A timeline serve para histórico.
-
----
-
-# 16. Relação com v3.9
-
-Workload continua sendo calculado pela leitura consolidada da v3.9.
-
-A timeline:
-
-* não altera contagens;
-* não cria capacidade;
-* não classifica carga;
-* não recalcula workload;
-* não sugere responsável.
-
-Não invalidar workload em chamadas GET.
-
-Somente mutações reais já existentes continuam invalidando caches adequados.
+O número de queries não deve crescer linearmente com o número de incidentes.
 
 ---
 
-# 17. Fora de escopo — proibido implementar
+# 16. Frontend
 
-Não implementar nesta versão:
+Adicionar uma área de analytics em `/agents/operations`.
 
-* SLA;
-* deadline;
-* due date;
-* aging policy;
-* breach detection;
-* overdue;
-* tempo máximo de resolução;
-* tempo máximo sem acknowledge;
-* score;
-* prioridade nova;
-* scoring por severidade;
-* load balancing;
-* capacidade por usuário;
-* capacity planning;
-* round-robin;
-* auto-assignment;
-* auto-reassignment;
-* recomendação de responsável;
-* "responsável ideal";
-* equipes;
-* filas por equipe;
-* LLM;
-* resumo de incidente via IA;
-* classificação automática de notas;
-* ações disparadas a partir de comentários;
-* escalation baseada em workload;
-* alteração do Operational Supervisor.
+Não criar um dashboard novo fora do módulo se não houver necessidade.
+
+Organização sugerida:
+
+## SLA Performance
+
+Cards:
+
+* Incidentes detectados
+* Incidentes encerrados
+* Dentro do SLA
+* Fora do SLA
+* Breach rate
+
+## Response Times
+
+Cards:
+
+* Tempo médio até acknowledgement
+* Mediana até acknowledgement
+* Tempo médio até resolução
+* Mediana até resolução
+
+## Current Open SLA
+
+Exibir:
+
+* Within SLA
+* Warning
+* Breached
+
+## By Severity
+
+Tabela:
+
+| Severidade | Detectados | Encerrados | Dentro | Fora | Breach |
+| ---------- | ---------: | ---------: | -----: | ---: | -----: |
+
+## Trend
+
+Visualização temporal simples.
+
+Se o projeto ainda não possuir biblioteca de gráficos, não adicionar dependência pesada apenas para esta versão.
+
+Uma tabela/série visual simples pode ser preferível.
 
 ---
 
-# 18. supervisor-guard.ts
+# 17. Formatação
 
-`supervisor-guard.ts` deve permanecer intacto.
+Reutilizar helpers existentes.
 
-Não alterar:
+Criar helper apenas se necessário, por exemplo:
 
-* Response Policy;
-* Planner;
-* Policy Evaluator;
-* Executor;
-* Circuit Breaker;
-* recovery;
-* scheduler;
-* detecção;
-* decisão automática;
-* escalation automática;
-* follow-up automático.
+```ts
+formatOperationalDuration(seconds)
+formatOperationalPercentage(value)
+```
 
-Confirmar explicitamente no relatório final:
+Exemplos:
 
 ```text
-git diff -- supervisor-guard.ts
+45s
+8m
+1h 32m
+2d 4h
 ```
 
-ou equivalente.
+Percentuais:
+
+```text
+0.0842 → 8.4%
+```
+
+Não inserir lógica de negócio nos componentes React.
 
 ---
 
-# 19. Testes backend obrigatórios
+# 18. Estados vazios
 
-Adicionar testes cobrindo, conforme aplicável:
+Todos os blocos devem funcionar corretamente quando:
 
-1. timeline contém detecção;
-2. acknowledge aparece cronologicamente;
-3. mudança de review aparece corretamente;
-4. assign aparece corretamente;
-5. reassign representa anterior → novo;
-6. unassign representa responsável → null;
-7. escalation relacionada aparece quando vínculo existe;
-8. follow-up relacionado aparece quando vínculo existe;
-9. eventos de outro incidente nunca aparecem;
-10. ordenação é determinística;
-11. usuário sem `agents.operations.read` recebe 403;
-12. usuário somente leitura recebe 200;
-13. GET da timeline não grava audit log;
-14. GET da timeline não altera estado;
-15. ausência de review não quebra timeline;
-16. ausência de assignment não quebra timeline;
-17. ausência de escalation/follow-up não quebra timeline;
-18. sem N+1.
+* não existem incidentes no período;
+* não existem fechamentos;
+* não existem acknowledgements;
+* não existem breaches;
+* determinada severidade não possui dados.
 
-Se notas forem implementadas, adicionar também:
+Não apresentar:
 
-19. criação de nota respeita autorização;
-20. nota pertence exclusivamente ao incidente correto;
-21. nota não altera review;
-22. nota não altera assignment;
-23. nota não altera workload;
-24. nota é auditada conforme padrão do projeto;
-25. política de append-only/edição funciona conforme decisão arquitetural.
+```text
+NaN%
+Infinity%
+0s
+```
+
+quando o correto é:
+
+```text
+—
+Sem dados
+N/A
+```
+
+seguir o padrão visual já existente no projeto.
+
+---
+
+# 19. Testes backend
+
+Criar testes dedicados para, no mínimo:
+
+### Agregação pura
+
+* média sem valores;
+* média;
+* mediana ímpar;
+* mediana par;
+* breach rate sem denominador;
+* breach rate válido.
+
+### Integração
+
+* dentro do SLA;
+* fora do SLA;
+* resolved;
+* dismissed;
+* acknowledgement correto;
+* incidente sem acknowledgement;
+* intervalo temporal;
+* severidades;
+* open SLA states;
+* consistência com SLA v4.1;
+* ausência de N+1;
+* isolamento entre incidentes.
+
+### Endpoint
+
+* 403 sem permission;
+* 200 com `agents.operations.read`;
+* validação de `from`;
+* validação de `to`;
+* `from > to` → 400;
+* GET não grava audit;
+* retorno vazio válido.
 
 ---
 
 # 20. Testes frontend
 
-Adicionar testes frontend somente se existir lógica nova relevante e testável.
+Testar qualquer lógica client-side adicionada.
 
-Exemplos:
+No mínimo:
 
-* ordenação client-side, se existir;
-* rendering condicional complexo;
-* interação de criação de nota, se implementada;
-* tratamento de estados específicos.
+* duration formatter;
+* percentage formatter;
+* null;
+* zero;
+* valores grandes;
+* status labels, se novos.
 
-Não criar testes artificiais apenas para aumentar contagem.
-
----
-
-# 21. Validação final
-
-Executar:
-
-## Backend
-
-```bash
-npx tsc --noEmit
-npm run test -- --test-concurrency=1
-```
-
-ou comandos equivalentes reais do repositório.
-
-Registrar:
-
-* baseline anterior;
-* quantidade exata de testes novos;
-* total final esperado;
-* total final observado.
-
-Os números devem reconciliar exatamente.
+Não testar apenas componentes estáticos se não houver lógica relevante.
 
 ---
 
-## Frontend
+# 21. Segurança e RBAC
 
-Executar:
+Analytics devem respeitar o mesmo escopo das operações existentes.
 
-```bash
-tsc --noEmit
-eslint
-node --test
-next build
-```
+Não ampliar acesso a incidentes.
 
-usando os comandos reais existentes no projeto.
+Não permitir que a nova rota contorne filtros ou autorização usados pelos endpoints atuais.
 
-Registrar resultados.
-
----
-
-# 22. Migration
-
-Se nenhuma migration for necessária:
-
-declarar explicitamente:
+Permissão:
 
 ```text
-Nenhuma migration criada.
+agents.operations.read
 ```
 
-e explicar por quê.
+é suficiente para leitura.
 
-Se migration for necessária apenas para notas humanas:
-
-1. justificar antes;
-2. limitar migration exclusivamente a esse novo conceito;
-3. não duplicar eventos existentes;
-4. manter vínculo inequívoco com incidente;
-5. manter autoria e timestamps;
-6. aplicar constraints adequadas;
-7. testar integridade;
-8. documentar rollback/compatibilidade conforme padrão existente.
+Não criar nova permission sem necessidade arquitetural comprovada.
 
 ---
 
-# 23. Relatório final obrigatório
+# 22. Não fazer nesta versão
 
-O fechamento deve conter:
+Expressamente fora de escopo:
 
-## 23.1 Descoberta
-
-* estruturas revisadas;
-* fontes canônicas encontradas;
-* necessidade ou não de migration;
-* justificativa.
-
-## 23.2 Timeline
-
-Listar exatamente quais eventos foram implementados.
-
-## 23.3 Fontes
-
-Para cada evento:
-
-```text
-evento → fonte persistente
-```
-
-Exemplo:
-
-```text
-incident_detected → audit_logs
-assigned → audit_logs / assignment history existente
-review_status_changed → ...
-```
-
-Usar somente o que realmente foi encontrado.
-
-## 23.4 Estratégia anti-N+1
-
-Informar quantidade de queries ou estratégia batched utilizada.
-
-## 23.5 Autorização
-
-Informar permissions usadas.
-
-## 23.6 Arquivos
-
-* criados;
-* alterados.
-
-## 23.7 Testes
-
-* testes novos;
-* baseline;
-* total final;
-* typecheck;
-* lint;
-* build.
-
-## 23.8 Autonomia
-
-Declarar explicitamente:
-
-```text
-A v4.0 não aumentou autonomia operacional.
-```
-
-## 23.9 supervisor-guard.ts
-
-Declarar explicitamente se permaneceu intacto.
-
-## 23.10 Commit/deploy
-
-Não fazer commit nem deploy sem aprovação posterior.
+* alertas;
+* notificações;
+* e-mail;
+* Slack;
+* webhook;
+* scheduler;
+* cron;
+* breach event;
+* auto-escalation;
+* auto-follow-up;
+* autoassignment;
+* autoreassignment;
+* workload balancing;
+* previsão de breach;
+* IA;
+* classificação de operador;
+* ranking;
+* gamificação;
+* metas individuais;
+* SLO engine genérico;
+* políticas configuráveis genéricas;
+* materialized views sem evidência de necessidade.
 
 ---
 
-# 24. Critérios de aprovação
+# 23. Critérios de aceite
 
-A v4.0 só será considerada aprovável se:
+A v4.2 só está pronta quando:
 
-* não existir segunda fonte de verdade para eventos existentes;
-* migration tiver sido evitada quando derivação for suficiente;
-* qualquer migration criada estiver estritamente justificada;
-* timeline usar a identidade canônica do incidente;
-* ordenação for determinística;
-* nenhum evento de outro incidente puder vazar;
-* autorização read-only estiver correta;
-* GET não gerar side effects;
-* não houver N+1;
-* ownership atual continuar vindo da v3.8;
-* workload continuar vindo da v3.9;
-* review atual continuar vindo da v3.6;
-* Supervisor e guardrails permanecerem intactos;
-* nenhuma funcionalidade de SLA/autonomia tiver sido antecipada;
-* suíte completa permanecer verde.
+1. a descoberta arquitetural estiver documentada;
+2. nenhuma migration desnecessária tiver sido criada;
+3. métricas forem derivadas de fontes canônicas;
+4. SLA histórico usar fechamento real;
+5. SLA corrente de abertos estiver separado do histórico;
+6. média e mediana estiverem corretas;
+7. breakdown por severidade funcionar;
+8. série temporal funcionar;
+9. período temporal estiver explícito;
+10. endpoint for read-only;
+11. RBAC estiver correto;
+12. não houver N+1;
+13. frontend mostrar os indicadores sem duplicar regra de negócio;
+14. estados vazios forem tratados;
+15. nenhuma automação/autonomia for adicionada;
+16. `supervisor-guard.ts` permanecer intacto;
+17. typecheck backend estiver limpo;
+18. suíte backend completa estiver verde;
+19. frontend typecheck estiver limpo;
+20. lint frontend estiver limpo;
+21. testes frontend estiverem verdes;
+22. `next build` concluir com sucesso.
 
 ---
 
-# 25. Diretriz principal
+# 24. Relatório final obrigatório
 
-A pergunta que a v4.0 deve responder é:
+Ao concluir, apresentar:
 
-> “O que aconteceu com este incidente, em que ordem, e quem realizou cada ação?”
+1. resultado da descoberta;
+2. decisão sobre migration;
+3. fontes canônicas utilizadas;
+4. definição formal de cada métrica;
+5. distinção entre SLA histórico e SLA corrente;
+6. estratégia de intervalo temporal;
+7. estratégia para média/mediana;
+8. estratégia de severidade;
+9. decisão sobre analytics por responsável;
+10. estratégia anti-N+1;
+11. endpoints;
+12. contratos;
+13. arquivos criados;
+14. arquivos alterados;
+15. testes novos;
+16. baseline anterior descoberto;
+17. total final de testes;
+18. resultado de typecheck/lint/build;
+19. confirmação de GET read-only;
+20. confirmação de que nenhum estado derivado foi persistido;
+21. confirmação de que nenhuma autonomia foi adicionada;
+22. confirmação de que `supervisor-guard.ts` permaneceu intacto;
+23. confirmação de que nenhum commit foi realizado.
 
-Ela NÃO deve responder ainda:
+Não fazer commit.
 
-> “Está atrasado?”
-
-> “Quem deveria assumir?”
-
-> “Quem está sobrecarregado?”
-
-> “Devemos escalar automaticamente?”
-
-> “Qual a prioridade ideal?”
-
-Essas perguntas pertencem a versões posteriores.
+Deixar o working tree pronto para revisão do Diretor/COO.

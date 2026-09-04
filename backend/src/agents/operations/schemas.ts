@@ -149,3 +149,18 @@ export const updateIncidentAssignmentSchema = z
     assigneeUserId: z.number().int().positive(),
   })
   .strict();
+
+// Agentes v4.1 (correio.md "Operational Incident Aging & SLA
+// Visibility", seção 3) — todos os campos opcionais (atualização
+// parcial: alterar só uma severidade não deveria exigir reenviar as
+// outras). `.strict()` mesmo padrão de todo o resto deste arquivo.
+// Limite (1..43200min/30 dias) validado de novo em
+// `sla-settings.ts` (única fonte real de validação — aqui só a forma).
+const slaMinutes = z.number().int().min(1).max(43200);
+export const updateSlaSettingsSchema = z
+  .object({
+    critical: slaMinutes.optional(),
+    warning: slaMinutes.optional(),
+    info: slaMinutes.optional(),
+  })
+  .strict();

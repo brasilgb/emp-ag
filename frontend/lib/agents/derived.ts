@@ -34,6 +34,7 @@ import type {
   MemoryStatus,
   MemoryType,
   OperationalHealthStatus,
+  OperationalIncidentSlaStatus,
   OperationalIncidentTimelineEventType,
   OperationalIncidentType,
   OperationalResponse,
@@ -1019,4 +1020,30 @@ export const OPERATIONAL_INCIDENT_TIMELINE_EVENT_LABELS: Record<OperationalIncid
 
 export function operationalIncidentTimelineEventLabel(type: OperationalIncidentTimelineEventType): string {
   return OPERATIONAL_INCIDENT_TIMELINE_EVENT_LABELS[type] ?? type;
+}
+
+// Agentes v4.1 — Operational Incident Aging & SLA Visibility (correio.md
+// seção 11: "o frontend não deve possuir uma implementação concorrente
+// da política de SLA" — este arquivo só FORMATA `status`/`remainingSeconds`
+// já decididos pelo backend, nunca decide se algo está vencido).
+export const OPERATIONAL_INCIDENT_SLA_STATUS_LABELS: Record<OperationalIncidentSlaStatus, string> = {
+  within_sla: "Dentro do prazo",
+  warning: "Próximo do vencimento",
+  breached: "SLA vencido",
+  completed: "Encerrado",
+};
+
+export function operationalIncidentSlaStatusLabel(status: OperationalIncidentSlaStatus): string {
+  return OPERATIONAL_INCIDENT_SLA_STATUS_LABELS[status] ?? status;
+}
+
+/**
+ * "Restam 12min" / "Vencido há 7min" (correio.md "10. Frontend",
+ * exemplos literais) — pura formatação de um `remainingSeconds` já
+ * calculado no backend, nunca uma segunda política.
+ */
+export function formatSlaRemainingLabel(remainingSeconds: number | null): string {
+  if (remainingSeconds === null) return "--";
+  if (remainingSeconds >= 0) return `Restam ${formatAgeSeconds(remainingSeconds)}`;
+  return `Vencido há ${formatAgeSeconds(Math.abs(remainingSeconds))}`;
 }

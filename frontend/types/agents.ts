@@ -1274,6 +1274,44 @@ export interface SupervisionIncidentSummary {
   // frontend via `useUsersDirectory`, mesmo padrão já usado para
   // `review.reviewedBy`.
   assignment: { assigneeUserId: number; assignedBy: number; assignedAt: string } | null;
+  // Agentes v4.1 — visibilidade de aging/SLA (correio.md "Operational
+  // Incident Aging & SLA Visibility"). Calculado em tempo de leitura no
+  // backend — o frontend NUNCA reimplementa a política de SLA (correio.md
+  // seção 11: "o frontend não deve possuir uma implementação concorrente
+  // da política de SLA"), só formata os timestamps/segundos absolutos já
+  // decididos aqui.
+  sla: OperationalIncidentSla;
+}
+
+// Agentes v4.1 — Operational Incident Aging & SLA Visibility (correio.md
+// seção 4). `completed` = review já encerrado (resolved/dismissed) — o
+// cálculo fica congelado no momento do encerramento, nunca reaparece
+// como breach novo depois de fechado.
+export const OPERATIONAL_INCIDENT_SLA_STATUSES = ["within_sla", "warning", "breached", "completed"] as const;
+export type OperationalIncidentSlaStatus = (typeof OPERATIONAL_INCIDENT_SLA_STATUSES)[number];
+
+// Campos aplicáveis à LISTA (histórico/fila) — `lastActivityAt` aqui é
+// uma aproximação barata; o valor EXATO só existe em
+// `OperationalIncidentSlaDetail` (ver docblock do backend,
+// supervision-insights-service.ts).
+export interface OperationalIncidentSla {
+  status: OperationalIncidentSlaStatus;
+  detectedAt: string;
+  ageSeconds: number;
+  deadlineAt: string | null;
+  remainingSeconds: number | null;
+  breachedAt: string | null;
+  assignedAt: string | null;
+  assignmentAgeSeconds: number | null;
+  lastActivityAt: string;
+  lastActivityAgeSeconds: number;
+}
+
+// Superset só do DETALHE (um item) — inclui a transição REAL de
+// primeiro acknowledge, nunca inferida.
+export interface OperationalIncidentSlaDetail extends OperationalIncidentSla {
+  acknowledgedAt: string | null;
+  acknowledgementSeconds: number | null;
 }
 
 // Agentes v4.0 — Operational Incident Collaboration & Activity Timeline
@@ -1322,6 +1360,9 @@ export interface SupervisionIncidentDetail extends SupervisionIncidentSummary {
   auditRefs: { id: number; action: string; createdAt: string }[];
   review: IncidentReview;
   timeline: OperationalIncidentTimelineEvent[];
+  // Agentes v4.1 — sobrescreve `SupervisionIncidentSummary.sla` (a
+  // aproximação de lista) com os valores exatos.
+  sla: OperationalIncidentSlaDetail;
 }
 
 export interface RecurringIncident {
