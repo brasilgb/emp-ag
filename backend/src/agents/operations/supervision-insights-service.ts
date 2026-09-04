@@ -1,7 +1,7 @@
 import { and, count, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../../db/index.js';
-import { agentOperationalEscalations, agentOperationalIncidentAssignments, agentOperationalIncidentReviews, agentOperationalSupervisionRuns, auditLogs } from '../../db/schema/index.js';
+import { agentOperationalEscalations, agentOperationalFollowUps, agentOperationalIncidentAssignments, agentOperationalIncidentReviews, agentOperationalSupervisionRuns, auditLogs } from '../../db/schema/index.js';
 import { getIncidentReview, getIncidentReviewsByAuditLogIds, INCIDENT_REVIEW_STATUSES_WITH_UNREVIEWED } from './incident-review-service.js';
 import type { IncidentReview, IncidentReviewStatusOrUnreviewed } from './incident-review-service.js';
 import { getIncidentAssignmentsByAuditLogIds } from './incident-assignment-service.js';
@@ -538,6 +538,95 @@ export async function listSupervisionIncidents(params: ListSupervisionIncidentsP
   return { rows: enriched, total: total2 };
 }
 
+/**
+ * Agentes v4.0 (correio.md "Operational Incident Collaboration &
+ * Activity Timeline") — rastreabilidade cronológica pura sobre eventos JÁ
+ * auditados por v3.6 (`agents.operations.incident_review.changed`) e v3.8
+ * (`agents.operations.incident.assigned`/`.reassigned`/`.unassigned`), mais
+ * a criação de Escalation (v2.6) e FollowUp (v2.7) já ligados ao incidente
+ * pela MESMA `incidentId` string que `getSupervisionIncidentDetail` já
+ * usa desde a v3.5. **Nenhuma tabela nova, nenhuma segunda fonte de
+ * verdade** — a timeline é uma PROJEÇÃO de leitura; `human_note` foi
+ * deliberadamente OMITIDO do vocabulário (correio.md seção 2.2: notas só
+ * se justificadas por 4 critérios, nenhum deles satisfeito nesta versão
+ * — `agent_operational_incident_reviews.note` já cobre parcialmente o
+ * caso de uso, então "não existe estrutura persistente adequada" é
+ * falso; ver relatório de entrega).
+ */
+export const OPERATIONAL_INCIDENT_TIMELINE_EVENT_TYPES = [
+  'incident_detected',
+  'review_acknowledged',
+  'review_status_changed',
+  'assigned',
+  'reassigned',
+  'unassigned',
+  'escalation_created',
+  'follow_up_created',
+] as const;
+export type OperationalIncidentTimelineEventType = (typeof OPERATIONAL_INCIDENT_TIMELINE_EVENT_TYPES)[number];
+
+export interface OperationalIncidentTimelineEvent {
+  // Sempre `${fonte}:${id da linha de origem}` — nunca uma chave
+  // sintética aleatória, rastreável de volta à linha real
+  // (audit_logs/escalation/follow-up) que originou o evento.
+  id: string;
+  type: OperationalIncidentTimelineEventType;
+  occurredAt: string;
+  // `null` = ator não determinável (correio.md seção 11: "nunca inventar
+  // usuário") — sempre o caso real para `escalation_created`/
+  // `follow_up_created` (criados pelo sistema, `escalateSupervisorFinding`/
+  // `createOrReopenFollowUpFromEscalation`, nunca por um humano
+  // diretamente).
+  actorUserId: number | null;
+  from?: string | number | null;
+  to?: string | number | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface OperationalIncidentTimeline {
+  incidentAuditLogId: number;
+  events: OperationalIncidentTimelineEvent[];
+}
+
+// Rank menor = mais cedo no desempate. Usado SÓ quando `occurredAt`
+// empata exatamente (correio.md seção 5: "não depender da ordem
+// incidental retornada pelo Postgres... documentar o critério
+// escolhido") — ordem causal esperada quando dois eventos de fontes
+// diferentes compartilham o mesmo timestamp.
+const TIMELINE_EVENT_TYPE_RANK: Record<OperationalIncidentTimelineEventType, number> = {
+  incident_detected: 0,
+  assigned: 1,
+  reassigned: 1,
+  unassigned: 1,
+  review_acknowledged: 2,
+  review_status_changed: 2,
+  escalation_created: 3,
+  follow_up_created: 4,
+};
+
+// Desempate final, estável: o número da própria linha de origem (sufixo
+// numérico do `id`, ex.: "review:123" → 123) — cada fonte já tem uma PK
+// serial monotonicamente crescente, então isto é sempre determinístico e
+// reproduzível mesmo quando dois eventos da MESMA fonte empatam
+// (correio.md: "identificador persistente... já existente").
+function timelineSortIdSuffix(id: string): number {
+  const match = /(\d+)$/.exec(id);
+  return match ? Number(match[1]) : 0;
+}
+
+// Exportada para teste unitário puro (sem banco) — ordenação
+// determinística é uma das invariantes exigidas pelo correio.md (seção 5,
+// item 10 dos testes obrigatórios).
+export function sortOperationalIncidentTimelineEvents(events: OperationalIncidentTimelineEvent[]): OperationalIncidentTimelineEvent[] {
+  return [...events].sort((a, b) => {
+    const timeDiff = new Date(a.occurredAt).getTime() - new Date(b.occurredAt).getTime();
+    if (timeDiff !== 0) return timeDiff;
+    const rankDiff = TIMELINE_EVENT_TYPE_RANK[a.type] - TIMELINE_EVENT_TYPE_RANK[b.type];
+    if (rankDiff !== 0) return rankDiff;
+    return timelineSortIdSuffix(a.id) - timelineSortIdSuffix(b.id);
+  });
+}
+
 export interface SupervisionIncidentDetail extends SupervisionIncidentSummary {
   problem: string;
   reason: string | null;
@@ -558,11 +647,20 @@ export interface SupervisionIncidentDetail extends SupervisionIncidentSummary {
   // (herdado de SupervisionIncidentSummary) é só o status; aqui o objeto
   // completo (quem revisou, quando, nota) para o "Incident Review".
   review: IncidentReview;
+  // Agentes v4.0 — "o que aconteceu, em que ordem, e quem fez" (correio.md
+  // "25. Diretriz principal"). Embutida no MESMO endpoint de detalhe
+  // (decisão documentada no relatório de entrega) — nunca um endpoint
+  // dedicado adicional, já que o diálogo de detalhe sempre carrega os
+  // dois juntos.
+  timeline: OperationalIncidentTimelineEvent[];
 }
+
+const REVIEW_CHANGED_ACTION = 'agents.operations.incident_review.changed';
+const ASSIGNMENT_CHANGED_ACTIONS = ['agents.operations.incident.assigned', 'agents.operations.incident.reassigned', 'agents.operations.incident.unassigned'] as const;
 
 export async function getSupervisionIncidentDetail(auditLogId: number): Promise<SupervisionIncidentDetail | null> {
   const [row] = await db
-    .select({ id: auditLogs.id, entityType: auditLogs.entityType, entityId: auditLogs.entityId, metadata: auditLogs.metadata, createdAt: auditLogs.createdAt })
+    .select({ id: auditLogs.id, userId: auditLogs.userId, entityType: auditLogs.entityType, entityId: auditLogs.entityId, metadata: auditLogs.metadata, createdAt: auditLogs.createdAt })
     .from(auditLogs)
     .where(and(eq(auditLogs.id, auditLogId), eq(auditLogs.action, 'agents.operations.incident.detected')))
     .limit(1);
@@ -574,7 +672,7 @@ export async function getSupervisionIncidentDetail(auditLogId: number): Promise<
 
   const incidentId = `${summary.incidentType}:${summary.entityType}:${summary.entityId}`;
 
-  const [relatedAudits, [escalationRow], review] = await Promise.all([
+  const [relatedAudits, [escalationRow], review, reviewAudits, assignmentAudits] = await Promise.all([
     db
       .select({ id: auditLogs.id, action: auditLogs.action, entityType: auditLogs.entityType, entityId: auditLogs.entityId, metadata: auditLogs.metadata, createdAt: auditLogs.createdAt })
       .from(auditLogs)
@@ -593,7 +691,40 @@ export async function getSupervisionIncidentDetail(auditLogId: number): Promise<
     // seção 3/9) precisa do resto. Chamada única e dedicada, aceitável
     // aqui: endpoint de UM item, nunca de lista (nenhum N+1).
     getIncidentReview(auditLogId),
+
+    // Agentes v4.0 — histórico COMPLETO de transições de review (v3.6 já
+    // audita toda chamada, com ator/timestamp/status anterior-novo reais
+    // — nunca inferidos). Filtrado por `incidentAuditLogId` no metadata,
+    // a MESMA chave exata usada por `upsertIncidentReview`/
+    // `getIncidentReviewsByAuditLogIds` — nenhuma correlação heurística.
+    db
+      .select({ id: auditLogs.id, userId: auditLogs.userId, metadata: auditLogs.metadata, createdAt: auditLogs.createdAt })
+      .from(auditLogs)
+      .where(and(eq(auditLogs.action, REVIEW_CHANGED_ACTION), eq(sql<string>`${auditLogs.metadata}->>'incidentAuditLogId'`, String(auditLogId))))
+      .orderBy(auditLogs.createdAt),
+
+    // Agentes v4.0 — histórico COMPLETO de assign/reassign/unassign (v3.8
+    // já audita toda chamada) — mesma chave exata `incidentAuditLogId`.
+    db
+      .select({ id: auditLogs.id, action: auditLogs.action, userId: auditLogs.userId, metadata: auditLogs.metadata, createdAt: auditLogs.createdAt })
+      .from(auditLogs)
+      .where(and(inArray(auditLogs.action, [...ASSIGNMENT_CHANGED_ACTIONS]), eq(sql<string>`${auditLogs.metadata}->>'incidentAuditLogId'`, String(auditLogId))))
+      .orderBy(auditLogs.createdAt),
   ]);
+
+  // Agentes v4.0 — FollowUps ligados ao incidente só existem via a MESMA
+  // Escalation já encontrada acima (`escalationId`, FK real) — vínculo
+  // determinístico, nunca por proximidade temporal/texto (correio.md
+  // seção 6.6: "só integrar quando houver vínculo determinístico").
+  // Consulta condicional (só quando há escalation) — nunca uma query a
+  // mais quando não há o que buscar.
+  const followUpRows = escalationRow
+    ? await db
+        .select({ id: agentOperationalFollowUps.id, priority: agentOperationalFollowUps.priority, assignedUserId: agentOperationalFollowUps.assignedUserId, createdAt: agentOperationalFollowUps.createdAt })
+        .from(agentOperationalFollowUps)
+        .where(eq(agentOperationalFollowUps.escalationId, escalationRow.id))
+        .orderBy(agentOperationalFollowUps.createdAt)
+    : [];
 
   const outcomeAudit = relatedAudits.find((audit) => {
     const auditMetadata = audit.metadata as { incidentType?: string } | null;
@@ -601,6 +732,62 @@ export async function getSupervisionIncidentDetail(auditLogId: number): Promise<
   });
 
   const outcomeMetadata = outcomeAudit?.metadata as { reason?: string; message?: string } | null;
+
+  const timelineEvents: OperationalIncidentTimelineEvent[] = [
+    { id: `detected:${row.id}`, type: 'incident_detected', occurredAt: row.createdAt.toISOString(), actorUserId: row.userId },
+  ];
+
+  for (const audit of reviewAudits) {
+    const metadata = audit.metadata as { previousStatus?: IncidentReviewStatusOrUnreviewed; newStatus?: IncidentReviewStatusOrUnreviewed; hasNote?: boolean };
+    const isFirstAcknowledgement = metadata.previousStatus === 'unreviewed' && metadata.newStatus === 'acknowledged';
+    timelineEvents.push({
+      id: `review:${audit.id}`,
+      type: isFirstAcknowledgement ? 'review_acknowledged' : 'review_status_changed',
+      occurredAt: audit.createdAt.toISOString(),
+      actorUserId: audit.userId,
+      from: metadata.previousStatus ?? null,
+      to: metadata.newStatus ?? null,
+      metadata: { hasNote: metadata.hasNote ?? false },
+    });
+  }
+
+  for (const audit of assignmentAudits) {
+    const metadata = audit.metadata as { previousAssigneeUserId?: number | null; assigneeUserId?: number | null };
+    const type: OperationalIncidentTimelineEventType = metadata.assigneeUserId == null ? 'unassigned' : metadata.previousAssigneeUserId == null ? 'assigned' : 'reassigned';
+    timelineEvents.push({
+      id: `assignment:${audit.id}`,
+      type,
+      occurredAt: audit.createdAt.toISOString(),
+      actorUserId: audit.userId,
+      from: metadata.previousAssigneeUserId ?? null,
+      to: metadata.assigneeUserId ?? null,
+    });
+  }
+
+  if (escalationRow) {
+    timelineEvents.push({
+      id: `escalation:${escalationRow.id}`,
+      type: 'escalation_created',
+      occurredAt: escalationRow.createdAt.toISOString(),
+      // Escalations são criadas por `escalateSupervisorFinding`
+      // (sistema, v2.6) — nunca por um humano diretamente. `null`
+      // reflete isso com precisão, nunca inventado.
+      actorUserId: null,
+      metadata: { escalationId: escalationRow.id, severity: escalationRow.severity, targetAgentId: escalationRow.targetAgentId, targetUserId: escalationRow.targetUserId },
+    });
+  }
+
+  for (const followUp of followUpRows) {
+    timelineEvents.push({
+      id: `followup:${followUp.id}`,
+      type: 'follow_up_created',
+      occurredAt: followUp.createdAt.toISOString(),
+      // Mesmo racional de `escalation_created` acima — criado por
+      // `createOrReopenFollowUpFromEscalation` (sistema, v2.7).
+      actorUserId: null,
+      metadata: { followUpId: followUp.id, priority: followUp.priority, assignedUserId: followUp.assignedUserId },
+    });
+  }
 
   return {
     ...summary,
@@ -623,6 +810,7 @@ export async function getSupervisionIncidentDetail(auditLogId: number): Promise<
     // `incident.detected` válido — a mesma condição que faria
     // `getIncidentReview` devolver `null`.
     review: review!,
+    timeline: sortOperationalIncidentTimelineEvents(timelineEvents),
   };
 }
 

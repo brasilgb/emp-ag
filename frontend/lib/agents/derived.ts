@@ -34,6 +34,7 @@ import type {
   MemoryStatus,
   MemoryType,
   OperationalHealthStatus,
+  OperationalIncidentTimelineEventType,
   OperationalIncidentType,
   OperationalResponse,
   OperationalSeverity,
@@ -1002,4 +1003,20 @@ export const ATTENTION_REASON_LABELS: Record<AttentionReason, string> = {
 
 export function attentionReasonLabel(reason: AttentionReason): string {
   return ATTENTION_REASON_LABELS[reason] ?? reason;
+}
+
+// Agentes v4.0 — Operational Incident Collaboration & Activity Timeline.
+export const OPERATIONAL_INCIDENT_TIMELINE_EVENT_LABELS: Record<OperationalIncidentTimelineEventType, string> = {
+  incident_detected: "Incidente detectado",
+  review_acknowledged: "reconheceu o incidente",
+  review_status_changed: "Status de review alterado",
+  assigned: "Incidente atribuído",
+  reassigned: "Responsável alterado",
+  unassigned: "Responsável removido",
+  escalation_created: "Escalation criada",
+  follow_up_created: "Follow-up criado",
+};
+
+export function operationalIncidentTimelineEventLabel(type: OperationalIncidentTimelineEventType): string {
+  return OPERATIONAL_INCIDENT_TIMELINE_EVENT_LABELS[type] ?? type;
 }

@@ -658,6 +658,59 @@ describe('Agentes v1.6 — Operations, Incidents, Audit, Autonomy switch', () =>
     });
   });
 
+  // Agentes v4.0 (correio.md "Operational Incident Collaboration &
+  // Activity Timeline", "19. Testes backend obrigatórios" — itens 11/12
+  // (autorização), 13/14 (GET estritamente read-only)). Cobertura de
+  // conteúdo/ordenação/N+1 da timeline já vive em
+  // `agents/operations/incident-timeline.test.ts` (nível de serviço) —
+  // aqui só a borda HTTP, embutida no MESMO endpoint de detalhe já
+  // existente (nenhuma rota nova — decisão documentada no relatório).
+  describe('GET /operations/supervision-insights/incidents/:auditLogId (campo timeline, v4.0)', () => {
+    let timelineAuditLogId: number;
+
+    before(async () => {
+      const supervise = await app.inject({ method: 'POST', url: '/agents/operations/supervise?dryRun=true', headers: authHeader(ceoToken) });
+      assert.equal(supervise.statusCode, 200, supervise.body);
+
+      const incidents = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/incidents?limit=1', headers: authHeader(ceoToken) });
+      assert.equal(incidents.statusCode, 200);
+      const [incident] = incidents.json().data;
+      assert.ok(incident, 'setup: deveria existir ao menos um incidente detectável no ambiente de teste');
+      timelineAuditLogId = incident.auditLogId;
+    });
+
+    test('11: sem agents.operations.read → 403 (mesma rota de detalhe, já coberta em "sem permission em todas as 4 rotas")', async () => {
+      const response = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${timelineAuditLogId}`, headers: authHeader(limitedToken) });
+      assert.equal(response.statusCode, 403);
+    });
+
+    test('12: agents.operations.read → 200, timeline presente com o evento de detecção pelo menos', async () => {
+      const response = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${timelineAuditLogId}`, headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 200, response.body);
+      const { timeline } = response.json().data;
+      assert.ok(Array.isArray(timeline));
+      assert.ok(timeline.length >= 1);
+      assert.equal(timeline[0].type, 'incident_detected');
+    });
+
+    test('13/14: GET da timeline é estritamente read-only — não grava audit log nem altera review/assignment', async () => {
+      const [{ total: auditCountBefore }] = await db.select({ total: count() }).from(auditLogs);
+      const reviewBefore = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${timelineAuditLogId}/review`, headers: authHeader(ceoToken) });
+      const assignmentBefore = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${timelineAuditLogId}/assignment`, headers: authHeader(ceoToken) });
+
+      const response = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${timelineAuditLogId}`, headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 200);
+
+      const [{ total: auditCountAfter }] = await db.select({ total: count() }).from(auditLogs);
+      assert.equal(Number(auditCountAfter), Number(auditCountBefore), 'GET do detalhe/timeline nunca deveria gravar um audit log novo');
+
+      const reviewAfter = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${timelineAuditLogId}/review`, headers: authHeader(ceoToken) });
+      const assignmentAfter = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${timelineAuditLogId}/assignment`, headers: authHeader(ceoToken) });
+      assert.deepEqual(reviewAfter.json().data, reviewBefore.json().data, 'GET da timeline nunca deveria alterar o review');
+      assert.deepEqual(assignmentAfter.json().data, assignmentBefore.json().data, 'GET da timeline nunca deveria alterar o assignment');
+    });
+  });
+
   describe('GET /incidents', () => {
     let jobForIncidents: Awaited<ReturnType<typeof createJob>>;
     let repeatedFailureWindow: number;

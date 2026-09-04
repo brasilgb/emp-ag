@@ -1276,6 +1276,36 @@ export interface SupervisionIncidentSummary {
   assignment: { assigneeUserId: number; assignedBy: number; assignedAt: string } | null;
 }
 
+// Agentes v4.0 — Operational Incident Collaboration & Activity Timeline
+// (correio.md). "O que aconteceu, em que ordem, e quem fez" — projeção
+// pura sobre eventos já auditados por v3.6/v3.8 + Escalation (v2.6) /
+// FollowUp (v2.7) já ligados ao incidente. `human_note` deliberadamente
+// OMITIDO do vocabulário nesta versão (notas não implementadas).
+export const OPERATIONAL_INCIDENT_TIMELINE_EVENT_TYPES = [
+  "incident_detected",
+  "review_acknowledged",
+  "review_status_changed",
+  "assigned",
+  "reassigned",
+  "unassigned",
+  "escalation_created",
+  "follow_up_created",
+] as const;
+export type OperationalIncidentTimelineEventType = (typeof OPERATIONAL_INCIDENT_TIMELINE_EVENT_TYPES)[number];
+
+export interface OperationalIncidentTimelineEvent {
+  id: string;
+  type: OperationalIncidentTimelineEventType;
+  occurredAt: string;
+  // `null` = ator não determinável (nunca inventado) — sempre o caso
+  // real para `escalation_created`/`follow_up_created` (criados pelo
+  // sistema, nunca por um humano diretamente).
+  actorUserId: number | null;
+  from?: string | number | null;
+  to?: string | number | null;
+  metadata?: Record<string, unknown>;
+}
+
 export interface SupervisionIncidentDetail extends SupervisionIncidentSummary {
   problem: string;
   reason: string | null;
@@ -1291,6 +1321,7 @@ export interface SupervisionIncidentDetail extends SupervisionIncidentSummary {
   } | null;
   auditRefs: { id: number; action: string; createdAt: string }[];
   review: IncidentReview;
+  timeline: OperationalIncidentTimelineEvent[];
 }
 
 export interface RecurringIncident {

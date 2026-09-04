@@ -16,7 +16,7 @@ import { ErrorState } from "@/components/states/error-state";
 import { LoadingState } from "@/components/states/loading-state";
 import { useAssignIncident, useRecurringIncidents, useSupervisionIncidentDetail, useSupervisionIncidents, useSupervisionOverview, useUnassignIncident, useUpdateIncidentReview } from "@/hooks/agents/use-operations";
 import { useUsersDirectory } from "@/hooks/use-users-directory";
-import { incidentReviewStatusLabel, operationalIncidentTypeLabel } from "@/lib/agents/derived";
+import { incidentReviewStatusLabel, operationalIncidentTimelineEventLabel, operationalIncidentTypeLabel } from "@/lib/agents/derived";
 import { formatDateTime } from "@/lib/agents/format";
 import { toErrorMessage } from "@/services/http";
 import {
@@ -27,6 +27,8 @@ import {
   OPERATIONAL_SEVERITIES,
   type IncidentReviewStatus,
   type IncidentReviewStatusOrUnreviewed,
+  type OperationalIncidentTimelineEvent,
+  type OperationalIncidentTimelineEventType,
   type OperationalIncidentType,
   type OperationalResponse,
   type OperationalSeverity,
@@ -348,18 +350,7 @@ export function SupervisionIncidentDetailDialog({ auditLogId, onOpenChange }: { 
 
             <IncidentAssignmentSection auditLogId={detailQuery.data.data.auditLogId} assignment={detailQuery.data.data.assignment} />
 
-            {detailQuery.data.data.auditRefs.length > 0 ? (
-              <div>
-                <p className="text-xs font-medium text-muted-foreground">Referências de auditoria</p>
-                <ul className="mt-1 space-y-1">
-                  {detailQuery.data.data.auditRefs.map((ref) => (
-                    <li key={ref.id} className="text-xs text-muted-foreground">
-                      #{ref.id} — {ref.action} — {formatDateTime(ref.createdAt)}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
+            <IncidentTimelineSection events={detailQuery.data.data.timeline} />
           </div>
         )}
       </DialogContent>
@@ -508,6 +499,67 @@ function IncidentAssignmentSection({ auditLogId, assignment }: { auditLogId: num
           ) : null}
         </div>
       </PermissionGate>
+    </div>
+  );
+}
+
+const REVIEW_STATUS_EVENT_TYPES = new Set<OperationalIncidentTimelineEventType>(["review_acknowledged", "review_status_changed"]);
+const ASSIGNMENT_EVENT_TYPES = new Set<OperationalIncidentTimelineEventType>(["assigned", "reassigned", "unassigned"]);
+
+/**
+ * Agentes v4.0 (correio.md "Operational Incident Collaboration &
+ * Activity Timeline") — "o que aconteceu, em que ordem, e quem fez"
+ * (correio.md "25. Diretriz principal"), dentro da MESMA experiência de
+ * Incident Review (nunca uma segunda página). Timeline vertical simples
+ * (correio.md "10.1": "evitar excesso de cards independentes; preferir
+ * uma timeline vertical simples e legível") — substitui a antiga lista
+ * plana "Referências de auditoria", que a timeline já subsume com mais
+ * contexto (ator, transição anterior→nova).
+ */
+function IncidentTimelineSection({ events }: { events: OperationalIncidentTimelineEvent[] }) {
+  const usersQuery = useUsersDirectory();
+
+  function actorName(userId: number): string {
+    return usersQuery.data?.data.find((user) => user.id === userId)?.name ?? `Usuário #${userId}`;
+  }
+
+  function actorLine(event: OperationalIncidentTimelineEvent): string {
+    if (event.actorUserId !== null) return `por ${actorName(event.actorUserId)}`;
+    // Nunca inventa usuário (correio.md seção 11) — eventos gerados pelo
+    // sistema (detecção automática, escalation, follow-up) simplesmente
+    // não têm um ator humano.
+    return event.type === "incident_detected" ? "detecção automática" : "gerado automaticamente pelo sistema";
+  }
+
+  function transitionLine(event: OperationalIncidentTimelineEvent): string | null {
+    if (REVIEW_STATUS_EVENT_TYPES.has(event.type)) {
+      const from = typeof event.from === "string" ? incidentReviewStatusLabel(event.from as IncidentReviewStatusOrUnreviewed) : "--";
+      const to = typeof event.to === "string" ? incidentReviewStatusLabel(event.to as IncidentReviewStatusOrUnreviewed) : "--";
+      return `${from} → ${to}`;
+    }
+    if (ASSIGNMENT_EVENT_TYPES.has(event.type)) {
+      const from = typeof event.from === "number" ? actorName(event.from) : "Não atribuído";
+      const to = typeof event.to === "number" ? actorName(event.to) : "Não atribuído";
+      return `${from} → ${to}`;
+    }
+    return null;
+  }
+
+  return (
+    <div>
+      <p className="text-xs font-medium text-muted-foreground">Linha do tempo</p>
+      <ol className="mt-2 space-y-3 border-l pl-4">
+        {events.map((event) => (
+          <li key={event.id} className="relative text-xs">
+            <span className="absolute -left-[19px] top-1 size-2 rounded-full bg-muted-foreground" />
+            <p className="font-medium">{operationalIncidentTimelineEventLabel(event.type)}</p>
+            <p className="text-muted-foreground">
+              {formatDateTime(event.occurredAt)} — {actorLine(event)}
+            </p>
+            {transitionLine(event) ? <p className="mt-0.5 text-muted-foreground">{transitionLine(event)}</p> : null}
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }
