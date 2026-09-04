@@ -5,6 +5,7 @@ import {
   actionPlanItemStatusLabel,
   actionPlanStatusLabel,
   actionRiskLabel,
+  agingBucketLabel,
   approvalStateLabel,
   autonomyBlockReasonLabel,
   autonomyLevelBadgeVariant,
@@ -37,6 +38,7 @@ import {
   recommendationTypeLabel,
   recoveryResultLabel,
   reviewOutcomeLabel,
+  incidentReviewStatusLabel,
   signalSeverityLabel,
   supervisionIncidentOutcomeLabel,
   supervisionRunStatusLabel,
@@ -47,6 +49,7 @@ import type {
   ActionPlanItemStatus,
   ActionPlanStatus,
   ActionRisk,
+  AgingBucket,
   AutonomyBlockReason,
   AutonomyLevel,
   CircuitState,
@@ -76,6 +79,7 @@ import type {
   OperationalSeverity,
   RecommendationType,
   RecoveryResult,
+  IncidentReviewStatusOrUnreviewed,
   ReviewOutcome,
   SignalSeverity,
   SupervisionIncidentOutcome,
@@ -710,6 +714,46 @@ export function SupervisionIncidentOutcomeBadge({ outcome }: { outcome: Supervis
   return (
     <Badge variant="secondary" className={cn("border-transparent", SUPERVISION_INCIDENT_OUTCOME_STYLES[outcome])}>
       {supervisionIncidentOutcomeLabel(outcome)}
+    </Badge>
+  );
+}
+
+// Agentes v3.6 — Operational Incident Acknowledgement & Review Workflow.
+// Cores deliberadamente DIFERENTES das de SupervisionIncidentOutcomeBadge
+// (mesma cor por acaso não deve sugerir a mesma dimensão) —
+// `unreviewed` neutro, `acknowledged` em observação, `resolved` positivo,
+// `dismissed` neutro riscado (mesmo idioma de `cancelled` em outros
+// vocabulários deste projeto).
+const INCIDENT_REVIEW_STATUS_STYLES: Record<IncidentReviewStatusOrUnreviewed, string> = {
+  unreviewed: "bg-muted text-muted-foreground",
+  acknowledged: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  resolved: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  dismissed: "bg-muted text-muted-foreground line-through",
+};
+
+export function IncidentReviewStatusBadge({ status }: { status: IncidentReviewStatusOrUnreviewed }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", INCIDENT_REVIEW_STATUS_STYLES[status])}>
+      {incidentReviewStatusLabel(status)}
+    </Badge>
+  );
+}
+
+// Agentes v3.7 — Operational Incident Review Queue & Attention Management.
+// `>24h` deliberadamente destacado (âmbar) — mesmo princípio de outros
+// badges "nunca deve passar despercebido" já usados neste arquivo; os
+// demais buckets neutros (a idade em si não é um alerta até passar de 24h).
+const AGING_BUCKET_STYLES: Record<AgingBucket, string> = {
+  "<1h": "bg-muted text-muted-foreground",
+  "1h-4h": "bg-muted text-muted-foreground",
+  "4h-24h": "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  ">24h": "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+};
+
+export function AgingBucketBadge({ bucket }: { bucket: AgingBucket }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", AGING_BUCKET_STYLES[bucket])}>
+      {agingBucketLabel(bucket)}
     </Badge>
   );
 }

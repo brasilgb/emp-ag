@@ -4,16 +4,19 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tansta
 
 import { queryKeys } from "@/lib/query/keys";
 import {
+  type ListAttentionQueueParams,
   type ListAuditLogsParams,
   type ListIncidentsParams,
   type ListSupervisionIncidentsParams,
   type ListSupervisionRunsParams,
   type OperationsSummaryParams,
   type SupervisionInsightsPeriodParams,
+  type UpdateIncidentReviewInput,
   deleteJobSetting,
   deleteSetting,
   getFollowUpTimeline,
   getGlobalAutonomy,
+  getIncidentReview,
   getJobRunDetail,
   getJobRunLineage,
   getOperationalControlCenter,
@@ -21,6 +24,7 @@ import {
   getSupervisionIncidentDetail,
   getSupervisionOverview,
   getSupervisionRun,
+  listAttentionQueue,
   listAuditLogs,
   listIncidents,
   listJobSettings,
@@ -31,6 +35,7 @@ import {
   setGlobalAutonomy,
   setJobSetting,
   setSetting,
+  updateIncidentReview,
 } from "@/services/agents";
 import type { SettingKey } from "@/types/agents";
 
@@ -108,6 +113,51 @@ export function useRecurringIncidents(params: SupervisionInsightsPeriodParams = 
   return useQuery({
     queryKey: queryKeys.agents.recurringIncidents(params),
     queryFn: () => listRecurringIncidents(params),
+  });
+}
+
+// Agentes v3.7 — Operational Incident Review Queue & Attention Management
+// (correio.md). Fila operacional — igual `useSupervisionIncidents` acima
+// (`keepPreviousData` evita flicker ao paginar/filtrar).
+export function useAttentionQueue(params: ListAttentionQueueParams = {}) {
+  return useQuery({
+    queryKey: queryKeys.agents.attentionQueue(params),
+    queryFn: () => listAttentionQueue(params),
+    placeholderData: keepPreviousData,
+  });
+}
+
+// Agentes v3.6 — Operational Incident Acknowledgement & Review Workflow
+// (correio.md). `useSupervisionIncidentDetail` já traz `data.review`
+// completo — este hook fica para o caso raro de precisar só do review,
+// sem o resto do detalhe do incidente.
+export function useIncidentReview(auditLogId: number | null) {
+  return useQuery({
+    queryKey: queryKeys.agents.incidentReview(auditLogId ?? -1),
+    queryFn: () => getIncidentReview(auditLogId as number),
+    enabled: auditLogId !== null,
+  });
+}
+
+export function useUpdateIncidentReview(auditLogId: number) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: UpdateIncidentReviewInput) => updateIncidentReview(auditLogId, input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.incidentReview(auditLogId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.supervisionIncidentDetail(auditLogId) });
+      // Sem params: invalida QUALQUER variação de filtros já em cache
+      // (mesmo padrão de useSetGlobalAutonomy abaixo) — a lista e o
+      // overview mostram `reviewStatus`/`reviewsByStatus`, que acabaram
+      // de mudar.
+      queryClient.invalidateQueries({ queryKey: ["agents", "operations", "supervision-insights", "incidents"] });
+      queryClient.invalidateQueries({ queryKey: ["agents", "operations", "supervision-insights", "overview"] });
+      // Agentes v3.7 — a fila Needs Attention é uma projeção do mesmo
+      // review (correio.md: "manipular review através da v3.6 atualiza a
+      // projeção da fila").
+      queryClient.invalidateQueries({ queryKey: ["agents", "operations", "supervision-insights", "needs-attention"] });
+    },
   });
 }
 

@@ -1,100 +1,292 @@
-Agentes v3.5 — Operational Supervision Insights & Incident Review
+# Agentes v3.7 — Operational Incident Review Queue & Attention Management
 
-Objetivo:
-Transformar o histórico operacional já existente em uma camada clara de análise e revisão de incidentes, permitindo entender recorrência, severidade, respostas aplicadas e resultados do Operational Supervisor.
+## Objetivo
 
-Regras:
-- Não aumentar autonomia dos agentes.
-- Não criar novo supervisor.
-- Não criar novo Circuit Breaker.
-- Não alterar Planner, Policy Evaluator ou Executor salvo necessidade estritamente de leitura/integração já existente.
-- Reutilizar supervisor runs, findings, incidents, responses, escalations e auditoria existentes.
-- Manter segurança, isolamento e fail-closed.
-- Não duplicar dados que já tenham fonte oficial.
-- Toda mudança estrutural deve ser justificada antes de migration.
+Implementar uma fila operacional humana para revisão de incidentes, construída exclusivamente sobre as estruturas já existentes da v3.5 e v3.6.
 
-Escopo funcional:
+A v3.7 NÃO deve aumentar a autonomia do sistema, NÃO deve alterar a lógica de decisão do Operational Supervisor e NÃO deve introduzir novos mecanismos automáticos de resposta.
 
-1. Operational Supervision Overview
-Criar visão consolidada para análise dos runs de supervisão:
-- total de runs;
-- runs concluídos/falhos;
-- incidentes encontrados;
-- distribuição por severidade;
-- responses aplicadas;
-- recuperações automáticas;
-- restrições de autonomia;
-- escalonamentos para atenção manual;
-- incidentes recorrentes.
+## Descoberta obrigatória antes de qualquer migration
 
-2. Histórico pesquisável
-Permitir consulta do histórico com filtros por:
-- período;
-- status do run;
-- severidade;
-- tipo/categoria do finding ou incidente;
-- response aplicada;
-- presença de escalonamento;
-- agente/job quando houver relacionamento disponível.
+Antes de criar ou alterar schema, revisar:
 
-3. Incident Review
-Criar detalhe operacional de um incidente/finding mostrando, quando existentes:
-- origem;
-- run de supervisão;
-- timestamp;
-- severidade;
-- evidências/contexto persistido;
-- decisão tomada;
-- response aplicada;
-- resultado;
-- escalation relacionada;
-- referências de auditoria;
-- agente/job/run relacionado.
+* `audit_logs`;
+* `agent_operational_incident_reviews`;
+* `supervision-insights-service.ts`;
+* `supervisor-service.ts`;
+* Supervision Run History v3.4;
+* Incident Review v3.5;
+* Incident Review Workflow v3.6;
+* Escalations v2.6;
+* FollowUps v2.7;
+* frontend atual de `/agents/operations`.
 
-4. Recorrência
-Identificar incidentes recorrentes usando os dados existentes.
-Não introduzir classificação por IA.
-A regra deve ser determinística e auditável.
-Caso o modelo atual não possua chave adequada para agrupamento, documentar a limitação antes de propor schema novo.
+A primeira hipótese arquitetural é:
 
-5. Métricas
-Disponibilizar métricas agregadas via backend, evitando cálculo inconsistente no frontend.
-Preferir queries/read models sobre a fonte oficial existente.
-Não persistir agregados se puderem ser derivados com custo razoável.
+`audit_logs + agent_operational_incident_reviews + dados já derivados pela v3.5`
 
-6. Frontend
-Adicionar ou evoluir a área do Control Center/Agents com:
-- dashboard de supervisão;
-- filtros;
-- tabela de histórico;
-- detalhe de incidente;
-- indicadores operacionais simples e legíveis.
-Evitar gráficos decorativos sem valor operacional.
+devem ser suficientes para implementar a fila.
 
-7. Segurança
-- respeitar autenticação e autorização existentes;
-- não expor payloads sensíveis, secrets, tokens ou credenciais;
-- manter autorização server-side;
-- nenhum acesso direto do frontend ao banco;
-- revisar campos de evidência/contexto antes de exposição pela API.
+Somente criar migration se for demonstrado, antes da implementação, que existe estado novo, mutável e não derivável que realmente precise ser persistido.
 
-8. Testes obrigatórios
-Cobrir:
-- filtros;
-- agregações;
-- isolamento/autorização;
-- vínculo run → incident/finding → response → escalation;
-- recorrência;
-- ausência de dados sensíveis;
-- comportamento com histórico vazio;
-- regressão do histórico v3.4.
+Não criar tabela para cachear prioridade, aging, recorrência, quantidade de incidentes, bucket temporal ou qualquer informação derivável.
 
-Gate de fechamento:
-- npx tsc --noEmit limpo;
-- suíte completa do backend verde;
-- testes novos determinísticos;
-- frontend lint/typecheck/build limpos conforme scripts existentes;
-- git diff --check limpo;
-- nenhuma alteração fora do escopo sem justificativa;
-- relatório final com arquivos, migrations, endpoints, testes e git status;
-- não fazer commit até aprovação.
+## Escopo funcional
+
+Criar uma visão operacional de **Needs Attention**.
+
+A fila deve contemplar, no mínimo:
+
+* incidentes `unreviewed`;
+* incidentes `acknowledged` ainda não encerrados;
+* incidentes recorrentes;
+* incidentes antigos sem revisão;
+* incidentes de maior severidade.
+
+Estados `resolved` e `dismissed` não devem aparecer por padrão em Needs Attention, mas podem continuar acessíveis através dos filtros/histórico quando aplicável.
+
+## Prioridade operacional
+
+A ordenação deve ser:
+
+* determinística;
+* explicável;
+* reproduzível;
+* baseada exclusivamente em regras de domínio.
+
+Não usar LLM, IA, embeddings ou classificação probabilística.
+
+A prioridade pode considerar, conforme os dados já existentes:
+
+* severidade;
+* `reviewStatus`;
+* recorrência;
+* idade do incidente;
+* outcome operacional;
+* finding/type.
+
+Evitar criar um "score mágico" difícil de explicar. Se um score interno for realmente útil, sua fórmula deve ser explícita e testável.
+
+Preferir regras lexicográficas/determinísticas quando possível, por exemplo:
+
+1. severidade;
+2. recorrência;
+3. review pendente;
+4. aging;
+5. timestamp/id como desempate estável.
+
+A ordem final escolhida deve ser documentada.
+
+## Aging
+
+Calcular aging em tempo de leitura.
+
+Não persistir contador, cronômetro nem timestamp artificial para aging.
+
+Usar os timestamps canônicos já existentes.
+
+Expor buckets operacionais, preferencialmente:
+
+* `< 1h`;
+* `1h–4h`;
+* `4h–24h`;
+* `> 24h`.
+
+Se houver `acknowledged`, pode ser útil expor separadamente:
+
+* idade total do incidente;
+* tempo desde o último review/acknowledgement.
+
+Não inventar SLA ainda. A v3.7 deve mostrar aging; não criar automaticamente obrigação contratual/SLA.
+
+## Filtros
+
+Suportar combinação dos filtros úteis já presentes ou deriváveis:
+
+* review status;
+* severidade;
+* finding/type;
+* outcome;
+* recorrência;
+* período;
+* aging/bucket, se adequado à arquitetura atual.
+
+Os filtros devem funcionar conjuntamente.
+
+Evitar duplicar dois mecanismos diferentes de filtro entre histórico e fila se a mesma infraestrutura puder ser reutilizada.
+
+## Backend
+
+Reutilizar os serviços da v3.5/v3.6 sempre que possível.
+
+Não criar outro conceito de incidente.
+
+A identidade canônica continua sendo exclusivamente:
+
+`audit_logs` com action `agents.operations.incident.detected`.
+
+A fila é uma projeção desses incidentes e respectivos reviews.
+
+Evitar N+1.
+
+Uma página com N incidentes deve ser enriquecida com reviews/recorrência/outcomes através de consultas em lote ou queries agregadas adequadas, nunca uma query por incidente.
+
+Se for criado endpoint dedicado, manter namespace coerente com:
+
+`/agents/operations/supervision-insights/...`
+
+Avaliar primeiro se é melhor:
+
+* estender o endpoint existente de incidentes;
+* ou criar endpoint específico para Needs Attention.
+
+Escolher a opção que preserve responsabilidade clara e evite duplicação de regra.
+
+## Autorização
+
+Não criar permission nova sem justificativa real.
+
+Leitura deve reutilizar:
+
+`agents.operations.read`
+
+As ações de acknowledgment/resolution/dismissal continuam exclusivamente pela API de review da v3.6 e exigem:
+
+`agents.operations.manage`
+
+A fila em si não deve introduzir nova ação mutável.
+
+## Frontend
+
+Integrar em `/agents/operations`.
+
+Criar uma seção clara de **Needs Attention**.
+
+Ela deve permitir ao operador entender rapidamente:
+
+* o que precisa de atenção;
+* por que aquele incidente aparece acima de outro;
+* há quanto tempo ocorreu;
+* se é recorrente;
+* qual é o estado do review;
+* qual foi o outcome operacional.
+
+Fornecer acesso direto ao Incident Review já existente.
+
+As ações:
+
+* acknowledge;
+* resolve;
+* dismiss
+
+devem continuar utilizando exclusivamente o workflow/API da v3.6.
+
+Não criar segunda implementação de review no frontend.
+
+Evitar cards redundantes se a mesma informação já estiver presente no overview. Priorizar utilidade operacional.
+
+## Fronteiras arquiteturais obrigatórias
+
+Não alterar:
+
+* `supervisor-guard.ts`;
+* lógica de `applyResponse`;
+* decisão do Supervisor;
+* detecção de incidentes;
+* mecanismo de Escalation;
+* mecanismo de FollowUp;
+* Circuit Breakers;
+* autonomia;
+* planner/policy/executor;
+* scheduler, salvo leitura necessária e sem mudança comportamental.
+
+Não criar:
+
+* novo Supervisor;
+* segunda identidade de incidente;
+* nova fila persistida;
+* Redis queue para este workflow;
+* lock distribuído;
+* worker novo apenas para calcular atenção;
+* classificação por LLM.
+
+A v3.7 organiza trabalho humano. Ela não torna o sistema mais autônomo.
+
+## Concorrência
+
+A v3.7 deve ser majoritariamente leitura.
+
+Toda mutação continua delegada ao review workflow atômico da v3.6.
+
+Não adicionar estado concorrente desnecessário.
+
+## Testes obrigatórios
+
+Adicionar testes cobrindo pelo menos:
+
+1. incidente `unreviewed` aparece em Needs Attention;
+2. incidente `acknowledged` aparece quando ainda aplicável;
+3. `resolved` e `dismissed` ficam fora da fila padrão;
+4. severidade influencia corretamente a ordenação;
+5. recorrência influencia corretamente a ordenação;
+6. aging `<1h`;
+7. aging exatamente no limite de 1h;
+8. aging exatamente no limite de 4h;
+9. aging exatamente no limite de 24h;
+10. aging `>24h`;
+11. desempate determinístico;
+12. filtros combinados;
+13. filtro por review status;
+14. filtro por recorrência;
+15. filtro por outcome;
+16. paginação preserva ordenação determinística;
+17. ausência de N+1;
+18. usuário apenas com `agents.operations.read` consegue consultar a fila;
+19. usuário sem permission de leitura recebe 403;
+20. manipular review através da v3.6 atualiza a projeção da fila;
+21. alterar review NÃO altera o outcome operacional;
+22. nenhuma alteração indireta na decisão/resposta do Supervisor;
+23. incidentes históricos sem review são sintetizados corretamente como `unreviewed`.
+
+Preferir relógio controlável/injetável nos testes de aging em vez de sleeps reais.
+
+## Validação final
+
+Executar no fechamento:
+
+* migration somente se realmente criada e previamente justificada;
+* `npx tsc --noEmit`;
+* testes específicos da v3.7;
+* suíte completa do backend com a mesma política de isolamento já consolidada;
+* lint/build do frontend conforme baseline atual;
+* verificar regressões da v3.5 e v3.6;
+* verificar que `supervisor-guard.ts` permaneceu intocado;
+* verificar que nenhuma lógica autônoma foi adicionada;
+* verificar que nenhum N+1 foi introduzido.
+
+## Relatório de entrega
+
+Ao finalizar, responder com relatório contendo:
+
+1. análise de persistência e decisão sobre migration;
+2. regra exata da fila Needs Attention;
+3. regra exata de ordenação/prioridade;
+4. definição de aging e limites dos buckets;
+5. endpoints alterados/criados;
+6. autorização utilizada;
+7. integração com v3.5/v3.6;
+8. estratégia usada para evitar N+1;
+9. arquivos criados/alterados;
+10. testes adicionados;
+11. resultado completo da validação;
+12. confirmação explícita de que:
+
+* `supervisor-guard.ts` não foi alterado;
+* não houve aumento de autonomia;
+* não foi criado novo Circuit Breaker;
+* não foi criada segunda identidade de incidente;
+* nenhuma ação automática nova foi adicionada.
+
+Não fazer commit.
+
+Entregar tudo no working tree para revisão.

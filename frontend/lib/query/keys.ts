@@ -139,5 +139,9 @@ export const queryKeys = {
     supervisionIncidents: (params?: unknown) => ["agents", "operations", "supervision-insights", "incidents", params ?? {}] as const,
     supervisionIncidentDetail: (auditLogId: number) => ["agents", "operations", "supervision-insights", "incidents", auditLogId] as const,
     recurringIncidents: (params?: unknown) => ["agents", "operations", "supervision-insights", "recurring", params ?? {}] as const,
+    // Agentes v3.6 — Operational Incident Acknowledgement & Review Workflow.
+    incidentReview: (auditLogId: number) => ["agents", "operations", "supervision-insights", "incidents", auditLogId, "review"] as const,
+    // Agentes v3.7 — Operational Incident Review Queue & Attention Management.
+    attentionQueue: (params?: unknown) => ["agents", "operations", "supervision-insights", "needs-attention", params ?? {}] as const,
   },
 };

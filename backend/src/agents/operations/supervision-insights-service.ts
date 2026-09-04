@@ -1,7 +1,9 @@
 import { and, count, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../../db/index.js';
-import { agentOperationalEscalations, agentOperationalSupervisionRuns, auditLogs } from '../../db/schema/index.js';
+import { agentOperationalEscalations, agentOperationalIncidentReviews, agentOperationalSupervisionRuns, auditLogs } from '../../db/schema/index.js';
+import { getIncidentReview, getIncidentReviewsByAuditLogIds, INCIDENT_REVIEW_STATUSES_WITH_UNREVIEWED } from './incident-review-service.js';
+import type { IncidentReview, IncidentReviewStatusOrUnreviewed } from './incident-review-service.js';
 import { OPERATIONAL_INCIDENT_TYPES, OPERATIONAL_RESPONSES, OPERATIONAL_SEVERITIES } from './health-types.js';
 import type { OperationalIncidentType, OperationalResponse, OperationalSeverity } from './health-types.js';
 import { SUPERVISION_RUN_STATUSES } from './supervision-run-history.js';
@@ -61,6 +63,32 @@ import type { SupervisionRunStatus } from './supervision-run-history.js';
  * existe — nenhum novo campo de agrupamento.
  */
 
+// Agentes v3.7 (correio.md "Operational Incident Review Queue & Attention
+// Management") — vocabulário fechado do outcome operacional (antes só um
+// union inline em `SupervisionIncidentSummary`) e dos buckets de aging.
+// Reexportados para schemas.ts, mesmo padrão de OPERATIONAL_* logo abaixo
+// — nunca uma segunda lista solta no schema.
+export const OPERATIONAL_OUTCOMES = ['observed', 'recovered', 'autonomy_restricted', 'escalated', 'failed', 'skipped'] as const;
+export type SupervisionOutcome = (typeof OPERATIONAL_OUTCOMES)[number];
+
+// Buckets fixos pedidos pelo correio.md (seção "Aging"). Limite esquerdo
+// inclusivo, direito exclusivo — ex.: idade === exatamente 1h cai em
+// `1h-4h` (não em `<1h`), idade === exatamente 4h cai em `4h-24h`, idade
+// === exatamente 24h cai em `>24h`. Convenção documentada aqui porque o
+// correio.md não especifica os limites — testada explicitamente
+// (operations.test.ts) nos 3 limites.
+export const AGING_BUCKETS = ['<1h', '1h-4h', '4h-24h', '>24h'] as const;
+export type AgingBucket = (typeof AGING_BUCKETS)[number];
+
+const HOUR_MS = 60 * 60 * 1000;
+
+function agingBucketFromMs(ageMs: number): AgingBucket {
+  if (ageMs < HOUR_MS) return '<1h';
+  if (ageMs < 4 * HOUR_MS) return '1h-4h';
+  if (ageMs < 24 * HOUR_MS) return '4h-24h';
+  return '>24h';
+}
+
 export interface SupervisionOverview {
   totalRuns: number;
   runsByStatus: Record<SupervisionRunStatus, number>;
@@ -76,6 +104,10 @@ export interface SupervisionOverview {
   };
   escalationsCreated: number;
   recurringIncidentsCount: number;
+  // Agentes v3.6 (correio.md "Operational Incident Acknowledgement &
+  // Review Workflow", seção 8) — `unreviewed` sempre derivado (nunca
+  // persistido, ver docblock de incident-review-service.ts).
+  reviewsByStatus: Record<IncidentReviewStatusOrUnreviewed, number>;
 }
 
 export interface SupervisionInsightsFilterParams {
@@ -102,7 +134,7 @@ export async function getSupervisionOverview(params: SupervisionInsightsFilterPa
   if (params.dateFrom) escalationConditions.push(gte(auditLogs.createdAt, params.dateFrom));
   if (params.dateTo) escalationConditions.push(lte(auditLogs.createdAt, params.dateTo));
 
-  const [runRows, [findingsRow], severityRows, outcomeRows, [escalationsRow], recurringRows] = await Promise.all([
+  const [runRows, [findingsRow], severityRows, outcomeRows, [escalationsRow], recurringRows, reviewStatusRows] = await Promise.all([
     db
       .select({ status: agentOperationalSupervisionRuns.status, total: count() })
       .from(agentOperationalSupervisionRuns)
@@ -153,6 +185,19 @@ export async function getSupervisionOverview(params: SupervisionInsightsFilterPa
       .where(and(...incidentConditions))
       .groupBy(sql`${auditLogs.metadata}->>'incidentType'`, auditLogs.entityType, auditLogs.entityId)
       .having(sql`count(*) > 1`),
+
+    // Agentes v3.6 — LEFT JOIN + coalesce resolve `unreviewed` (ausência
+    // de linha) na MESMA query que os demais status, escopado ao mesmo
+    // conjunto de incidentes do resto do overview (período de
+    // `incident.detected`, não de `reviewed_at` — "quantos incidentes
+    // DESTE período estão em cada estado de revisão", nunca "quantas
+    // revisões aconteceram neste período"). Uma única query, nenhum N+1.
+    db
+      .select({ status: sql<string>`coalesce(${agentOperationalIncidentReviews.status}, 'unreviewed')`, total: count() })
+      .from(auditLogs)
+      .leftJoin(agentOperationalIncidentReviews, eq(agentOperationalIncidentReviews.incidentAuditLogId, auditLogs.id))
+      .where(and(...incidentConditions))
+      .groupBy(sql`coalesce(${agentOperationalIncidentReviews.status}, 'unreviewed')`),
   ]);
 
   const runsByStatus = Object.fromEntries(SUPERVISION_RUN_STATUSES.map((status) => [status, 0])) as Record<SupervisionRunStatus, number>;
@@ -170,6 +215,13 @@ export async function getSupervisionOverview(params: SupervisionInsightsFilterPa
   }
 
   const outcomeCountByAction = new Map(outcomeRows.map((row) => [row.action, Number(row.total)]));
+
+  const reviewsByStatus = Object.fromEntries(INCIDENT_REVIEW_STATUSES_WITH_UNREVIEWED.map((status) => [status, 0])) as Record<IncidentReviewStatusOrUnreviewed, number>;
+  for (const row of reviewStatusRows) {
+    if ((INCIDENT_REVIEW_STATUSES_WITH_UNREVIEWED as readonly string[]).includes(row.status)) {
+      reviewsByStatus[row.status as IncidentReviewStatusOrUnreviewed] = Number(row.total);
+    }
+  }
 
   return {
     totalRuns: runRows.reduce((sum, row) => sum + Number(row.total), 0),
@@ -197,6 +249,7 @@ export async function getSupervisionOverview(params: SupervisionInsightsFilterPa
     },
     escalationsCreated: escalationsRow ? Number(escalationsRow.total) : 0,
     recurringIncidentsCount: recurringRows.length,
+    reviewsByStatus,
   };
 }
 
@@ -211,8 +264,22 @@ export interface SupervisionIncidentSummary {
   detectedAt: string;
   runId: number | null;
   runStatus: SupervisionRunStatus | null;
-  outcome: 'observed' | 'recovered' | 'autonomy_restricted' | 'escalated' | 'failed' | 'skipped';
+  outcome: SupervisionOutcome;
   hasEscalation: boolean;
+  // Agentes v3.6 — dimensão SEPARADA do `outcome` acima (correio.md
+  // seção 8: "nunca misturá-las" — resultado operacional vs. review
+  // humano são conceitos distintos; um incidente pode ter sido
+  // `recovered` automaticamente e ainda estar `unreviewed`).
+  reviewStatus: IncidentReviewStatusOrUnreviewed;
+  // Agentes v3.7 — recorrência (correio.md "Prioridade operacional" /
+  // "Aging"): mesma chave `incidentType:entityType:entityId` já usada por
+  // `listRecurringIncidents` (v3.5), agora exposta por LINHA em vez de só
+  // numa lista separada — reaproveita a MESMA definição de recorrência,
+  // nunca uma segunda noção. `recurrenceCount` inclui a própria ocorrência
+  // (>= 1 sempre); `isRecurring` é só `recurrenceCount > 1`, açúcar para o
+  // frontend nunca precisar repetir essa comparação.
+  recurrenceCount: number;
+  isRecurring: boolean;
 }
 
 export interface ListSupervisionIncidentsParams {
@@ -227,11 +294,19 @@ export interface ListSupervisionIncidentsParams {
   entityType?: string;
   entityId?: string;
   runStatus?: SupervisionRunStatus;
+  reviewStatus?: IncidentReviewStatusOrUnreviewed;
+  // Agentes v3.7 — mesmos filtros usados pela fila Needs Attention
+  // (`listAttentionQueue` abaixo), adicionados aqui para que histórico e
+  // fila reutilizem a MESMA infraestrutura de filtro pós-enriquecimento
+  // (correio.md "Filtros": "evitar duplicar dois mecanismos diferentes de
+  // filtro entre histórico e fila").
+  outcome?: SupervisionOutcome;
+  recurringOnly?: boolean;
 }
 
 const OUTCOME_AUDIT_ACTIONS = ['agents.operations.safe_recovery', 'agents.operations.autonomy_restricted', 'agents.operations.manual_attention', 'agents.operations.incident.failed'] as const;
 
-function outcomeFromAction(action: (typeof OUTCOME_AUDIT_ACTIONS)[number] | undefined, response: OperationalResponse): SupervisionIncidentSummary['outcome'] {
+function outcomeFromAction(action: (typeof OUTCOME_AUDIT_ACTIONS)[number] | undefined, response: OperationalResponse): SupervisionOutcome {
   if (!action) {
     // Nenhum audit de resultado — ver docblock do arquivo: só acontece
     // nos branches defensivos de `applyResponse` que devolvem
@@ -250,8 +325,11 @@ function outcomeFromAction(action: (typeof OUTCOME_AUDIT_ACTIONS)[number] | unde
  * Resolve, para um lote de audits `incident.detected` já carregado, o run
  * de origem (por janela de tempo — único candidato possível, ver
  * docblock), o audit de resultado (por entityType+entityId+incidentType
- * exato) e a presença de escalation (por `metadata.incidentId` exato).
- * Sempre no máximo 3 queries extras, nunca uma por linha (evita N+1).
+ * exato), a presença de escalation (por `metadata.incidentId` exato) e o
+ * review humano (v3.6, `getIncidentReviewsByAuditLogIds` — já em lote por
+ * design, ver incident-review-service.ts). Sempre no máximo 4 queries
+ * extras, nunca uma por linha (evita N+1 — correio.md v3.6 seção 8/11
+ * item 15).
  */
 async function enrichIncidentRows(
   rows: { id: number; entityType: string | null; entityId: string | null; metadata: unknown; createdAt: Date }[],
@@ -270,7 +348,7 @@ async function enrichIncidentRows(
     return `${metadata?.incidentType ?? 'unknown'}:${row.entityType}:${row.entityId}`;
   });
 
-  const [candidateRuns, outcomeAudits, escalationRows] = await Promise.all([
+  const [candidateRuns, outcomeAudits, escalationRows, reviewsByAuditLogId, recurrenceRows] = await Promise.all([
     db
       .select({ id: agentOperationalSupervisionRuns.id, status: agentOperationalSupervisionRuns.status, startedAt: agentOperationalSupervisionRuns.startedAt, finishedAt: agentOperationalSupervisionRuns.finishedAt })
       .from(agentOperationalSupervisionRuns)
@@ -294,7 +372,32 @@ async function enrichIncidentRows(
       .select({ metadata: agentOperationalEscalations.metadata })
       .from(agentOperationalEscalations)
       .where(inArray(sql<string>`${agentOperationalEscalations.metadata}->>'incidentId'`, incidentIds)),
+
+    getIncidentReviewsByAuditLogIds(rows.map((row) => row.id)),
+
+    // Agentes v3.7 — recorrência em LOTE (nunca uma query por linha):
+    // mesma chave/mesma definição de `listRecurringIncidents` (v3.5),
+    // agrupada por `incidentType:entityType:entityId` só para as
+    // combinações realmente presentes nesta página (`IN` em
+    // entityType/entityId, exatamente como a query de escalation acima —
+    // o `having count(*) > 1` de `listRecurringIncidents` não se aplica
+    // aqui de propósito: precisamos da CONTAGEM real mesmo quando é 1,
+    // não só saber se é recorrente).
+    entityTypes.length > 0 && entityIds.length > 0
+      ? db
+          .select({
+            incidentType: sql<string>`${auditLogs.metadata}->>'incidentType'`,
+            entityType: auditLogs.entityType,
+            entityId: auditLogs.entityId,
+            occurrences: count(),
+          })
+          .from(auditLogs)
+          .where(and(eq(auditLogs.action, 'agents.operations.incident.detected'), inArray(auditLogs.entityType, entityTypes), inArray(auditLogs.entityId, entityIds)))
+          .groupBy(sql`${auditLogs.metadata}->>'incidentType'`, auditLogs.entityType, auditLogs.entityId)
+      : Promise.resolve([]),
   ]);
+
+  const recurrenceByIncidentId = new Map(recurrenceRows.map((row) => [`${row.incidentType}:${row.entityType}:${row.entityId}`, Number(row.occurrences)]));
 
   const escalatedIncidentIds = new Set(
     escalationRows.map((row) => (row.metadata as { incidentId?: string } | null)?.incidentId).filter((value): value is string => value !== undefined),
@@ -331,6 +434,9 @@ async function enrichIncidentRows(
       runStatus: (run?.status as SupervisionRunStatus | undefined) ?? null,
       outcome: outcomeFromAction(outcomeAudit?.action as (typeof OUTCOME_AUDIT_ACTIONS)[number] | undefined, response),
       hasEscalation: escalatedIncidentIds.has(incidentId),
+      reviewStatus: reviewsByAuditLogId.get(row.id)?.status ?? 'unreviewed',
+      recurrenceCount: recurrenceByIncidentId.get(incidentId) ?? 1,
+      isRecurring: (recurrenceByIncidentId.get(incidentId) ?? 1) > 1,
     };
   });
 }
@@ -347,6 +453,9 @@ export async function listSupervisionIncidents(params: ListSupervisionIncidentsP
 
   const where = and(...conditions);
 
+  const needsPostEnrichmentFilter =
+    params.hasEscalation !== undefined || params.runStatus !== undefined || params.reviewStatus !== undefined || params.outcome !== undefined || params.recurringOnly !== undefined;
+
   const [rows, [{ total }]] = await Promise.all([
     db
       .select({ id: auditLogs.id, entityType: auditLogs.entityType, entityId: auditLogs.entityId, metadata: auditLogs.metadata, createdAt: auditLogs.createdAt })
@@ -354,21 +463,22 @@ export async function listSupervisionIncidents(params: ListSupervisionIncidentsP
       .where(where)
       .orderBy(desc(auditLogs.createdAt))
       // busca uma janela maior que a página pedida quando há filtros
-      // pós-enriquecimento (runStatus/hasEscalation), paginados em
-      // memória depois — ver comentário abaixo.
-      .limit(params.hasEscalation !== undefined || params.runStatus ? 500 : params.limit)
-      .offset(params.hasEscalation !== undefined || params.runStatus ? 0 : (params.page - 1) * params.limit),
+      // pós-enriquecimento (runStatus/hasEscalation/reviewStatus,
+      // v3.6), paginados em memória depois — ver comentário abaixo.
+      .limit(needsPostEnrichmentFilter ? 500 : params.limit)
+      .offset(needsPostEnrichmentFilter ? 0 : (params.page - 1) * params.limit),
     db.select({ total: count() }).from(auditLogs).where(where),
   ]);
 
   let enriched = await enrichIncidentRows(rows);
 
-  // `runStatus`/`hasEscalation` só existem depois do enriquecimento (não
-  // são campos nativos do audit log) — filtrados aqui. Janela de 500
-  // (acima) é uma concessão pragmática: suficiente para qualquer volume
-  // operacional real deste sistema (não um SaaS multi-tenant de alto
-  // volume), documentado como limitação conhecida em vez de introduzir
-  // uma view materializada não pedida pelo correio.md.
+  // `runStatus`/`hasEscalation`/`reviewStatus` só existem depois do
+  // enriquecimento (não são campos nativos do audit log) — filtrados
+  // aqui. Janela de 500 (acima) é uma concessão pragmática: suficiente
+  // para qualquer volume operacional real deste sistema (não um SaaS
+  // multi-tenant de alto volume), documentado como limitação conhecida
+  // em vez de introduzir uma view materializada não pedida pelo
+  // correio.md.
   let total2 = Number(total);
   if (params.hasEscalation !== undefined) {
     enriched = enriched.filter((row) => row.hasEscalation === params.hasEscalation);
@@ -378,7 +488,19 @@ export async function listSupervisionIncidents(params: ListSupervisionIncidentsP
     enriched = enriched.filter((row) => row.runStatus === params.runStatus);
     total2 = enriched.length;
   }
-  if (params.hasEscalation !== undefined || params.runStatus) {
+  if (params.reviewStatus) {
+    enriched = enriched.filter((row) => row.reviewStatus === params.reviewStatus);
+    total2 = enriched.length;
+  }
+  if (params.outcome) {
+    enriched = enriched.filter((row) => row.outcome === params.outcome);
+    total2 = enriched.length;
+  }
+  if (params.recurringOnly) {
+    enriched = enriched.filter((row) => row.isRecurring);
+    total2 = enriched.length;
+  }
+  if (needsPostEnrichmentFilter) {
     enriched = enriched.slice((params.page - 1) * params.limit, params.page * params.limit);
   }
 
@@ -399,6 +521,12 @@ export interface SupervisionIncidentDetail extends SupervisionIncidentSummary {
     createdAt: string;
   } | null;
   auditRefs: { id: number; action: string; createdAt: string }[];
+  // Agentes v3.6 — dimensão SEPARADA (correio.md seção 8: "o diálogo de
+  // detalhe deve mostrar claramente duas dimensões diferentes: Resultado
+  // operacional / Review humano. Nunca misturá-las"). `reviewStatus`
+  // (herdado de SupervisionIncidentSummary) é só o status; aqui o objeto
+  // completo (quem revisou, quando, nota) para o "Incident Review".
+  review: IncidentReview;
 }
 
 export async function getSupervisionIncidentDetail(auditLogId: number): Promise<SupervisionIncidentDetail | null> {
@@ -415,7 +543,7 @@ export async function getSupervisionIncidentDetail(auditLogId: number): Promise<
 
   const incidentId = `${summary.incidentType}:${summary.entityType}:${summary.entityId}`;
 
-  const [relatedAudits, [escalationRow]] = await Promise.all([
+  const [relatedAudits, [escalationRow], review] = await Promise.all([
     db
       .select({ id: auditLogs.id, action: auditLogs.action, entityType: auditLogs.entityType, entityId: auditLogs.entityId, metadata: auditLogs.metadata, createdAt: auditLogs.createdAt })
       .from(auditLogs)
@@ -428,6 +556,12 @@ export async function getSupervisionIncidentDetail(auditLogId: number): Promise<
       .from(agentOperationalEscalations)
       .where(eq(sql<string>`${agentOperationalEscalations.metadata}->>'incidentId'`, incidentId))
       .limit(1),
+
+    // Objeto completo do review (quem/quando/nota) — `summary.reviewStatus`
+    // já veio de `enrichIncidentRows`, mas o detalhe (v3.6, correio.md
+    // seção 3/9) precisa do resto. Chamada única e dedicada, aceitável
+    // aqui: endpoint de UM item, nunca de lista (nenhum N+1).
+    getIncidentReview(auditLogId),
   ]);
 
   const outcomeAudit = relatedAudits.find((audit) => {
@@ -454,7 +588,184 @@ export async function getSupervisionIncidentDetail(auditLogId: number): Promise<
         }
       : null,
     auditRefs: relatedAudits.filter((audit) => audit.id !== row.id).map((audit) => ({ id: audit.id, action: audit.action, createdAt: audit.createdAt.toISOString() })),
+    // Não-nulo garantido: `row` já foi confirmado acima como um
+    // `incident.detected` válido — a mesma condição que faria
+    // `getIncidentReview` devolver `null`.
+    review: review!,
   };
+}
+
+/**
+ * Agentes v3.7 (correio.md "Operational Incident Review Queue & Attention
+ * Management") — fila operacional "Needs Attention". Projeção pura sobre
+ * `enrichIncidentRows` (v3.5/v3.6, já batched) — NENHUM novo conceito de
+ * incidente, NENHUMA tabela nova (correio.md "Descoberta obrigatória":
+ * `audit_logs` + `agent_operational_incident_reviews` + dados já
+ * derivados pela v3.5 bastam — ver relatório de entrega em executed.md
+ * para a análise completa).
+ */
+export interface AttentionQueueItem extends SupervisionIncidentSummary {
+  // Aging calculado em tempo de leitura (correio.md "Aging": "não
+  // persistir contador, cronômetro nem timestamp artificial") a partir de
+  // `detectedAt`, o timestamp canônico já existente.
+  ageMs: number;
+  agingBucket: AgingBucket;
+  // Só presente quando `reviewStatus === 'acknowledged'` (correio.md:
+  // "se houver acknowledged, pode ser útil expor... tempo desde o último
+  // review/acknowledgement") — tempo decorrido desde `review.reviewedAt`,
+  // NUNCA um segundo timestamp persistido (deriva do mesmo objeto de
+  // review já lido em lote por `getIncidentReviewsByAuditLogIds`).
+  sinceReviewMs: number | null;
+  sinceReviewBucket: AgingBucket | null;
+  // Explica, de forma determinística e auditável, por que o item está na
+  // fila e nesta posição (correio.md "Frontend": "por que aquele
+  // incidente aparece acima de outro") — nunca um score opaco.
+  attentionReasons: AttentionReason[];
+}
+
+export const ATTENTION_REASONS = ['unreviewed', 'acknowledged_pending', 'recurring', 'high_severity', 'aging'] as const;
+export type AttentionReason = (typeof ATTENTION_REASONS)[number];
+
+export interface ListAttentionQueueParams {
+  page: number;
+  limit: number;
+  dateFrom?: Date;
+  dateTo?: Date;
+  severity?: OperationalSeverity;
+  incidentType?: OperationalIncidentType;
+  outcome?: SupervisionOutcome;
+  // Ausente = default da fila: exclui `resolved`/`dismissed` (correio.md
+  // "Escopo funcional": "não devem aparecer por padrão"). Informado
+  // explicitamente = filtro normal, INCLUSIVE para `resolved`/`dismissed`
+  // (correio.md: "podem continuar acessíveis através dos filtros/histórico
+  // quando aplicável" — mesmo parâmetro, nunca um segundo mecanismo de
+  // filtro).
+  reviewStatus?: IncidentReviewStatusOrUnreviewed;
+  recurringOnly?: boolean;
+  agingBucket?: AgingBucket;
+  // Mesmo filtro de `listSupervisionIncidents` (v3.5) — reaproveitado
+  // aqui não só por utilidade operacional (escopar a fila a um
+  // agente/job específico), mas também porque filtra a query NA
+  // BORDA (WHERE), reduzindo a janela de 500 linhas a um universo
+  // menor quando o operador já sabe o que procura.
+  entityType?: string;
+  entityId?: string;
+  // Relógio injetável (correio.md "Testes obrigatórios": "preferir relógio
+  // controlável/injetável... em vez de sleeps reais") — default `new Date()`
+  // em produção, fixo nos testes.
+  now?: Date;
+}
+
+const DEFAULT_EXCLUDED_REVIEW_STATUSES: readonly IncidentReviewStatusOrUnreviewed[] = ['resolved', 'dismissed'];
+
+// Rank menor = maior prioridade. Ordem lexicográfica documentada no
+// correio.md ("Prioridade operacional"): severidade > recorrência >
+// review pendente > aging > id (desempate estável).
+const SEVERITY_RANK: Record<OperationalSeverity, number> = { critical: 0, warning: 1, info: 2 };
+const REVIEW_PENDING_RANK: Record<IncidentReviewStatusOrUnreviewed, number> = { unreviewed: 0, acknowledged: 1, resolved: 2, dismissed: 3 };
+
+function attentionReasonsFor(item: Pick<AttentionQueueItem, 'reviewStatus' | 'isRecurring' | 'severity' | 'agingBucket'>): AttentionReason[] {
+  const reasons: AttentionReason[] = [];
+  if (item.reviewStatus === 'unreviewed') reasons.push('unreviewed');
+  else if (item.reviewStatus === 'acknowledged') reasons.push('acknowledged_pending');
+  if (item.isRecurring) reasons.push('recurring');
+  if (item.severity === 'critical') reasons.push('high_severity');
+  if (item.agingBucket === '4h-24h' || item.agingBucket === '>24h') reasons.push('aging');
+  return reasons;
+}
+
+/**
+ * Ordenação determinística/reproduzível/explicável (correio.md "Prioridade
+ * operacional") — nunca LLM/IA/embeddings/score probabilístico. Regras
+ * lexicográficas puras, cada uma um campo já exposto na resposta (nunca um
+ * "score mágico" opaco):
+ *
+ * 1. severidade (critical > warning > info);
+ * 2. recorrência (recorrente > não recorrente);
+ * 3. review pendente (unreviewed > acknowledged > resolved > dismissed);
+ * 4. aging (mais antigo primeiro);
+ * 5. `auditLogId` ascendente — desempate estável e reproduzível (ids de
+ *    `audit_logs` são monotonicamente crescentes com o tempo de detecção,
+ *    então isto também é, na prática, "detectado primeiro primeiro").
+ */
+function compareAttentionPriority(a: AttentionQueueItem, b: AttentionQueueItem): number {
+  const severityDiff = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
+  if (severityDiff !== 0) return severityDiff;
+
+  const recurrenceDiff = (b.isRecurring ? 1 : 0) - (a.isRecurring ? 1 : 0);
+  if (recurrenceDiff !== 0) return recurrenceDiff;
+
+  const reviewDiff = REVIEW_PENDING_RANK[a.reviewStatus] - REVIEW_PENDING_RANK[b.reviewStatus];
+  if (reviewDiff !== 0) return reviewDiff;
+
+  const ageDiff = b.ageMs - a.ageMs;
+  if (ageDiff !== 0) return ageDiff;
+
+  return a.auditLogId - b.auditLogId;
+}
+
+export async function listAttentionQueue(params: ListAttentionQueueParams): Promise<{ rows: AttentionQueueItem[]; total: number }> {
+  const conditions: SQL[] = [eq(auditLogs.action, 'agents.operations.incident.detected')];
+  if (params.dateFrom) conditions.push(gte(auditLogs.createdAt, params.dateFrom));
+  if (params.dateTo) conditions.push(lte(auditLogs.createdAt, params.dateTo));
+  if (params.severity) conditions.push(sql`${auditLogs.metadata}->>'severity' = ${params.severity}`);
+  if (params.incidentType) conditions.push(sql`${auditLogs.metadata}->>'incidentType' = ${params.incidentType}`);
+  if (params.entityType) conditions.push(eq(auditLogs.entityType, params.entityType));
+  if (params.entityId) conditions.push(eq(auditLogs.entityId, params.entityId));
+
+  const rows = await db
+    .select({ id: auditLogs.id, entityType: auditLogs.entityType, entityId: auditLogs.entityId, metadata: auditLogs.metadata, createdAt: auditLogs.createdAt })
+    .from(auditLogs)
+    .where(and(...conditions))
+    .orderBy(desc(auditLogs.createdAt))
+    // Mesma janela pragmática de 500 linhas já documentada em
+    // `listSupervisionIncidents` (v3.5/v3.6) para filtros/ordenação
+    // pós-enriquecimento — toda a fila é sempre pós-enriquecimento (aging,
+    // recorrência, outcome, review), então a janela se aplica sempre aqui,
+    // não só condicionalmente. Suficiente para o volume operacional real
+    // deste sistema; documentado como limitação conhecida.
+    .limit(500);
+
+  // Uma query batched extra (não N+1) só para `reviewedAt` — `enrichIncidentRows`
+  // já expõe `reviewStatus`, mas não o timestamp do review; precisamos dele
+  // aqui para "tempo desde o último review" (correio.md "Aging").
+  const [enriched, reviewsByAuditLogId] = await Promise.all([enrichIncidentRows(rows), getIncidentReviewsByAuditLogIds(rows.map((row) => row.id))]);
+  const now = params.now ?? new Date();
+
+  let withAging: AttentionQueueItem[] = enriched.map((item) => {
+    const ageMs = Math.max(0, now.getTime() - new Date(item.detectedAt).getTime());
+    const review = reviewsByAuditLogId.get(item.auditLogId);
+    const sinceReviewMs = review?.status === 'acknowledged' && review.reviewedAt ? Math.max(0, now.getTime() - new Date(review.reviewedAt).getTime()) : null;
+    const agingBucket = agingBucketFromMs(ageMs);
+    return {
+      ...item,
+      ageMs,
+      agingBucket,
+      sinceReviewMs,
+      sinceReviewBucket: sinceReviewMs === null ? null : agingBucketFromMs(sinceReviewMs),
+      attentionReasons: attentionReasonsFor({ reviewStatus: item.reviewStatus, isRecurring: item.isRecurring, severity: item.severity, agingBucket }),
+    };
+  });
+
+  // Default da fila: exclui resolved/dismissed. Filtro explícito de
+  // reviewStatus substitui o default (correio.md: "podem continuar
+  // acessíveis através dos filtros" — mesmo parâmetro, nunca dois
+  // mecanismos).
+  if (params.reviewStatus) {
+    withAging = withAging.filter((item) => item.reviewStatus === params.reviewStatus);
+  } else {
+    withAging = withAging.filter((item) => !DEFAULT_EXCLUDED_REVIEW_STATUSES.includes(item.reviewStatus));
+  }
+  if (params.outcome) withAging = withAging.filter((item) => item.outcome === params.outcome);
+  if (params.recurringOnly) withAging = withAging.filter((item) => item.isRecurring);
+  if (params.agingBucket) withAging = withAging.filter((item) => item.agingBucket === params.agingBucket);
+
+  withAging.sort(compareAttentionPriority);
+
+  const total = withAging.length;
+  const page = withAging.slice((params.page - 1) * params.limit, params.page * params.limit);
+
+  return { rows: page, total };
 }
 
 export interface RecurringIncident {

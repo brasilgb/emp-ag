@@ -55,3 +55,4 @@ export * from './agent-operational-escalations.js';
 export * from './agent-operational-follow-ups.js';
 export * from './agent-operational-action-proposals.js';
 export * from './agent-operational-supervision-runs.js';
+export * from './agent-operational-incident-reviews.js';

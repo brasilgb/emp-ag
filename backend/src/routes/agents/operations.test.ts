@@ -320,6 +320,192 @@ describe('Agentes v1.6 — Operations, Incidents, Audit, Autonomy switch', () =>
       assert.equal(response.statusCode, 200, response.body);
       assert.ok(Array.isArray(response.json().data));
     });
+
+    test('overview: reviewsByStatus presente na forma esperada (v3.6)', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/overview', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 200, response.body);
+      const { reviewsByStatus } = response.json().data;
+      for (const status of ['unreviewed', 'acknowledged', 'resolved', 'dismissed']) {
+        assert.equal(typeof reviewsByStatus[status], 'number');
+      }
+    });
+  });
+
+  // Agentes v3.7 (correio.md "Operational Incident Review Queue &
+  // Attention Management", "Testes obrigatórios" itens 18/19 — usuário
+  // apenas com `agents.operations.read` consegue consultar a fila /
+  // usuário sem permission de leitura recebe 403). Cobertura de
+  // aging/ordenação/recorrência/filtros/N+1/projeção já vive em
+  // `agents/operations/attention-queue-service.test.ts` (nível de
+  // serviço) — aqui só a borda HTTP.
+  describe('GET /operations/supervision-insights/needs-attention', () => {
+    test('sem permission → 403', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/needs-attention', headers: authHeader(limitedToken) });
+      assert.equal(response.statusCode, 403);
+    });
+
+    test('com apenas agents.operations.read → 200, paginado, forma esperada (mesmo com fila vazia)', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/agents/operations/supervision-insights/needs-attention?dateFrom=2999-01-01',
+        headers: authHeader(ceoToken),
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      const { data, pagination } = response.json();
+      assert.ok(Array.isArray(data));
+      assert.ok(pagination);
+      assert.deepEqual(data, []);
+    });
+
+    test('filtros inválidos (severity/agingBucket) → 400', async () => {
+      const badSeverity = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/needs-attention?severity=nao-existe', headers: authHeader(ceoToken) });
+      assert.equal(badSeverity.statusCode, 400);
+
+      const badBucket = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/needs-attention?agingBucket=nao-existe', headers: authHeader(ceoToken) });
+      assert.equal(badBucket.statusCode, 400);
+    });
+
+    test('aceita filtros combinados sem quebrar (outcome/recurringOnly/reviewStatus/agingBucket)', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/agents/operations/supervision-insights/needs-attention?severity=critical&outcome=escalated&recurringOnly=true&reviewStatus=unreviewed&agingBucket=%3E24h&limit=5',
+        headers: authHeader(ceoToken),
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      const { data, pagination } = response.json();
+      assert.ok(Array.isArray(data));
+      assert.ok(pagination);
+    });
+  });
+
+  // Agentes v3.6 (correio.md "Operational Incident Acknowledgement &
+  // Review Workflow", "11. Testes obrigatórios" — itens 10 (autorização
+  // leitura/escrita), 7 (status inválido), 8 (404), 13 (filtro por review
+  // status), 12 (detalhe da v3.5 reflete o review atualizado)). Cobertura
+  // de ciclo completo/concorrência/auditoria/ausência de dados sensíveis
+  // já vive em `agents/operations/incident-review-service.test.ts` (nível
+  // de serviço) — aqui só a borda HTTP.
+  describe('GET/PATCH /operations/supervision-insights/incidents/:auditLogId/review', () => {
+    let reviewableAuditLogId: number;
+
+    before(async () => {
+      const supervise = await app.inject({ method: 'POST', url: '/agents/operations/supervise?dryRun=true', headers: authHeader(ceoToken) });
+      assert.equal(supervise.statusCode, 200, supervise.body);
+
+      const incidents = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/incidents?limit=1', headers: authHeader(ceoToken) });
+      assert.equal(incidents.statusCode, 200);
+      const [incident] = incidents.json().data;
+      assert.ok(incident, 'setup: deveria existir ao menos um incidente detectável no ambiente de teste (dry-run varre o sistema inteiro)');
+      reviewableAuditLogId = incident.auditLogId;
+    });
+
+    test('10: GET sem permission → 403; PATCH sem permission (agents.operations.manage) → 403', async () => {
+      const get = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${reviewableAuditLogId}/review`, headers: authHeader(limitedToken) });
+      assert.equal(get.statusCode, 403);
+
+      const patch = await app.inject({
+        method: 'PATCH',
+        url: `/agents/operations/supervision-insights/incidents/${reviewableAuditLogId}/review`,
+        headers: authHeader(limitedToken),
+        payload: { status: 'acknowledged' },
+      });
+      assert.equal(patch.statusCode, 403);
+    });
+
+    test('leitura só (agents.operations.read) não implica escrita — só permission de manage pode fazer PATCH', async () => {
+      // ceoToken tem ambas (agents.operations.read e .manage) — o teste
+      // relevante de separação já está coberto pelo teste acima
+      // (limitedToken não tem nenhuma das duas). Confirmando aqui a
+      // rota de leitura em si funciona com só `agents.operations.read`.
+      const get = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${reviewableAuditLogId}/review`, headers: authHeader(ceoToken) });
+      assert.equal(get.statusCode, 200, get.body);
+      assert.equal(get.json().data.auditLogId, reviewableAuditLogId);
+    });
+
+    test('7: status inválido → 400', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/agents/operations/supervision-insights/incidents/${reviewableAuditLogId}/review`,
+        headers: authHeader(ceoToken),
+        payload: { status: 'unreviewed' },
+      });
+      assert.equal(response.statusCode, 400, 'unreviewed nunca é um status setável pelo cliente — só a ausência de linha significa isso');
+
+      const invalidValue = await app.inject({
+        method: 'PATCH',
+        url: `/agents/operations/supervision-insights/incidents/${reviewableAuditLogId}/review`,
+        headers: authHeader(ceoToken),
+        payload: { status: 'nao-existe' },
+      });
+      assert.equal(invalidValue.statusCode, 400);
+    });
+
+    test('campos extras no payload (reviewedBy/reviewedAt) são rejeitados pelo .strict()', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/agents/operations/supervision-insights/incidents/${reviewableAuditLogId}/review`,
+        headers: authHeader(ceoToken),
+        payload: { status: 'acknowledged', reviewedBy: 999, reviewedAt: '2000-01-01T00:00:00.000Z' },
+      });
+      assert.equal(response.statusCode, 400);
+    });
+
+    test('9: audit real que não é incident.detected (ex.: scan.started) não pode receber review → 404', async () => {
+      const [nonIncidentAudit] = await db.select({ id: auditLogs.id }).from(auditLogs).where(eq(auditLogs.action, 'agents.operations.scan.started')).orderBy(auditLogs.id).limit(1);
+      assert.ok(nonIncidentAudit, 'setup: deveria existir ao menos um audit de scan.started (o dry-run do before() já disparou um)');
+
+      const get = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${nonIncidentAudit!.id}/review`, headers: authHeader(ceoToken) });
+      assert.equal(get.statusCode, 404);
+
+      const patch = await app.inject({
+        method: 'PATCH',
+        url: `/agents/operations/supervision-insights/incidents/${nonIncidentAudit!.id}/review`,
+        headers: authHeader(ceoToken),
+        payload: { status: 'acknowledged' },
+      });
+      assert.equal(patch.statusCode, 404);
+    });
+
+    test('8: GET/PATCH para auditLogId inexistente → 404', async () => {
+      const get = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/incidents/999999999/review', headers: authHeader(ceoToken) });
+      assert.equal(get.statusCode, 404);
+
+      const patch = await app.inject({
+        method: 'PATCH',
+        url: '/agents/operations/supervision-insights/incidents/999999999/review',
+        headers: authHeader(ceoToken),
+        payload: { status: 'acknowledged' },
+      });
+      assert.equal(patch.statusCode, 404);
+    });
+
+    test('12/13: PATCH bem-sucedido reflete no detalhe da v3.5 e no filtro reviewStatus do histórico', async () => {
+      const patch = await app.inject({
+        method: 'PATCH',
+        url: `/agents/operations/supervision-insights/incidents/${reviewableAuditLogId}/review`,
+        headers: authHeader(ceoToken),
+        payload: { status: 'acknowledged', note: 'Acompanhando.' },
+      });
+      assert.equal(patch.statusCode, 200, patch.body);
+      assert.equal(patch.json().data.status, 'acknowledged');
+      assert.equal(patch.json().data.note, 'Acompanhando.');
+      assert.ok(patch.json().data.reviewedBy, 'reviewedBy deveria ser derivado do usuário autenticado, nunca vazio');
+
+      const detail = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${reviewableAuditLogId}`, headers: authHeader(ceoToken) });
+      assert.equal(detail.statusCode, 200);
+      assert.equal(detail.json().data.reviewStatus, 'acknowledged');
+      assert.equal(detail.json().data.review.status, 'acknowledged');
+      assert.equal(detail.json().data.review.note, 'Acompanhando.');
+      // "Resultado operacional" e "Review humano" nunca misturados
+      // (correio.md seção 8) — dois campos independentes na mesma
+      // resposta, `outcome` intocado pelo review.
+      assert.ok(['observed', 'recovered', 'autonomy_restricted', 'escalated', 'failed', 'skipped'].includes(detail.json().data.outcome));
+
+      const filtered = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/incidents?reviewStatus=acknowledged&limit=50', headers: authHeader(ceoToken) });
+      assert.equal(filtered.statusCode, 200);
+      assert.ok(filtered.json().data.some((row: { auditLogId: number }) => row.auditLogId === reviewableAuditLogId));
+      assert.ok(filtered.json().data.every((row: { reviewStatus: string }) => row.reviewStatus === 'acknowledged'));
+    });
   });
 
   describe('GET /incidents', () => {

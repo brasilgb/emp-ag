@@ -3,7 +3,9 @@ import type {
   ActionPlanItemStatus,
   ActionPlanStatus,
   ActionRisk,
+  AgingBucket,
   ApprovalStatus,
+  AttentionReason,
   AutonomyBlockReason,
   AutonomyLevel,
   ChatResponse,
@@ -52,6 +54,7 @@ import type {
   SettingSource,
   SignalDomain,
   SignalSeverity,
+  IncidentReviewStatusOrUnreviewed,
   SupervisionIncidentOutcome,
   SupervisionRunStatus,
   SupervisionRunTriggerSource,
@@ -948,9 +951,55 @@ export function supervisionIncidentOutcomeLabel(outcome: SupervisionIncidentOutc
   return SUPERVISION_INCIDENT_OUTCOME_LABELS[outcome] ?? outcome;
 }
 
+// Agentes v3.6 — Operational Incident Acknowledgement & Review Workflow.
+// Dimensão SEPARADA de `supervisionIncidentOutcomeLabel` acima
+// (correio.md seção 8/9: "Resultado operacional" vs. "Review humano",
+// nunca misturados na UI).
+export const INCIDENT_REVIEW_STATUS_LABELS: Record<IncidentReviewStatusOrUnreviewed, string> = {
+  unreviewed: "Não revisado",
+  acknowledged: "Reconhecido",
+  resolved: "Resolvido",
+  dismissed: "Dispensado",
+};
+
+export function incidentReviewStatusLabel(status: IncidentReviewStatusOrUnreviewed): string {
+  return INCIDENT_REVIEW_STATUS_LABELS[status] ?? status;
+}
+
 export function formatAgeSeconds(ageSeconds: number): string {
   if (ageSeconds < 60) return `${ageSeconds}s`;
   if (ageSeconds < 3600) return `${Math.floor(ageSeconds / 60)}min`;
   if (ageSeconds < 86400) return `${Math.floor(ageSeconds / 3600)}h`;
   return `${Math.floor(ageSeconds / 86400)}d`;
+}
+
+// Agentes v3.7 — Operational Incident Review Queue & Attention Management.
+// Buckets fixos definidos em backend/src/agents/operations/
+// supervision-insights-service.ts (`AGING_BUCKETS`) — vocabulário fechado,
+// nenhum cálculo de aging no frontend (correio.md "Aging": "calcular em
+// tempo de leitura" é responsabilidade exclusiva do backend).
+export const AGING_BUCKET_LABELS: Record<AgingBucket, string> = {
+  "<1h": "< 1h",
+  "1h-4h": "1h – 4h",
+  "4h-24h": "4h – 24h",
+  ">24h": "> 24h",
+};
+
+export function agingBucketLabel(bucket: AgingBucket): string {
+  return AGING_BUCKET_LABELS[bucket] ?? bucket;
+}
+
+// Explica por que um incidente está na fila Needs Attention (correio.md
+// "Frontend": "por que aquele incidente aparece acima de outro") — nunca
+// um score opaco, sempre um destes motivos textuais e determinísticos.
+export const ATTENTION_REASON_LABELS: Record<AttentionReason, string> = {
+  unreviewed: "Não revisado",
+  acknowledged_pending: "Reconhecido, ainda pendente",
+  recurring: "Recorrente",
+  high_severity: "Severidade crítica",
+  aging: "Aguardando há muito tempo",
+};
+
+export function attentionReasonLabel(reason: AttentionReason): string {
+  return ATTENTION_REASON_LABELS[reason] ?? reason;
 }

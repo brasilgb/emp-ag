@@ -16,6 +16,7 @@ import { AUTONOMY_BLOCK_REASONS } from '../../agents/autonomy/reasons.js';
 
 import { badRequest, currentUserId, notFound, paginationMeta } from './helpers.js';
 import {
+  attentionQueueQuerySchema,
   listSupervisionIncidentsQuerySchema,
   listSupervisionRunsQuerySchema,
   operationsSummaryQuerySchema,
@@ -24,13 +25,15 @@ import {
   supervisionInsightsOverviewQuerySchema,
   supervisionRunIdParamSchema,
   superviseQuerySchema,
+  updateIncidentReviewSchema,
 } from '../../agents/operations/schemas.js';
 import { getOperationalHealth } from '../../agents/operations/health-service.js';
+import { getIncidentReview, upsertIncidentReview } from '../../agents/operations/incident-review-service.js';
 import { getOperationalSupervisionSchedulerStatus } from '../../agents/operations/scheduler-status.js';
 import { isOperationalSupervisionEnabled, setOperationalSupervisionEnabled } from '../../agents/operations/scheduler-settings.js';
 import { SupervisionAlreadyRunningError } from '../../agents/operations/supervisor-guard.js';
 import { getSupervisionRunById, listSupervisionRuns, runObservedOperationalSupervision } from '../../agents/operations/supervision-run-history.js';
-import { getSupervisionIncidentDetail, getSupervisionOverview, listRecurringIncidents, listSupervisionIncidents } from '../../agents/operations/supervision-insights-service.js';
+import { getSupervisionIncidentDetail, getSupervisionOverview, listAttentionQueue, listRecurringIncidents, listSupervisionIncidents } from '../../agents/operations/supervision-insights-service.js';
 import { getControlCenterOverview, getOperationalQueues } from '../../agents/operations/control-center-service.js';
 import { audit } from '../../services/audit.js';
 
@@ -386,12 +389,14 @@ export async function operationsRoutes(app: FastifyInstance) {
       const query = listSupervisionIncidentsQuerySchema.safeParse(request.query);
       if (!query.success) return badRequest(reply, query.error);
 
-      // `hasEscalation` deliberadamente tri-state (ver comentário em
-      // schemas.ts) — só vira boolean real aqui, na borda HTTP.
-      const { hasEscalation, ...rest } = query.data;
+      // `hasEscalation`/`recurringOnly` deliberadamente tri-state (ver
+      // comentário em schemas.ts) — só viram boolean real aqui, na borda
+      // HTTP.
+      const { hasEscalation, recurringOnly, ...rest } = query.data;
       const { rows, total } = await listSupervisionIncidents({
         ...rest,
         hasEscalation: hasEscalation === undefined ? undefined : hasEscalation === 'true',
+        recurringOnly: recurringOnly === undefined ? undefined : recurringOnly === 'true',
       });
 
       return { data: rows, pagination: paginationMeta({ page: query.data.page, limit: query.data.limit, total }) };
@@ -412,6 +417,48 @@ export async function operationsRoutes(app: FastifyInstance) {
     },
   );
 
+  // Agentes v3.6 (correio.md "Operational Incident Acknowledgement &
+  // Review Workflow") — leitura reaproveita `agents.operations.read`
+  // (mesma permission de toda esta seção); escrita reaproveita
+  // `agents.operations.manage` (mesma permission já usada por
+  // `POST /operations/supervise` e `PATCH /operations/scheduler` acima —
+  // nenhuma permission nova criada, seção 6 do correio.md: "revisar as
+  // permissões existentes" antes de inventar uma).
+  app.get(
+    '/operations/supervision-insights/incidents/:auditLogId/review',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async (request, reply) => {
+      const params = supervisionIncidentIdParamSchema.safeParse(request.params);
+      if (!params.success) return badRequest(reply, params.error);
+
+      const review = await getIncidentReview(params.data.auditLogId);
+      if (!review) return notFound(reply, 'Incidente de supervisão não encontrado.');
+
+      return { data: review };
+    },
+  );
+
+  app.patch(
+    '/operations/supervision-insights/incidents/:auditLogId/review',
+    { preHandler: [authenticate, requirePermission('agents.operations.manage')] },
+    async (request, reply) => {
+      const params = supervisionIncidentIdParamSchema.safeParse(request.params);
+      if (!params.success) return badRequest(reply, params.error);
+
+      const body = updateIncidentReviewSchema.safeParse(request.body);
+      if (!body.success) return badRequest(reply, body.error);
+
+      // `reviewedBy`/`reviewedAt` SEMPRE derivados do servidor (correio.md
+      // seção 5) — nunca aceitos do payload (o schema `.strict()` já
+      // rejeitaria, mas a fonte real também nunca lê nada do body além de
+      // `status`/`note`).
+      const result = await upsertIncidentReview(params.data.auditLogId, currentUserId(request), body.data);
+      if (!result.ok) return notFound(reply, 'Incidente de supervisão não encontrado.');
+
+      return { data: result.review };
+    },
+  );
+
   app.get(
     '/operations/supervision-insights/recurring',
     { preHandler: [authenticate, requirePermission('agents.operations.read')] },
@@ -420,6 +467,35 @@ export async function operationsRoutes(app: FastifyInstance) {
       if (!query.success) return badRequest(reply, query.error);
 
       return { data: await listRecurringIncidents(query.data) };
+    },
+  );
+
+  // Agentes v3.7 (correio.md "Operational Incident Review Queue &
+  // Attention Management") — fila "Needs Attention". Endpoint DEDICADO
+  // (não uma extensão de `/incidents` acima): o default de exclusão de
+  // `resolved`/`dismissed` e a ordenação por prioridade são
+  // responsabilidades diferentes de "histórico paginado por data" — mas
+  // reaproveita 100% da mesma infraestrutura de enriquecimento/filtro
+  // (`listAttentionQueue` chama a MESMA `enrichIncidentRows` interna de
+  // `listSupervisionIncidents`, ver supervision-insights-service.ts).
+  // Mesma permission de leitura de toda esta seção — a fila é só
+  // leitura; ações (acknowledge/resolve/dismiss) continuam
+  // exclusivamente no workflow de review da v3.6 acima
+  // (`agents.operations.manage`), nenhuma ação nova introduzida.
+  app.get(
+    '/operations/supervision-insights/needs-attention',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async (request, reply) => {
+      const query = attentionQueueQuerySchema.safeParse(request.query);
+      if (!query.success) return badRequest(reply, query.error);
+
+      const { recurringOnly, ...rest } = query.data;
+      const { rows, total } = await listAttentionQueue({
+        ...rest,
+        recurringOnly: recurringOnly === undefined ? undefined : recurringOnly === 'true',
+      });
+
+      return { data: rows, pagination: paginationMeta({ page: query.data.page, limit: query.data.limit, total }) };
     },
   );
 }

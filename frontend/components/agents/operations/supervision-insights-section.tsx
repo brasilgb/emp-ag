@@ -1,21 +1,38 @@
 "use client";
 
 import { useState } from "react";
+import { toast } from "sonner";
 
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
+import { PermissionGate } from "@/components/auth/permission-gate";
 import { PaginationBar } from "@/components/crm/pagination-bar";
 import { EmptyState } from "@/components/states/empty-state";
 import { ErrorState } from "@/components/states/error-state";
 import { LoadingState } from "@/components/states/loading-state";
-import { useRecurringIncidents, useSupervisionIncidentDetail, useSupervisionIncidents, useSupervisionOverview } from "@/hooks/agents/use-operations";
-import { operationalIncidentTypeLabel } from "@/lib/agents/derived";
+import { useRecurringIncidents, useSupervisionIncidentDetail, useSupervisionIncidents, useSupervisionOverview, useUpdateIncidentReview } from "@/hooks/agents/use-operations";
+import { useUsersDirectory } from "@/hooks/use-users-directory";
+import { incidentReviewStatusLabel, operationalIncidentTypeLabel } from "@/lib/agents/derived";
 import { formatDateTime } from "@/lib/agents/format";
-import { OPERATIONAL_INCIDENT_TYPES, OPERATIONAL_RESPONSES, OPERATIONAL_SEVERITIES, type OperationalIncidentType, type OperationalResponse, type OperationalSeverity } from "@/types/agents";
+import { toErrorMessage } from "@/services/http";
+import {
+  INCIDENT_REVIEW_STATUSES,
+  INCIDENT_REVIEW_STATUSES_WITH_UNREVIEWED,
+  OPERATIONAL_INCIDENT_TYPES,
+  OPERATIONAL_RESPONSES,
+  OPERATIONAL_SEVERITIES,
+  type IncidentReviewStatus,
+  type IncidentReviewStatusOrUnreviewed,
+  type OperationalIncidentType,
+  type OperationalResponse,
+  type OperationalSeverity,
+} from "@/types/agents";
 
-import { OperationalIncidentTypeBadge, OperationalResponseBadge, OperationalSeverityBadge, SupervisionIncidentOutcomeBadge } from "../status-badge";
+import { IncidentReviewStatusBadge, OperationalIncidentTypeBadge, OperationalResponseBadge, OperationalSeverityBadge, SupervisionIncidentOutcomeBadge } from "../status-badge";
 
 const LIMIT = 20;
 
@@ -35,6 +52,7 @@ export function SupervisionInsightsSection() {
   const [severity, setSeverity] = useState<OperationalSeverity | "all">("all");
   const [incidentType, setIncidentType] = useState<OperationalIncidentType | "all">("all");
   const [response, setResponse] = useState<OperationalResponse | "all">("all");
+  const [reviewStatus, setReviewStatus] = useState<IncidentReviewStatusOrUnreviewed | "all">("all");
   const [detailId, setDetailId] = useState<number | null>(null);
 
   const incidents = useSupervisionIncidents({
@@ -43,6 +61,7 @@ export function SupervisionInsightsSection() {
     severity: severity === "all" ? undefined : severity,
     incidentType: incidentType === "all" ? undefined : incidentType,
     response: response === "all" ? undefined : response,
+    reviewStatus: reviewStatus === "all" ? undefined : reviewStatus,
   });
 
   return (
@@ -68,6 +87,10 @@ export function SupervisionInsightsSection() {
               <StatBox label="Incidentes críticos" value={overview.data.data.incidentsBySeverity.critical} highlight={overview.data.data.incidentsBySeverity.critical > 0} />
               <StatBox label="Escalations criadas" value={overview.data.data.escalationsCreated} />
               <StatBox label="Incidentes recorrentes" value={overview.data.data.recurringIncidentsCount} highlight={overview.data.data.recurringIncidentsCount > 0} />
+              <StatBox label="Não revisados" value={overview.data.data.reviewsByStatus.unreviewed} highlight={overview.data.data.reviewsByStatus.unreviewed > 0} />
+              <StatBox label="Reconhecidos" value={overview.data.data.reviewsByStatus.acknowledged} />
+              <StatBox label="Resolvidos (review)" value={overview.data.data.reviewsByStatus.resolved} />
+              <StatBox label="Dispensados" value={overview.data.data.reviewsByStatus.dismissed} />
             </div>
           )}
         </CardContent>
@@ -136,6 +159,26 @@ export function SupervisionInsightsSection() {
                 ))}
               </SelectContent>
             </Select>
+
+            <Select
+              value={reviewStatus}
+              onValueChange={(value) => {
+                setPage(1);
+                setReviewStatus((value as IncidentReviewStatusOrUnreviewed | "all") ?? "all");
+              }}
+            >
+              <SelectTrigger className="w-44">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Todo review</SelectItem>
+                {INCIDENT_REVIEW_STATUSES_WITH_UNREVIEWED.map((value) => (
+                  <SelectItem key={value} value={value}>
+                    {incidentReviewStatusLabel(value)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </CardHeader>
 
@@ -158,6 +201,7 @@ export function SupervisionInsightsSection() {
                     <TableHead>Resposta</TableHead>
                     <TableHead>Resultado</TableHead>
                     <TableHead>Escalation</TableHead>
+                    <TableHead>Review</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -180,6 +224,9 @@ export function SupervisionInsightsSection() {
                         <SupervisionIncidentOutcomeBadge outcome={incident.outcome} />
                       </TableCell>
                       <TableCell className="text-xs">{incident.hasEscalation ? "Sim" : "--"}</TableCell>
+                      <TableCell>
+                        <IncidentReviewStatusBadge status={incident.reviewStatus} />
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -249,7 +296,11 @@ function StatBox({ label, value, highlight }: { label: string; value: number; hi
   );
 }
 
-function SupervisionIncidentDetailDialog({ auditLogId, onOpenChange }: { auditLogId: number | null; onOpenChange: (open: boolean) => void }) {
+// Exportado para reuso pela fila Needs Attention (v3.7,
+// attention-queue-section.tsx) — correio.md: "não criar segunda
+// implementação de review no frontend". Mesmo diálogo, mesma seção de
+// review humano (`IncidentReviewSection` abaixo), em ambos os lugares.
+export function SupervisionIncidentDetailDialog({ auditLogId, onOpenChange }: { auditLogId: number | null; onOpenChange: (open: boolean) => void }) {
   const detailQuery = useSupervisionIncidentDetail(auditLogId);
 
   return (
@@ -272,8 +323,12 @@ function SupervisionIncidentDetailDialog({ auditLogId, onOpenChange }: { auditLo
               <DetailField label="Tipo" value={<OperationalIncidentTypeBadge type={detailQuery.data.data.incidentType} />} />
               <DetailField label="Severidade" value={<OperationalSeverityBadge severity={detailQuery.data.data.severity} />} />
               <DetailField label="Detectado em" value={formatDateTime(detailQuery.data.data.detectedAt)} />
+              {/* Agentes v3.6 — "Resultado operacional" (o que o Supervisor
+                  fez sozinho) fica agrupado aqui; "Review humano" ganha sua
+                  PRÓPRIA seção abaixo (correio.md seção 8: nunca misturar
+                  as duas dimensões). */}
               <DetailField label="Decisão (resposta)" value={<OperationalResponseBadge response={detailQuery.data.data.response} />} />
-              <DetailField label="Resultado" value={<SupervisionIncidentOutcomeBadge outcome={detailQuery.data.data.outcome} />} />
+              <DetailField label="Resultado operacional" value={<SupervisionIncidentOutcomeBadge outcome={detailQuery.data.data.outcome} />} />
               <DetailField label="Run de origem" value={detailQuery.data.data.runId ?? "--"} />
               {detailQuery.data.data.reason ? <DetailField label="Motivo do resultado" value={detailQuery.data.data.reason} /> : null}
               {detailQuery.data.data.errorMessage ? <DetailField label="Erro" value={<span className="text-red-700 dark:text-red-400">{detailQuery.data.data.errorMessage}</span>} /> : null}
@@ -288,6 +343,8 @@ function SupervisionIncidentDetailDialog({ auditLogId, onOpenChange }: { auditLo
                 <p className="mt-1 text-xs text-muted-foreground">{detailQuery.data.data.escalation.reason}</p>
               </div>
             ) : null}
+
+            <IncidentReviewSection auditLogId={detailQuery.data.data.auditLogId} review={detailQuery.data.data.review} />
 
             {detailQuery.data.data.auditRefs.length > 0 ? (
               <div>
@@ -305,6 +362,77 @@ function SupervisionIncidentDetailDialog({ auditLogId, onOpenChange }: { auditLo
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+const REVIEW_ACTION_LABELS: Record<IncidentReviewStatus, string> = {
+  acknowledged: "Reconhecer",
+  resolved: "Marcar resolvido",
+  dismissed: "Dispensar",
+};
+
+/**
+ * Agentes v3.6 (correio.md "Operational Incident Acknowledgement & Review
+ * Workflow", seção 9) — "Review humano" como seção PRÓPRIA do diálogo,
+ * nunca misturada ao resultado operacional acima. Ações só visíveis com
+ * `agents.operations.manage` (mesma permission de escrita já usada por
+ * `POST /operations/supervise`/`PATCH /operations/scheduler` — nenhuma
+ * permission nova).
+ */
+function IncidentReviewSection({ auditLogId, review }: { auditLogId: number; review: { status: IncidentReviewStatusOrUnreviewed; reviewedBy: number | null; reviewedAt: string | null; note: string | null } }) {
+  const usersQuery = useUsersDirectory();
+  const updateReview = useUpdateIncidentReview(auditLogId);
+  const [note, setNote] = useState("");
+
+  const reviewerName = review.reviewedBy ? (usersQuery.data?.data.find((user) => user.id === review.reviewedBy)?.name ?? `Usuário #${review.reviewedBy}`) : null;
+
+  async function handleAction(status: IncidentReviewStatus) {
+    try {
+      await updateReview.mutateAsync({ status, note: note.trim() || undefined });
+      setNote("");
+      toast.success(`Incidente marcado como "${incidentReviewStatusLabel(status)}".`);
+    } catch (error) {
+      toast.error(toErrorMessage(error, "Erro ao atualizar o review do incidente."));
+    }
+  }
+
+  return (
+    <div className="rounded-md border p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-medium text-muted-foreground">Review humano</p>
+        <IncidentReviewStatusBadge status={review.status} />
+      </div>
+
+      {review.reviewedBy ? (
+        <p className="mt-2 text-xs text-muted-foreground">
+          Revisado por {reviewerName ?? "..."} {review.reviewedAt ? `em ${formatDateTime(review.reviewedAt)}` : ""}
+        </p>
+      ) : (
+        <p className="mt-2 text-xs text-muted-foreground">Nenhuma revisão humana registrada ainda — isso é válido mesmo quando o resultado operacional já foi tratado automaticamente.</p>
+      )}
+
+      {review.note ? <p className="mt-2 rounded bg-muted p-2 text-xs">{review.note}</p> : null}
+
+      <PermissionGate permission="agents.operations.manage">
+        <div className="mt-3 space-y-2">
+          <Textarea
+            placeholder="Nota opcional (visível só para quem tem acesso a esta tela)..."
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            maxLength={2000}
+            rows={2}
+            className="text-xs"
+          />
+          <div className="flex flex-wrap gap-2">
+            {INCIDENT_REVIEW_STATUSES.map((status) => (
+              <Button key={status} size="sm" variant={status === review.status ? "default" : "outline"} disabled={updateReview.isPending} onClick={() => handleAction(status)}>
+                {REVIEW_ACTION_LABELS[status]}
+              </Button>
+            ))}
+          </div>
+        </div>
+      </PermissionGate>
+    </div>
   );
 }
 

@@ -1211,9 +1211,31 @@ export interface SupervisionOverview {
   };
   escalationsCreated: number;
   recurringIncidentsCount: number;
+  // Agentes v3.6 — Operational Incident Acknowledgement & Review
+  // Workflow (correio.md). `unreviewed` sempre derivado (nunca
+  // persistido — ver docblock de incident-review-service.ts).
+  reviewsByStatus: Record<IncidentReviewStatusOrUnreviewed, number>;
 }
 
 export type SupervisionIncidentOutcome = "observed" | "recovered" | "autonomy_restricted" | "escalated" | "failed" | "skipped";
+
+// Agentes v3.6 — vocabulário fechado do review humano. `unreviewed` nunca
+// é um valor setável pelo cliente — só a AUSÊNCIA de um review persistido
+// (correio.md seção 2: "sem estados adicionais nesta versão").
+export const INCIDENT_REVIEW_STATUSES = ["acknowledged", "resolved", "dismissed"] as const;
+export type IncidentReviewStatus = (typeof INCIDENT_REVIEW_STATUSES)[number];
+
+export const INCIDENT_REVIEW_STATUSES_WITH_UNREVIEWED = ["unreviewed", ...INCIDENT_REVIEW_STATUSES] as const;
+export type IncidentReviewStatusOrUnreviewed = (typeof INCIDENT_REVIEW_STATUSES_WITH_UNREVIEWED)[number];
+
+export interface IncidentReview {
+  auditLogId: number;
+  status: IncidentReviewStatusOrUnreviewed;
+  reviewedBy: number | null;
+  reviewedAt: string | null;
+  note: string | null;
+  updatedAt: string | null;
+}
 
 export interface SupervisionIncidentSummary {
   auditLogId: number;
@@ -1228,6 +1250,13 @@ export interface SupervisionIncidentSummary {
   runStatus: SupervisionRunStatus | null;
   outcome: SupervisionIncidentOutcome;
   hasEscalation: boolean;
+  // Agentes v3.6 — dimensão SEPARADA de `outcome` (correio.md seção 8:
+  // "Resultado operacional" vs. "Review humano", nunca misturados).
+  reviewStatus: IncidentReviewStatusOrUnreviewed;
+  // Agentes v3.7 — recorrência exposta por LINHA (mesma definição/chave
+  // já usada por `RecurringIncident` abaixo).
+  recurrenceCount: number;
+  isRecurring: boolean;
 }
 
 export interface SupervisionIncidentDetail extends SupervisionIncidentSummary {
@@ -1244,6 +1273,7 @@ export interface SupervisionIncidentDetail extends SupervisionIncidentSummary {
     createdAt: string;
   } | null;
   auditRefs: { id: number; action: string; createdAt: string }[];
+  review: IncidentReview;
 }
 
 export interface RecurringIncident {
@@ -1253,6 +1283,29 @@ export interface RecurringIncident {
   occurrences: number;
   firstSeenAt: string;
   lastSeenAt: string;
+}
+
+// Agentes v3.7 — Operational Incident Review Queue & Attention Management
+// (correio.md). Fila "Needs Attention" — projeção pura sobre
+// `SupervisionIncidentSummary`, nenhum conceito novo de incidente (ver
+// docblock de backend/src/agents/operations/supervision-insights-service.ts,
+// `listAttentionQueue`).
+export const AGING_BUCKETS = ["<1h", "1h-4h", "4h-24h", ">24h"] as const;
+export type AgingBucket = (typeof AGING_BUCKETS)[number];
+
+export const OPERATIONAL_OUTCOMES: readonly SupervisionIncidentOutcome[] = ["observed", "recovered", "autonomy_restricted", "escalated", "failed", "skipped"];
+
+export const ATTENTION_REASONS = ["unreviewed", "acknowledged_pending", "recurring", "high_severity", "aging"] as const;
+export type AttentionReason = (typeof ATTENTION_REASONS)[number];
+
+export interface AttentionQueueItem extends SupervisionIncidentSummary {
+  ageMs: number;
+  agingBucket: AgingBucket;
+  sinceReviewMs: number | null;
+  sinceReviewBucket: AgingBucket | null;
+  // Explica por que o item está na fila (correio.md "Frontend": "por que
+  // aquele incidente aparece acima de outro") — nunca um score opaco.
+  attentionReasons: AttentionReason[];
 }
 
 // Agentes v2.6 — Agent Responsibilities, Operational Ownership & Escalation (correio.md).

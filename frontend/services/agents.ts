@@ -6,6 +6,8 @@ import type {
   ActionPlanStatus,
   Agent,
   AgentApproval,
+  AgingBucket,
+  AttentionQueueItem,
   AgentResponsibility,
   AgentConversation,
   AgentConversationDetail,
@@ -49,8 +51,12 @@ import type {
   OperationalSeverity,
   OperationalSupervisionReport,
   OperationalSupervisionSchedulerStatus,
+  IncidentReview,
+  IncidentReviewStatus,
+  IncidentReviewStatusOrUnreviewed,
   RecurringIncident,
   SupervisionIncidentDetail,
+  SupervisionIncidentOutcome,
   SupervisionIncidentSummary,
   SupervisionOverview,
   SupervisionRun,
@@ -774,6 +780,7 @@ export interface ListSupervisionIncidentsParams extends SupervisionInsightsPerio
   entityType?: string;
   entityId?: string;
   runStatus?: SupervisionRunStatus;
+  reviewStatus?: IncidentReviewStatusOrUnreviewed;
 }
 
 export function listSupervisionIncidents(params: ListSupervisionIncidentsParams = {}): Promise<Paginated<SupervisionIncidentSummary>> {
@@ -786,6 +793,44 @@ export function getSupervisionIncidentDetail(auditLogId: number): Promise<{ data
 
 export function listRecurringIncidents(params: SupervisionInsightsPeriodParams = {}): Promise<{ data: RecurringIncident[] }> {
   return apiFetch(`/api/agents/operations/supervision-insights/recurring${toQueryString({ ...params })}`);
+}
+
+// Agentes v3.7 — Operational Incident Review Queue & Attention Management
+// (correio.md). Fila "Needs Attention" — mesmo padrão de
+// `listSupervisionIncidents` acima (paginado, filtros combináveis).
+export interface ListAttentionQueueParams {
+  page?: number;
+  limit?: number;
+  dateFrom?: string;
+  dateTo?: string;
+  severity?: OperationalSeverity;
+  incidentType?: OperationalIncidentType;
+  outcome?: SupervisionIncidentOutcome;
+  // Ausente = default da fila (exclui resolved/dismissed). Informado =
+  // filtro normal, inclusive para resolved/dismissed.
+  reviewStatus?: IncidentReviewStatusOrUnreviewed;
+  recurringOnly?: boolean;
+  agingBucket?: AgingBucket;
+  entityType?: string;
+  entityId?: string;
+}
+
+export function listAttentionQueue(params: ListAttentionQueueParams = {}): Promise<Paginated<AttentionQueueItem>> {
+  return apiFetch(`/api/agents/operations/supervision-insights/needs-attention${toQueryString({ ...params })}`);
+}
+
+// Agentes v3.6 — Operational Incident Acknowledgement & Review Workflow (correio.md).
+export function getIncidentReview(auditLogId: number): Promise<{ data: IncidentReview }> {
+  return apiFetch(`/api/agents/operations/supervision-insights/incidents/${auditLogId}/review`);
+}
+
+export interface UpdateIncidentReviewInput {
+  status: IncidentReviewStatus;
+  note?: string;
+}
+
+export function updateIncidentReview(auditLogId: number, input: UpdateIncidentReviewInput): Promise<{ data: IncidentReview }> {
+  return apiFetch(`/api/agents/operations/supervision-insights/incidents/${auditLogId}/review`, { method: "PATCH", body: JSON.stringify(input) });
 }
 
 // Agentes v2.6 — Agent Responsibilities, Operational Ownership & Escalation (correio.md).

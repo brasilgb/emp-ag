@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 
 import { AgentsSubNav } from "@/components/agents/agents-sub-nav";
+import { AttentionQueueSection } from "@/components/agents/operations/attention-queue-section";
 import { ControlCenterSection } from "@/components/agents/operations/control-center-section";
 import { OperationsDashboard } from "@/components/agents/operations/operations-dashboard";
 import { OperationsSupervisorDashboard } from "@/components/agents/operations/operations-supervisor-dashboard";
@@ -71,6 +72,14 @@ export default function AgentOperationsPage() {
           Recorrência, severidade, respostas aplicadas e resultados — análise e revisão dos incidentes já detectados.
         </p>
       </div>
+
+      {/* Agentes v3.7 (correio.md "Operational Incident Review Queue &
+          Attention Management") — fila humana de revisão, construída
+          exclusivamente sobre v3.5/v3.6 (nenhuma tabela nova, nenhum
+          conceito novo de incidente). Antes do histórico completo: é o
+          que o operador olha primeiro ao entrar nesta seção. */}
+      <AttentionQueueSection />
+
       <SupervisionInsightsSection />
     </div>
   );

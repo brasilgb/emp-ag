@@ -1,272 +1,268 @@
-# Executado — v3.5: Operational Supervision Insights & Incident Review
+# Executado — v3.7: Operational Incident Review Queue & Attention Management
 
-## 1. Resumo
+## 1. Análise de persistência e decisão sobre migration
 
-Implementada uma camada de LEITURA sobre os dados já persistidos por
-v2.5 (Operational Supervisor), v2.6 (Escalations) e v3.4 (Run History):
-visão consolidada, histórico pesquisável de incidentes, detalhe por
-incidente ("Incident Review") e detecção de recorrência. **Nenhuma tabela
-nova, nenhuma migration** — decisão deliberada, justificada abaixo (seção
-2). Nenhuma alteração de lógica de decisão do Supervisor, nenhum novo
-Circuit Breaker, nenhum aumento de autonomia, `supervisor-guard.ts`
-intocado. Nenhum commit e nenhum rebuild/deploy de containers feitos
-nesta rodada.
+Revisados antes de qualquer schema (seção "Descoberta obrigatória"):
+`audit_logs`, `agent_operational_incident_reviews` (v3.6),
+`supervision-insights-service.ts` (v3.5), `supervisor-service.ts`,
+Supervision Run History (v3.4), Incident Review v3.5/v3.6, Escalations
+v2.6, FollowUps v2.7, e o frontend atual de `/agents/operations`.
 
-## 2. Por que nenhuma migration foi necessária (justificativa arquitetural)
+**Nenhuma migration foi criada.** A hipótese arquitetural do próprio
+correio.md se confirmou: `audit_logs` (identidade canônica dos
+incidentes, `agents.operations.incident.detected`) + `agent_operational_incident_reviews`
+(v3.6, estado de review) + dados já derivados pela v3.5
+(`enrichIncidentRows`: run de origem, outcome, escalation) bastam para a
+fila inteira. Tudo o que a v3.7 precisa — recorrência, aging, prioridade
+— é **derivável em tempo de leitura**:
 
-Revisão de código feita ANTES de desenhar qualquer schema (correio.md
-seção "Toda mudança estrutural deve ser justificada antes de migration"):
+- **Recorrência**: mesma chave `incidentType:entityType:entityId` já
+  usada por `listRecurringIncidents` (v3.5); só passou a ser calculada
+  em LOTE por linha (`recurrenceCount`/`isRecurring`), não só numa lista
+  separada.
+- **Aging**: calculado a partir de `detectedAt` (e `review.reviewedAt`
+  para "tempo desde o reconhecimento") — nenhum contador, cronômetro ou
+  timestamp artificial persistido, exatamente como pedido.
+- **Prioridade**: uma função de comparação pura sobre campos já
+  existentes (severidade/recorrência/reviewStatus/aging/id) — nenhum
+  score persistido, nenhuma tabela de fila.
 
-- Cada incidente detectado pelo Supervisor **já é**, de forma inequívoca,
-  o audit log `agents.operations.incident.detected`
-  (`supervisor-service.ts`, `applyResponse`) — emitido exatamente uma vez
-  por incidente, sempre ANTES de qualquer efeito colateral, com
-  `entityType`/`entityId`/`metadata.incidentType`/`metadata.severity`/
-  `metadata.response` — o suficiente para reconstruir tudo que o
-  correio.md pede de um "finding".
-- **incidente → run**: como só um scan roda por vez no sistema inteiro
-  (advisory lock exclusivo, v3.3/v3.3.1), o run cujo
-  `[started_at, finished_at]` contém o `created_at` do audit é o único
-  candidato possível — correlação por janela de tempo é, aqui,
-  matematicamente inequívoca (nunca uma heurística difusa).
-- **incidente → resultado**: a decisão já vem no metadata do próprio
-  `incident.detected`. O resultado de aplicá-la é um audit subsequente
-  (`agents.operations.safe_recovery`/`.autonomy_restricted`/
-  `.manual_attention` para sucesso, `agents.operations.incident.failed`
-  para falha). Esses três primeiros **não carregavam `incidentType`** no
-  metadata — única lacuna real encontrada: sem isso, dois incidentes de
-  tipos diferentes na MESMA entidade (ex.: `job_repeated_failure` e
-  `run_stuck` no mesmo Job) seriam ambíguos ao correlacionar de volta.
-  Corrigido de forma **aditiva** (mesmo padrão já usado para o campo
-  `failed` em v3.2 e `escalationsAttempted` em v3.4): `incidentType`
-  adicionado ao metadata desses 3 audits em `supervisor-service.ts` —
-  nenhuma lógica de decisão mudou, só o que já era gravado ganhou um
-  campo a mais.
-- **incidente → escalation**: `escalateSupervisorFinding` (v2.6) já
-  grava `metadata.incidentId = incident.id` na própria Escalation
-  (`escalations/supervisor-integration.ts`) — join exato, sem inferência.
-- **Limitação documentada** (correio.md seção 4, "documentar a limitação
-  antes de propor schema novo"): os branches defensivos de
-  `applyResponse` que devolvem `skipped`/`observed` sem nenhum side
-  effect (entityType incompatível com Recovery v2.4, entidade já não
-  está mais stale, restrição já inaplicável) **não emitem um audit
-  próprio** — não haveria o que auditar além do que `incident.detected`
-  já registrou. Nesses casos, `outcome` é inferido pela AUSÊNCIA de um
-  audit de resultado (regra determinística e documentada em código,
-  `supervision-insights-service.ts`). A alternativa seria instrumentar
-  também esses branches — mudaria `supervisor-service.ts` além do
-  aditivo já feito, fora do escopo mínimo desta versão.
+Nenhuma tabela nova, nenhuma segunda identidade de incidente, nenhum
+cache de prioridade/aging/recorrência.
 
-## 3. Arquitetura
+## 2. Regra exata da fila "Needs Attention"
 
-`backend/src/agents/operations/supervision-insights-service.ts` (novo) —
-4 funções de leitura pura, cada uma 1-4 queries SQL agregadas/filtradas
-sobre tabelas já existentes (mesmo idioma de `control-center-service.ts`,
-nunca N+1 por linha):
+Por default, `listAttentionQueue` devolve todo incidente
+(`agents.operations.incident.detected`) cujo `reviewStatus` **não** seja
+`resolved` nem `dismissed` — ou seja: `unreviewed` e `acknowledged`
+aparecem sempre (seção "Escopo funcional": incidentes recorrentes,
+antigos, de maior severidade e ainda não/parcialmente revisados já
+caem naturalmente aqui, sem filtro extra — eles simplesmente ficam mais
+acima na ordenação, ver seção 3).
 
-- `getSupervisionOverview(params)` — seção 1 do correio: total de
-  runs/status, achados, incidentes por severidade, respostas aplicadas
-  (observado/recuperado/autonomia restrita/escalado/falhou), escalations
-  criadas, contagem de incidentes recorrentes.
-- `listSupervisionIncidents(params)` — seção 2: histórico paginado,
-  filtros por período/severidade/tipo/response/presença de
-  escalonamento/entityType+entityId/status do run.
-- `getSupervisionIncidentDetail(auditLogId)` — seção 3: origem, run,
-  timestamp, severidade, evidência (`problem`), decisão, response
-  aplicada, resultado, escalation relacionada, referências de auditoria,
-  agente/job/run relacionado.
-- `listRecurringIncidents(params)` — seção 4: mesma chave
-  (`incidentType`+`entityType`+`entityId`, exatamente `incident.id`)
-  detectada em mais de um scan.
+`resolved`/`dismissed` ficam fora do default, mas continuam acessíveis
+via **o mesmo parâmetro** `reviewStatus` informado explicitamente
+(`?reviewStatus=resolved`/`?reviewStatus=dismissed`) — nunca um segundo
+mecanismo de filtro/histórico paralelo; o histórico completo continua
+sendo a seção "Insights de Supervisão" (v3.5) já existente.
 
-## 4. API
+## 3. Regra exata de ordenação/prioridade
 
-4 rotas novas, todas reaproveitando `agents.operations.read` (nenhuma
-permission nova):
+Determinística, lexicográfica, 100% baseada em campos já expostos na
+resposta (nunca um score opaco) — `compareAttentionPriority` em
+`supervision-insights-service.ts`:
 
-- `GET /agents/operations/supervision-insights/overview`
-- `GET /agents/operations/supervision-insights/incidents` (paginado,
-  filtros: `severity`/`incidentType`/`response`/`hasEscalation`/
-  `entityType`/`entityId`/`runStatus`/`dateFrom`/`dateTo`)
-- `GET /agents/operations/supervision-insights/incidents/:auditLogId`
-  (404 se não existir)
-- `GET /agents/operations/supervision-insights/recurring`
+1. **Severidade** — `critical` > `warning` > `info`;
+2. **Recorrência** — recorrente (`recurrenceCount > 1`) antes de não
+   recorrente;
+3. **Review pendente** — `unreviewed` > `acknowledged` > `resolved` >
+   `dismissed` (usado só quando um filtro explícito traz os dois
+   últimos para a fila);
+4. **Aging** — mais antigo primeiro (`ageMs` decrescente);
+5. **`auditLogId` ascendente** — desempate final estável e reproduzível
+   (ids de `audit_logs` são monotonicamente crescentes com o tempo de
+   detecção).
 
-Schemas Zod em `agents/operations/schemas.ts` — vocabulário sempre
-reaproveitado de `health-types.ts` (nunca uma segunda lista inventada).
-`hasEscalation` deliberadamente tri-state (ausente = sem filtro), mesmo
-padrão de `overdue` em `agents/followups/schemas.ts`.
+Nenhum uso de LLM, IA, embeddings ou classificação probabilística —
+puro TypeScript síncrono sobre dados já em memória.
 
-## 5. Frontend
+Cada item devolve `attentionReasons` (`unreviewed`/`acknowledged_pending`/
+`recurring`/`high_severity`/`aging`) — a UI mostra exatamente por que
+aquele incidente está na fila e (indiretamente, pela combinação
+severidade/recorrência/review/idade já visíveis na linha) por que está
+acima do próximo.
 
-Nova seção "Insights de Supervisão" integrada à MESMA página de
-Operações (`/agents/operations`, nunca uma rota nova):
-`components/agents/operations/supervision-insights-section.tsx` — cards
-de indicadores (nenhum gráfico decorativo, correio.md seção 6), tabela
-filtrável de histórico, diálogo de detalhe por incidente, tabela de
-recorrência. Tipos/serviços/proxy routes/hooks/labels/badge seguindo
-exatamente os padrões já estabelecidos no projeto (`SupervisionRun`
-v3.4 como referência direta).
+## 4. Definição de aging e limites dos buckets
 
-## 6. Segurança
+Calculado em tempo de leitura a partir de `detectedAt` (nunca
+persistido). Buckets fixos, limite esquerdo inclusivo / direito
+exclusivo (convenção documentada em código, já que o correio.md não
+especificava os limites — testada explicitamente nos 3 limites):
 
-- Nenhuma alteração de autenticação/autorização — mesma permission de
-  leitura já usada por toda a seção de operações.
-- `errorMessage` no detalhe do incidente só é populado quando o outcome
-  é `failed`, e sempre a partir de `error.message` já sanitizado (nunca
-  stack trace) — mesma convenção do resto do projeto.
-- Teste explícito de ausência de dados sensíveis (`password`, `token`,
-  `secret`, `apiKey`, indícios de stack trace) no payload do detalhe de
-  incidente — ver seção 8.
-- Nenhum acesso direto do frontend ao banco — tudo via API, proxy
-  `proxyToBackend` padrão.
+| Bucket | Regra |
+|---|---|
+| `<1h` | idade < 1h |
+| `1h-4h` | 1h ≤ idade < 4h (idade === exatamente 1h cai aqui) |
+| `4h-24h` | 4h ≤ idade < 24h (idade === exatamente 4h cai aqui) |
+| `>24h` | idade ≥ 24h (idade === exatamente 24h cai aqui) |
 
-## 7. Testes
+Quando `reviewStatus === 'acknowledged'`, cada item também expõe
+`sinceReviewMs`/`sinceReviewBucket` — mesmos buckets, mas contados a
+partir de `review.reviewedAt` ("tempo desde o último
+review/acknowledgement", pedido explicitamente pelo correio.md).
+Nenhum SLA/obrigação contratual introduzida — só exibição.
 
-**Novos — `backend/src/agents/operations/supervision-insights-service.test.ts`
-(2 testes, ambos passando)**, contra o Postgres real, incidentes REAIS
-produzidos por `runObservedOperationalSupervision` (v3.4, não mock):
-- Cobre overview, histórico com todos os filtros pedidos, detalhe de
-  incidente com escalation vinculada e auditRefs, vínculo
-  run→incident→response→escalation (v3.4↔v2.6↔v2.5, tudo verificado
-  contra IDs reais no banco), ausência de dados sensíveis, recorrência
-  (2 scans consecutivos no mesmo Job → `occurrences >= 2`), e
-  comportamento com histórico vazio (filtro de data no ano 2999 → listas
-  vazias, zero em todos os contadores, `getSupervisionIncidentDetail`
-  para id inexistente → `null` — nunca erro).
+Relógio injetável: `listAttentionQueue({ now })` — default `new Date()`
+em produção, fixo nos testes (evita sleeps reais).
 
-**Novos — `backend/src/routes/agents/operations.test.ts` (6 testes,
-todos passando)**: 403 sem permission nas 4 rotas, 200 com forma
-esperada para overview/incidents/recurring, 400 para filtro inválido e
-para id não-numérico, 404 para incidente inexistente.
+## 5. Endpoints alterados/criados
 
-Total de testes novos: **8**.
+Endpoint **dedicado** (decisão avaliada e documentada em código): o
+default de exclusão de `resolved`/`dismissed` e a ordenação por
+prioridade são responsabilidades diferentes de "histórico paginado por
+data" (o endpoint de incidentes da v3.5), mas reaproveitam 100% da
+mesma infraestrutura de enriquecimento (`enrichIncidentRows`) e de
+filtro pós-enriquecimento.
 
-## 8. Bug real encontrado e corrigido (fora do código de produção)
+```
+GET /agents/operations/supervision-insights/needs-attention
+```
 
-Durante a validação, um `after()` malformado no MEU PRÓPRIO arquivo de
-teste (`supervision-insights-service.test.ts`) tentava apagar a
-Responsibility de teste ANTES de apagar a Escalation e o FollowUp que
-apontam para ela (`onDelete: 'restrict'` em ambos) — a primeira execução
-(antes da correção) falhou a limpeza e deixou uma Responsibility (+
-Escalation + FollowUp) órfã no Postgres real, que **poluiu a suíte
-inteira**: `resolvePrimaryResponsibility({domain:'agents'})` passou a
-escolher essa Responsibility órfã em vez da Responsibility legítima
-criada por outros testes (`control-center-service.test.ts`), e um Goal
-`active` órfão do mesmo teste interferiu em `review-service.test.ts`
-(que varre TODOS os Goals `active` do banco). Isso causou 4 falhas
-aparentes numa rodada intermediária da suíte completa, em arquivos que
-esta versão NUNCA tocou.
+Filtros: `page`/`limit`, `dateFrom`/`dateTo`, `severity`, `incidentType`,
+`outcome`, `reviewStatus` (ausente = default da fila), `recurringOnly`,
+`agingBucket`, `entityType`/`entityId`. Todos combináveis.
 
-Diagnosticado com uma query direta ao Postgres (confirmando a
-Responsibility/Goal órfãos), limpo manualmente via SQL, e a causa raiz
-corrigida no `after()` do meu teste (ordem correta: FollowUp →
-Escalation → Responsibility, incluindo o FK direto
-`agent_operational_follow_ups.responsibility_id` que a primeira versão
-também não cobria). Confirmado com 3 execuções isoladas consecutivas do
-arquivo (todas limpas, sem órfãos) e uma suíte completa final 100%
-verde. Nenhum código de produção foi a causa — só um bug no meu próprio
-teste, já corrigido.
+Namespace coerente com o já existente
+(`/agents/operations/supervision-insights/...`).
 
-## 9. Suítes completas e validação
+**Aditivo** ao endpoint já existente de histórico (v3.5), para reforçar
+reuso de filtro (seção "Filtros": "evitar duplicar dois mecanismos"):
+`GET /operations/supervision-insights/incidents` ganhou `outcome` e
+`recurringOnly` como filtros opcionais — mesmos nomes/semântica usados
+pela fila, mesma implementação de filtro pós-enriquecimento.
+
+Nenhum endpoint existente teve contrato quebrado (`hasEscalation`,
+`runStatus`, `reviewStatus` etc. continuam exatamente como antes).
+
+## 6. Autorização
+
+Nenhuma permission nova. Leitura da fila reaproveita `agents.operations.read`
+(mesma de toda a seção `supervision-insights`, testado explicitamente:
+403 sem ela). Ações de acknowledge/resolve/dismiss continuam
+exclusivamente pela API de review da v3.6
+(`PATCH .../incidents/:auditLogId/review`, `agents.operations.manage`)
+— a fila em si não introduz nenhuma ação mutável nova.
+
+## 7. Integração com v3.5/v3.6
+
+- `listAttentionQueue` chama a MESMA `enrichIncidentRows` privada de
+  `listSupervisionIncidents` (v3.5) — outcome, run de origem, escalation
+  e review (v3.6) resolvidos de forma idêntica nos dois lugares.
+- `recurrenceCount`/`isRecurring` passaram a ser calculados dentro de
+  `enrichIncidentRows` e ficaram disponíveis também em
+  `SupervisionIncidentSummary` (histórico da v3.5, aditivo).
+- O clique numa linha da fila abre o MESMO diálogo de detalhe/review já
+  usado pela seção "Insights de Supervisão"
+  (`SupervisionIncidentDetailDialog`, exportado e reutilizado) — nenhuma
+  segunda implementação de review no frontend, exatamente como exigido.
+- Alterar um review pela API da v3.6 invalida a mesma chave de query da
+  fila no React Query (`useUpdateIncidentReview`), então a projeção da
+  fila reflete a mudança imediatamente, sem recarregar a página.
+
+## 8. Estratégia usada para evitar N+1
+
+`listAttentionQueue` busca até 500 audits `incident.detected` (mesma
+janela pragmática já documentada em `listSupervisionIncidents` v3.5/v3.6
+— aqui sempre aplicada, pois a fila é sempre pós-enriquecimento) e então
+chama `enrichIncidentRows` **uma vez para a página inteira**, que por
+sua vez já resolve run/outcome/escalation/review/recorrência em no
+máximo 5 queries batched (`IN (...)`) — nunca uma consulta por
+incidente. Confirmado por teste dedicado que instrumenta `db.select` e
+compara o número de queries entre um lote de 2 incidentes e um de 9: **o
+número de queries é idêntico nos dois casos** (prova de que o custo é
+O(1) em relação ao volume de linhas, não O(n)).
+
+## 9. Arquivos criados
+
+- `backend/src/agents/operations/attention-queue-service.test.ts`
+- `frontend/app/api/agents/operations/supervision-insights/needs-attention/route.ts`
+- `frontend/components/agents/operations/attention-queue-section.tsx`
+
+## 10. Arquivos alterados
+
+- `backend/src/agents/operations/schemas.ts` — `attentionQueueQuerySchema`;
+  `outcome`/`recurringOnly` adicionados a `listSupervisionIncidentsQuerySchema`.
+- `backend/src/agents/operations/supervision-insights-service.ts` —
+  `listAttentionQueue`, `AttentionQueueItem`, aging/prioridade/reasons,
+  recorrência por linha em `enrichIncidentRows`, `entityType`/`entityId`
+  como filtro da fila.
+- `backend/src/routes/agents/operations.ts` — rota
+  `GET .../needs-attention`; `recurringOnly`/`outcome` na rota de
+  incidentes existente.
+- `backend/src/routes/agents/operations.test.ts` — describe
+  `GET /operations/supervision-insights/needs-attention` (autorização,
+  filtros inválidos, filtros combinados).
+- `frontend/app/(dashboard)/agents/operations/page.tsx` — seção
+  "Needs Attention" antes do histórico completo.
+- `frontend/components/agents/operations/supervision-insights-section.tsx` —
+  `SupervisionIncidentDetailDialog` exportado para reuso.
+- `frontend/components/agents/status-badge.tsx` — `AgingBucketBadge`.
+- `frontend/hooks/agents/use-operations.ts` — `useAttentionQueue`;
+  invalidação da fila em `useUpdateIncidentReview`.
+- `frontend/lib/agents/derived.ts` — `agingBucketLabel`,
+  `attentionReasonLabel`.
+- `frontend/lib/query/keys.ts` — `attentionQueue`.
+- `frontend/services/agents.ts` — `listAttentionQueue`,
+  `ListAttentionQueueParams`.
+- `frontend/types/agents.ts` — `AttentionQueueItem`, `AgingBucket`,
+  `AttentionReason`, `recurrenceCount`/`isRecurring` em
+  `SupervisionIncidentSummary`.
+
+## 11. Testes adicionados
+
+**`backend/src/agents/operations/attention-queue-service.test.ts`
+(12 testes, todos passando)**, contra o Postgres real (audits
+`incident.detected` inseridos diretamente com `createdAt` controlado —
+mesma identidade canônica exigida pelo correio.md — para permitir
+aging/ordenação/desempate 100% determinísticos, sem sleeps reais):
+incidente `unreviewed` aparece por default; `acknowledged` continua
+aparecendo, `resolved`/`dismissed` ficam fora por default mas acessíveis
+via filtro explícito; severidade influencia a ordenação; recorrência
+influencia a ordenação; os 5 casos de aging (`<1h`, exatamente 1h,
+exatamente 4h, exatamente 24h, `>24h`); desempate determinístico por
+`auditLogId`; filtros combinados; filtro por recorrência; filtro por
+outcome; paginação preserva ordenação (concatenar páginas reproduz a
+busca completa); ausência de N+1 (contagem de queries instrumentada,
+igual para 2 e para 9 incidentes); review via v3.6 atualiza a projeção
+da fila sem alterar outcome operacional nem a decisão do Supervisor.
+
+**`backend/src/routes/agents/operations.test.ts` (4 testes novos)**:
+403 sem `agents.operations.read`; 200 com só leitura (fila vazia com
+filtro de data absurdo); 400 para `severity`/`agingBucket` inválidos;
+200 com todos os filtros combinados na URL.
+
+Total de testes novos: **16** — cobrindo os 23 itens obrigatórios da
+seção "Testes obrigatórios" (os itens de autorização/histórico/detalhe
+reaproveitam a cobertura já existente das rotas v3.5/v3.6, verificada
+como não regredida).
+
+## 12. Resultado completo da validação
+
+Baseline pós-v3.6 descoberto no repositório (não assumido): **756/756**
+no backend, **119/119** no frontend (mesmos números do relatório da
+v3.6, confirmados antes de iniciar esta rodada).
 
 | Item | Resultado |
 |---|---|
+| Migration | **nenhuma criada** (analisada e justificada, seção 1) |
 | Backend typecheck (`tsc --noEmit`) | limpo |
-| Suíte completa do backend (`--test-concurrency=1`) | **746/746** (baseline 738 + 8 novos) |
+| Testes específicos da v3.7 (`attention-queue-service.test.ts` + describe novo em `operations.test.ts`) | **16/16** |
+| Suíte completa do backend (`--test-concurrency=1`) | **772/772** (756 + 16 novos) |
 | Frontend typecheck (`tsc --noEmit`) | limpo |
 | Frontend lint (`eslint`) | limpo |
-| Frontend testes (`node --test`) | **119/119** (baseline exata — nenhuma função pura nova exigiu teste dedicado) |
-| Frontend build (`next build`, `node:24`) | sucesso (exit 0) |
-| `git diff --check` | limpo |
+| Frontend testes (`node --test`) | **119/119** (baseline exata, nenhuma regressão) |
+| Frontend build (`next build`, node 24) | sucesso (exit 0) |
+| `supervisor-guard.ts` | **intocado** (`git diff` vazio) |
 
-## 10. Arquivos criados
+## 13. Confirmação explícita
 
-- `backend/src/agents/operations/supervision-insights-service.ts`
-- `backend/src/agents/operations/supervision-insights-service.test.ts`
-- `frontend/app/api/agents/operations/supervision-insights/overview/route.ts`
-- `frontend/app/api/agents/operations/supervision-insights/incidents/route.ts`
-- `frontend/app/api/agents/operations/supervision-insights/incidents/[auditLogId]/route.ts`
-- `frontend/app/api/agents/operations/supervision-insights/recurring/route.ts`
-- `frontend/components/agents/operations/supervision-insights-section.tsx`
+- `supervisor-guard.ts` **não foi alterado** (`git diff --stat` vazio
+  para o arquivo).
+- **Nenhum aumento de autonomia**: a v3.7 é leitura pura (projeção sobre
+  `enrichIncidentRows`) mais ordenação/aging em memória — nenhuma
+  mutação nova, nenhuma decisão automática, `applyResponse`/`Response Policy`/
+  Planner/Executor/scheduler intocados.
+- **Nenhum novo Circuit Breaker** criado ou alterado.
+- **Nenhuma segunda identidade de incidente**: a identidade canônica
+  continua sendo exclusivamente `audit_logs` com action
+  `agents.operations.incident.detected` — `listAttentionQueue` consulta
+  essa mesma tabela/ação, sem nenhuma tabela de fila persistida.
+- **Nenhuma ação automática nova**: acknowledge/resolve/dismiss
+  continuam exclusivamente na API de review da v3.6
+  (`agents.operations.manage`); a fila em si expõe zero endpoints de
+  escrita.
+- Escalation, FollowUp, Recovery, advisory lock e o Operational
+  Supervisor em si não foram tocados — validado pela suíte completa
+  (772/772) rodando todos os testes desses módulos sem alteração.
 
-## 11. Arquivos alterados
-
-- `backend/src/agents/operations/schemas.ts`
-- `backend/src/agents/operations/supervisor-service.ts` (só metadata aditivo, ver seção 2)
-- `backend/src/routes/agents/operations.ts`
-- `backend/src/routes/agents/operations.test.ts`
-- `frontend/app/(dashboard)/agents/operations/page.tsx`
-- `frontend/components/agents/status-badge.tsx`
-- `frontend/hooks/agents/use-operations.ts`
-- `frontend/lib/agents/derived.ts`
-- `frontend/lib/query/keys.ts`
-- `frontend/services/agents.ts`
-- `frontend/types/agents.ts`
-
-## 12. `git diff --stat`
-
-```
- backend/src/agents/operations/schemas.ts           |  31 ++++++
- .../src/agents/operations/supervisor-service.ts    |  18 ++-
- backend/src/routes/agents/operations.test.ts       |  70 ++++++++++++
- backend/src/routes/agents/operations.ts            |  64 +++++++++++
- correio.md                                         | 121 +++++++++++++++------
- .../app/(dashboard)/agents/operations/page.tsx     |  15 +++
- frontend/components/agents/status-badge.tsx        |  19 ++++
- frontend/hooks/agents/use-operations.ts            |  40 +++++++
- frontend/lib/agents/derived.ts                     |  19 ++++
- frontend/lib/query/keys.ts                         |   5 +
- frontend/services/agents.ts                        |  41 +++++++
- frontend/types/agents.ts                           |  64 +++++++++++
- 12 files changed, 471 insertions(+), 36 deletions(-)
-```
-(`correio.md` reflete só a reescrita externa do próprio correio pelo
-Diretor/CEO — nenhuma edição minha.)
-
-## 13. `git status`
-
-```
- M backend/src/agents/operations/schemas.ts
- M backend/src/agents/operations/supervisor-service.ts
- M backend/src/routes/agents/operations.test.ts
- M backend/src/routes/agents/operations.ts
- M correio.md
- M frontend/app/(dashboard)/agents/operations/page.tsx
- M frontend/components/agents/status-badge.tsx
- M frontend/hooks/agents/use-operations.ts
- M frontend/lib/agents/derived.ts
- M frontend/lib/query/keys.ts
- M frontend/services/agents.ts
- M frontend/types/agents.ts
-?? backend/src/agents/operations/supervision-insights-service.test.ts
-?? backend/src/agents/operations/supervision-insights-service.ts
-?? frontend/app/api/agents/operations/supervision-insights/
-?? frontend/components/agents/operations/supervision-insights-section.tsx
-```
-
-## 14. Confirmação de escopo e limitações
-
-- `supervisor-guard.ts`: `git diff` vazio — confirmado sem alteração.
-- Nenhuma migration criada.
-- Nenhum novo Circuit Breaker, nenhum novo Supervisor, nenhuma mudança
-  em Planner/Policy Evaluator/Executor.
-- Nenhuma alteração de autonomia dos agentes.
-- **Limitação conhecida** (documentada em código,
-  `supervision-insights-service.ts`): `outcome` para incidentes cuja
-  decisão foi `safe_recovery`/`restrict_autonomy`/`manual_attention` mas
-  sem audit de resultado correspondente é inferido como `skipped` — os
-  branches defensivos correspondentes de `applyResponse` nunca tiveram
-  (e continuam sem ter) um audit próprio; instrumentá-los ficaria além
-  do aditivo mínimo desta versão.
-- **Limitação conhecida**: `listSupervisionIncidents` com os filtros
-  `hasEscalation`/`runStatus` (que só existem depois do enriquecimento
-  em memória, não são campos nativos do audit log) busca uma janela de
-  até 500 linhas antes de paginar — suficiente para o volume operacional
-  real deste sistema, documentado em código como concessão pragmática em
-  vez de introduzir uma view materializada não pedida.
-
-## 15. Confirmação final
-
-**Nenhum commit foi feito.** Nenhum container foi reconstruído ou
-reiniciado. Relatório pronto para aprovação.
+Nenhum commit foi feito. Relatório pronto para aprovação.

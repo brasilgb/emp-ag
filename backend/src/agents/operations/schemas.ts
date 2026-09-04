@@ -1,7 +1,9 @@
 import { z } from 'zod';
 
 import { OPERATIONAL_INCIDENT_TYPES, OPERATIONAL_RESPONSES, OPERATIONAL_SEVERITIES } from './health-types.js';
+import { INCIDENT_REVIEW_STATUSES, INCIDENT_REVIEW_STATUSES_WITH_UNREVIEWED } from './incident-review-service.js';
 import { SUPERVISION_RUN_STATUSES } from './supervision-run-history.js';
+import { AGING_BUCKETS, OPERATIONAL_OUTCOMES } from './supervision-insights-service.js';
 
 // Agentes v1.6 (correio.md seção 3/10) — validação server-side dos
 // filtros de período das rotas operacionais, mesmo padrão de
@@ -80,6 +82,54 @@ export const listSupervisionIncidentsQuerySchema = z.object({
   entityType: z.string().trim().min(1).max(100).optional(),
   entityId: z.string().trim().min(1).max(100).optional(),
   runStatus: z.enum(SUPERVISION_RUN_STATUSES).optional(),
+  // Agentes v3.6 — filtro por review status (correio.md seção 8: "filtro
+  // por review status"). Inclui `unreviewed` (estado sintetizado pela
+  // ausência de linha, ver incident-review-service.ts) — filtrável como
+  // qualquer outro estado.
+  reviewStatus: z.enum(INCIDENT_REVIEW_STATUSES_WITH_UNREVIEWED).optional(),
+  // Agentes v3.7 (correio.md "Filtros") — reaproveitados pela mesma
+  // infraestrutura de filtro pós-enriquecimento da fila Needs Attention
+  // (ver `attentionQueueQuerySchema` abaixo e `listSupervisionIncidents`
+  // em supervision-insights-service.ts).
+  outcome: z.enum(OPERATIONAL_OUTCOMES).optional(),
+  recurringOnly: z.enum(['true', 'false']).optional(),
 });
 
 export const supervisionIncidentIdParamSchema = z.object({ auditLogId: z.coerce.number().int().positive() });
+
+// Agentes v3.6 (correio.md "Operational Incident Acknowledgement & Review
+// Workflow", seção 5) — payload de escrita do review: só `status`
+// (nunca 'unreviewed' — não é um valor que o cliente possa setar, é
+// puramente a ausência de linha) e `note` opcional. `.strict()` rejeita
+// qualquer campo extra — em particular, IMPOSSÍVEL o cliente definir
+// `reviewedBy`/`reviewedAt` (sempre derivados no servidor, seção 5:
+// "Não permitir que o cliente defina usuário responsável; timestamps").
+export const updateIncidentReviewSchema = z
+  .object({
+    status: z.enum(INCIDENT_REVIEW_STATUSES),
+    note: z.string().trim().max(2000).optional(),
+  })
+  .strict();
+
+// Agentes v3.7 (correio.md "Operational Incident Review Queue & Attention
+// Management") — filtros da fila Needs Attention. `reviewStatus` ausente =
+// default da fila (exclui `resolved`/`dismissed`, ver
+// `listAttentionQueue`); informado explicitamente filtra por QUALQUER
+// status, inclusive os dois excluídos por default (correio.md: "podem
+// continuar acessíveis através dos filtros"). Mesmo vocabulário fechado de
+// severidade/tipo/outcome/reviewStatus já usado pelo histórico acima —
+// nenhuma segunda lista.
+export const attentionQueueQuerySchema = z.object({
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(20),
+  dateFrom: isoDate.optional(),
+  dateTo: isoDate.optional(),
+  severity: z.enum(OPERATIONAL_SEVERITIES).optional(),
+  incidentType: z.enum(OPERATIONAL_INCIDENT_TYPES).optional(),
+  outcome: z.enum(OPERATIONAL_OUTCOMES).optional(),
+  reviewStatus: z.enum(INCIDENT_REVIEW_STATUSES_WITH_UNREVIEWED).optional(),
+  recurringOnly: z.enum(['true', 'false']).optional(),
+  agingBucket: z.enum(AGING_BUCKETS).optional(),
+  entityType: z.string().trim().min(1).max(100).optional(),
+  entityId: z.string().trim().min(1).max(100).optional(),
+});
