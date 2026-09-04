@@ -563,4 +563,85 @@ describe('Agentes v3.0 — Operational Control Center', () => {
       await db.delete(agentResponsibilities).where(eq(agentResponsibilities.id, supervisionResponsibility!.id));
     }
   });
+
+  test('18 (v3.2, correio.md "TESTES MÍNIMOS" #23): Control Center continua coerente depois de um scan PARCIALMENTE falho — a Escalation do incidente que teve sucesso aparece normalmente', async () => {
+    const [supervisionResponsibility] = await db
+      .insert(agentResponsibilities)
+      .values({
+        agentId: directorAgentId,
+        name: `Falha parcial → Control Center ${runId}`,
+        domain: 'agents',
+        responsibilityType: 'monitor',
+        priority: 'critical',
+        escalationPolicy: 'agent',
+        escalationTargetAgentId: directorAgentId,
+        createdBy: ceoUserId,
+      })
+      .returning();
+
+    async function insertFailingJob() {
+      const [job] = await db
+        .insert(agentJobs)
+        .values({
+          name: `Job falha parcial ${runId}-${Math.random()}`,
+          objective: 'objetivo de teste',
+          agentId: directorAgentId,
+          createdBy: ceoUserId,
+          status: 'active',
+          triggerType: 'internal_event',
+          autonomyEnabled: true,
+        })
+        .returning();
+      const runIds: number[] = [];
+      for (let index = 0; index < 5; index += 1) {
+        const [run] = await db.insert(agentJobRuns).values({ jobId: job!.id, triggerType: 'internal_event', status: 'failed', startedAt: new Date() }).returning();
+        runIds.push(run!.id);
+      }
+      return { job: job!, runIds };
+    }
+
+    const ok = await insertFailingJob();
+    const bad = await insertFailingJob();
+
+    const { setForcedIncidentFailuresForTests } = await import('./supervisor-service.js');
+    setForcedIncidentFailuresForTests([`repeated_job_failure:agent_job:${bad.job.id}`]);
+
+    try {
+      // A CHAMADA REAL, com um incidente forçado a falhar isoladamente
+      // (v3.2) no meio do mesmo scan que processa o outro normalmente.
+      const report = await runOperationalSupervision({ dryRun: false, actorUserId: ceoUserId });
+      assert.equal(report.results.find((r) => r.entityId === String(ok.job.id))!.outcome, 'autonomy_restricted');
+      assert.equal(report.results.find((r) => r.entityId === String(bad.job.id))!.outcome, 'failed');
+
+      // O incidente bem-sucedido continua gerando Escalation/FollowUp
+      // reais, refletidos no Control Center — a falha isolada do OUTRO
+      // incidente no mesmo scan não contamina isso.
+      const [escalation] = await db
+        .select()
+        .from(agentOperationalEscalations)
+        .where(and(eq(agentOperationalEscalations.responsibilityId, supervisionResponsibility!.id), eq(agentOperationalEscalations.status, 'open')));
+      assert.ok(escalation, 'a Escalation do incidente bem-sucedido deveria existir mesmo com o outro incidente do mesmo scan tendo falhado');
+
+      const [followUp] = await db.select().from(agentOperationalFollowUps).where(eq(agentOperationalFollowUps.escalationId, escalation!.id));
+      assert.ok(followUp);
+
+      const queues = await getOperationalQueues();
+      assert.ok(
+        queues.needs_attention_now.some((item) => item.followUpId === followUp!.id) || queues.awaiting_human.some((item) => item.followUpId === followUp!.id),
+        'o FollowUp do incidente bem-sucedido deveria aparecer numa fila do Control Center, mesmo após um scan parcialmente falho',
+      );
+    } finally {
+      setForcedIncidentFailuresForTests(null);
+      const allEscalations = await db.select().from(agentOperationalEscalations).where(eq(agentOperationalEscalations.responsibilityId, supervisionResponsibility!.id));
+      for (const row of allEscalations) {
+        await db.delete(agentOperationalFollowUps).where(eq(agentOperationalFollowUps.escalationId, row.id));
+        await db.delete(agentOperationalEscalations).where(eq(agentOperationalEscalations.id, row.id));
+      }
+      for (const fixture of [ok, bad]) {
+        for (const id of fixture.runIds) await db.delete(agentJobRuns).where(eq(agentJobRuns.id, id));
+        await db.delete(agentJobs).where(eq(agentJobs.id, fixture.job.id));
+      }
+      await db.delete(agentResponsibilities).where(eq(agentResponsibilities.id, supervisionResponsibility!.id));
+    }
+  });
 });

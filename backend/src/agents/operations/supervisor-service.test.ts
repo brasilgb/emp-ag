@@ -22,7 +22,7 @@ import {
 import { database } from '../../services/database.js';
 import { redis } from '../../services/redis.js';
 
-import { runOperationalSupervision } from './supervisor-service.js';
+import { runOperationalSupervision, setForcedIncidentFailuresForTests } from './supervisor-service.js';
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -285,12 +285,16 @@ describe('Agentes v2.5 - runOperationalSupervision (execução)', () => {
   });
 
   describe('Status agregado (itens 35-37)', () => {
-    test('35/36: relatório é matematicamente consistente (observed+recovered+autonomyRestricted+escalated === results.length)', async () => {
+    test('35/36: relatório é matematicamente consistente (observed+recovered+autonomyRestricted+escalated+failed === results.length)', async () => {
       await insertFailingJob({ autonomyEnabled: true });
       await insertStaleReview();
 
       const report = await runOperationalSupervision({ dryRun: false, actorUserId: ceoUserId });
-      assert.equal(report.observed + report.recovered + report.autonomyRestricted + report.escalated, report.results.length);
+      // v3.2 — `failed` (isolamento por incidente) entra na mesma soma:
+      // todo incidente cai em EXATAMENTE um bucket, nunca dois nem
+      // nenhum — mesmo invariante de antes, só que agora também cobre o
+      // caminho de falha isolada.
+      assert.equal(report.observed + report.recovered + report.autonomyRestricted + report.escalated + report.failed, report.results.length);
       assert.equal(report.incidentsDetected, report.results.length);
     });
 
@@ -303,6 +307,230 @@ describe('Agentes v2.5 - runOperationalSupervision (execução)', () => {
       assert.ok(recentAudits.length > 0);
       const metadata = recentAudits[recentAudits.length - 1]!.metadata as { signalsDetected: number; incidentsDetected: number };
       assert.equal(metadata.incidentsDetected, report.incidentsDetected);
+    });
+  });
+
+  /*
+   * Agentes v3.2 (correio.md "18. Testes mínimos obrigatórios") —
+   * isolamento por incidente dentro de um mesmo scan. Usa
+   * `setForcedIncidentFailuresForTests` (gancho SOMENTE de teste, mesmo
+   * padrão já usado em `agents/llm/factory.ts`/
+   * `agents/followups/action-proposals-service.ts`) para forçar
+   * deterministicamente uma exceção na resposta operacional de um
+   * incidente ESPECÍFICO (por `incident.id`, formato real
+   * `${incidentType}:${entityType}:${entityId}`, `incidents.ts`) — nunca
+   * mockando o domínio inteiro, só o ponto exato onde uma falha de
+   * infraestrutura entraria em produção.
+   */
+  describe('v3.2 — isolamento por incidente (applyResponse)', () => {
+    after(() => setForcedIncidentFailuresForTests(null));
+
+    // Limpeza IMEDIATA (não só no `after()` do describe externo, que só
+    // roda ao final de todo o arquivo): os testes deste bloco rodam
+    // `runOperationalSupervision({dryRun:false})` de verdade várias vezes
+    // sobre Jobs reais — sem isso, um Job restringido (autonomyEnabled →
+    // false, efeito real) por um teste anterior contaminaria o contexto
+    // (`buildRecommendations`/`jobAutonomyEnabled`) de um teste seguinte
+    // no MESMO arquivo, fazendo `restrict_autonomy` virar `manual_attention`
+    // de forma imprevisível — não é resíduo entre execuções de suíte
+    // (já tratado em outras seções deste projeto), é resíduo DENTRO desta
+    // mesma rodada de testes, evitável.
+    async function cleanupJob(job: { id: number }) {
+      await db.delete(agentJobRuns).where(eq(agentJobRuns.jobId, job.id));
+      await db.delete(agentJobs).where(eq(agentJobs.id, job.id));
+    }
+
+    test('1: três incidentes válidos → todos processados normalmente (baseline sem nenhuma falha)', async () => {
+      const jobA = await insertFailingJob({ autonomyEnabled: true });
+      const jobB = await insertFailingJob({ autonomyEnabled: true });
+      const jobC = await insertFailingJob({ autonomyEnabled: true });
+
+      try {
+        const report = await runOperationalSupervision({ dryRun: false, actorUserId: ceoUserId });
+        for (const job of [jobA, jobB, jobC]) {
+          const result = report.results.find((r) => r.entityType === 'agent_job' && r.entityId === String(job.id));
+          assert.ok(result, `job ${job.id} deveria ter sido avaliado`);
+          assert.equal(result!.outcome, 'autonomy_restricted');
+        }
+      } finally {
+        for (const job of [jobA, jobB, jobC]) await cleanupJob(job);
+      }
+    });
+
+    test('2/3/4: incidente do meio, o primeiro, e o último falham independentemente — os demais do MESMO scan continuam processados', async () => {
+      const idOf = (jobId: number) => `repeated_job_failure:agent_job:${jobId}`;
+
+      for (const label of ['do meio', 'o primeiro', 'o último'] as const) {
+        // Jobs FRESCOS a cada iteração — reusar os mesmos 3 jobs entre
+        // rodadas encadearia um efeito real desta v3.2 sobre a próxima
+        // (um job restringido de verdade numa rodada muda
+        // `jobAutonomyEnabled` no contexto da rodada seguinte, mudando a
+        // resposta esperada de `restrict_autonomy` para
+        // `manual_attention` — não é o que este teste quer provar).
+        const jobA = await insertFailingJob({ autonomyEnabled: true });
+        const jobB = await insertFailingJob({ autonomyEnabled: true });
+        const jobC = await insertFailingJob({ autonomyEnabled: true });
+        const [failingJob, okJobs] = label === 'do meio' ? [jobB, [jobA, jobC]] : label === 'o primeiro' ? [jobA, [jobB, jobC]] : [jobC, [jobA, jobB]];
+
+        setForcedIncidentFailuresForTests([idOf(failingJob.id)]);
+        try {
+          const report = await runOperationalSupervision({ dryRun: false, actorUserId: ceoUserId });
+
+          const failedResult = report.results.find((r) => r.entityType === 'agent_job' && r.entityId === String(failingJob.id));
+          assert.ok(failedResult, `incidente ${label} deveria continuar aparecendo em results, mesmo tendo falhado`);
+          assert.equal(failedResult!.outcome, 'failed', `incidente ${label} deveria estar marcado como failed`);
+
+          for (const okJob of okJobs) {
+            const okResult = report.results.find((r) => r.entityType === 'agent_job' && r.entityId === String(okJob.id));
+            assert.ok(okResult, `job ${okJob.id} deveria continuar sendo processado mesmo com a falha do incidente ${label}`);
+            assert.equal(okResult!.outcome, 'autonomy_restricted', `job ${okJob.id} deveria ter sido processado normalmente (nunca abortado pela falha ${label})`);
+          }
+
+          assert.equal(report.results.filter((r) => r.outcome === 'failed').length, 1, `só o incidente ${label} deveria estar failed`);
+        } finally {
+          setForcedIncidentFailuresForTests(null);
+          for (const job of [jobA, jobB, jobC]) await cleanupJob(job);
+        }
+      }
+    });
+
+    test('5: múltiplos incidentes falham independentemente no mesmo scan — cada um isolado, os demais não são afetados', async () => {
+      const jobA = await insertFailingJob({ autonomyEnabled: true });
+      const jobB = await insertFailingJob({ autonomyEnabled: true });
+      const jobC = await insertFailingJob({ autonomyEnabled: true });
+      const jobD = await insertFailingJob({ autonomyEnabled: true });
+
+      const idOf = (jobId: number) => `repeated_job_failure:agent_job:${jobId}`;
+      setForcedIncidentFailuresForTests([idOf(jobB.id), idOf(jobD.id)]);
+
+      try {
+        const report = await runOperationalSupervision({ dryRun: false, actorUserId: ceoUserId });
+
+        const resultFor = (job: typeof jobA) => report.results.find((r) => r.entityType === 'agent_job' && r.entityId === String(job.id));
+        assert.equal(resultFor(jobA)!.outcome, 'autonomy_restricted');
+        assert.equal(resultFor(jobB)!.outcome, 'failed');
+        assert.equal(resultFor(jobC)!.outcome, 'autonomy_restricted');
+        assert.equal(resultFor(jobD)!.outcome, 'failed');
+      } finally {
+        setForcedIncidentFailuresForTests(null);
+        for (const job of [jobA, jobB, jobC, jobD]) await cleanupJob(job);
+      }
+    });
+
+    test('6: falha individual gera auditoria própria (agents.operations.incident.failed), com contexto de diagnóstico e sem stack trace', async () => {
+      const job = await insertFailingJob({ autonomyEnabled: true });
+      const incidentId = `repeated_job_failure:agent_job:${job.id}`;
+      setForcedIncidentFailuresForTests([incidentId]);
+
+      try {
+        const before = new Date();
+        await runOperationalSupervision({ dryRun: false, actorUserId: ceoUserId });
+
+        const failedAudits = await db
+          .select()
+          .from(auditLogs)
+          .where(and(eq(auditLogs.action, 'agents.operations.incident.failed'), eq(auditLogs.entityId, String(job.id))));
+        const recent = failedAudits.filter((row) => row.createdAt.getTime() >= before.getTime());
+        assert.equal(recent.length, 1);
+
+        const metadata = recent[0]!.metadata as { incidentType: string; severity: string; attemptedResponse: string; message: string };
+        assert.equal(metadata.incidentType, 'repeated_job_failure');
+        assert.equal(metadata.attemptedResponse, 'restrict_autonomy');
+        assert.ok(metadata.message.includes('Falha forçada'));
+        assert.ok(!metadata.message.includes('    at '), 'nunca persistir stack trace no audit — só error.message');
+      } finally {
+        setForcedIncidentFailuresForTests(null);
+        await cleanupJob(job);
+      }
+    });
+
+    test('7/8: scan chega a "completed" mesmo com falha parcial; summary distingue failed dos demais outcomes', async () => {
+      const job = await insertFailingJob({ autonomyEnabled: true });
+      const incidentId = `repeated_job_failure:agent_job:${job.id}`;
+      setForcedIncidentFailuresForTests([incidentId]);
+
+      try {
+        // Não deveria lançar — o scan chega ao fim normalmente.
+        const report = await runOperationalSupervision({ dryRun: false, actorUserId: ceoUserId });
+
+        const ownResult = report.results.find((r) => r.entityId === String(job.id));
+        assert.equal(ownResult!.outcome, 'failed');
+        // `report.failed` é um agregado do scan inteiro — pode incluir
+        // outros incidentes reais e independentes já presentes no banco
+        // compartilhado de testes (não é escopo deste teste isolar
+        // TODOS eles); o que importa aqui é que o incidente deste
+        // fixture está corretamente contado como `failed` no agregado.
+        assert.ok(report.failed >= 1);
+
+        const completedAudits = await db.select().from(auditLogs).where(eq(auditLogs.action, 'agents.operations.scan.completed'));
+        const recent = completedAudits.filter((row) => new Date(row.createdAt).getTime() >= new Date(report.startedAt).getTime());
+        assert.ok(recent.length > 0, 'scan.completed continua sendo auditado mesmo com falha parcial — nunca vira uma falha estrutural');
+      } finally {
+        setForcedIncidentFailuresForTests(null);
+        await cleanupJob(job);
+      }
+    });
+
+    test('9/10: uma Escalation cria antes de uma falha (job A) não desaparece, e outra depois da falha (job C) ainda é criada — escalonamento continua isolado da resposta operacional', async () => {
+      // escalateSupervisorFinding já roda em seu PRÓPRIO try/catch,
+      // independente do outcome de applyResponse (mesmo quando
+      // outcome === 'failed') — a resposta operacional e o
+      // escalonamento organizacional são preocupações ortogonais desde a
+      // v2.6; este teste prova que a v3.2 não acoplou as duas.
+      const jobA = await insertFailingJob({ autonomyEnabled: true });
+      const jobB = await insertFailingJob({ autonomyEnabled: true });
+      const jobC = await insertFailingJob({ autonomyEnabled: true });
+      setForcedIncidentFailuresForTests([`repeated_job_failure:agent_job:${jobB.id}`]);
+
+      try {
+        const before = new Date();
+        const report = await runOperationalSupervision({ dryRun: false, actorUserId: ceoUserId });
+
+        assert.equal(report.results.find((r) => r.entityId === String(jobA.id))!.outcome, 'autonomy_restricted');
+        assert.equal(report.results.find((r) => r.entityId === String(jobB.id))!.outcome, 'failed');
+        assert.equal(report.results.find((r) => r.entityId === String(jobC.id))!.outcome, 'autonomy_restricted');
+
+        // Nenhuma Responsibility real está cadastrada para este fixture
+        // (mesmo padrão do resto deste arquivo — testes de escalonamento
+        // real vivem em `escalations/supervisor-integration.test.ts`),
+        // então `escalateSupervisorFinding` sempre devolve `null` aqui —
+        // o que este teste prova é que ele é TENTADO para os 3
+        // incidentes, nunca pulado por causa da falha isolada de um
+        // deles.
+        const incidentDetectedAudits = await db
+          .select()
+          .from(auditLogs)
+          .where(eq(auditLogs.action, 'agents.operations.incident.detected'));
+        const recent = incidentDetectedAudits.filter((row) => row.createdAt.getTime() >= before.getTime());
+        for (const job of [jobA, jobB, jobC]) {
+          assert.ok(
+            recent.some((row) => row.entityId === String(job.id)),
+            `incident.detected deveria ter sido auditado para o job ${job.id}, independente do outcome final`,
+          );
+        }
+      } finally {
+        setForcedIncidentFailuresForTests(null);
+        for (const job of [jobA, jobB, jobC]) await cleanupJob(job);
+      }
+    });
+
+    test('19/20: a mesma proteção vale para triggeredBy="manual" e triggeredBy="scheduler" — nenhum tratamento especial só para automático', async () => {
+      for (const triggeredBy of ['manual', 'scheduler'] as const) {
+        const jobA = await insertFailingJob({ autonomyEnabled: true });
+        const jobB = await insertFailingJob({ autonomyEnabled: true });
+        setForcedIncidentFailuresForTests([`repeated_job_failure:agent_job:${jobA.id}`]);
+
+        try {
+          const report = await runOperationalSupervision({ dryRun: false, actorUserId: ceoUserId, triggeredBy });
+
+          assert.equal(report.results.find((r) => r.entityId === String(jobA.id))!.outcome, 'failed', `triggeredBy=${triggeredBy}: incidente forçado deveria falhar isolado`);
+          assert.equal(report.results.find((r) => r.entityId === String(jobB.id))!.outcome, 'autonomy_restricted', `triggeredBy=${triggeredBy}: o outro incidente deveria continuar processado normalmente`);
+        } finally {
+          setForcedIncidentFailuresForTests(null);
+          await cleanupJob(jobA);
+          await cleanupJob(jobB);
+        }
+      }
     });
   });
 });

@@ -1144,6 +1144,9 @@ export interface OperationalSupervisionReport {
   recovered: number;
   autonomyRestricted: number;
   escalated: number;
+  // v3.2 — quantos incidentes tiveram sua resposta operacional isolada
+  // como falha individual (nunca aborta os demais do mesmo scan).
+  failed: number;
   results: OperationalIncidentResult[];
 }
 

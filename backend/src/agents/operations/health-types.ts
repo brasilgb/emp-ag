@@ -106,7 +106,14 @@ export interface OperationalIncidentResult {
   response: OperationalResponse;
   // Em dry-run, prefixado `would_` (seção 16) — nunca o mesmo valor de
   // uma execução real, para nunca ser confundido com efeito de verdade.
-  outcome: 'observed' | 'recovered' | 'autonomy_restricted' | 'escalated' | 'already_handled' | 'would_observe' | 'would_recover' | 'would_restrict_autonomy' | 'would_escalate' | 'skipped';
+  // v3.2 (correio.md "Diferenciar dois tipos de falha") — `failed` é uma
+  // FALHA INDIVIDUAL isolada (exceção dentro de `applyResponse` para ESTE
+  // incidente) — nunca confundir com uma falha ESTRUTURAL do scan
+  // inteiro (essa continua propagando como exceção de
+  // `runOperationalSupervision`, capturada só em `scheduler.ts`/pelo
+  // caller HTTP — não tem outcome, porque o `results[]` nem chega a
+  // existir).
+  outcome: 'observed' | 'recovered' | 'autonomy_restricted' | 'escalated' | 'already_handled' | 'would_observe' | 'would_recover' | 'would_restrict_autonomy' | 'would_escalate' | 'skipped' | 'failed';
   reason: string;
   timestamp: string;
 }
@@ -121,5 +128,13 @@ export interface OperationalSupervisionReport {
   recovered: number;
   autonomyRestricted: number;
   escalated: number;
+  // v3.2 — aditivo (correio.md seção 7: "não quebrar contratos públicos
+  // existentes... adicionar informação de maneira aditiva"): quantos
+  // incidentes tiveram sua resposta operacional (`applyResponse`)
+  // isoladamente capturada como exceção. `0` sempre que não houve
+  // nenhuma falha individual — o mesmo scan "totalmente bem-sucedido" de
+  // antes continua existindo, só que agora explicitamente distinguível
+  // de um scan com falhas parciais.
+  failed: number;
   results: OperationalIncidentResult[];
 }

@@ -50,7 +50,16 @@ export function OperationsSupervisorDashboard() {
       const { data } = await supervise.mutateAsync(false);
       setLastResults(data.results);
       setConfirmOpen(false);
-      toast.success(`Supervisão executada: ${data.recovered} recuperado(s), ${data.autonomyRestricted} autonomia(s) restrita(s), ${data.escalated} escalado(s).`);
+      const summary = `${data.recovered} recuperado(s), ${data.autonomyRestricted} autonomia(s) restrita(s), ${data.escalated} escalado(s)`;
+      // v3.2 (correio.md "7. Resultado global do scan") — nunca reportar
+      // como puro sucesso quando houve falha individual isolada: o scan
+      // ainda chega ao fim (os demais incidentes foram processados
+      // normalmente), mas o toast precisa deixar isso visível.
+      if (data.failed > 0) {
+        toast.warning(`Supervisão executada com ${data.failed} falha(s) isolada(s): ${summary}. Os demais incidentes foram processados normalmente.`);
+      } else {
+        toast.success(`Supervisão executada: ${summary}.`);
+      }
     } catch (error) {
       toast.error(toErrorMessage(error, "Erro ao executar supervisão."));
     }

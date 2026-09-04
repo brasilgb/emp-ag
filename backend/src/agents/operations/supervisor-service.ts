@@ -68,7 +68,17 @@ export async function runOperationalSupervision(params: RunOperationalSupervisio
     const recommendation = recommendationByIncidentId.get(incident.id);
     if (!recommendation) continue;
 
-    const result = await applyResponse(incident, recommendation, dryRun, params.actorUserId);
+    // v3.2 (correio.md "4. Isolamento por incidente") — boundary de erro
+    // PRÓPRIA por incidente: antes desta versão, uma exceção dentro de
+    // `applyResponse` (ex.: `applySafeRecovery`/`restrictJobAutonomy`
+    // falhando por infra momentaneamente indisponível) propagava para
+    // fora do `for`, abortando o processamento dos incidentes
+    // SEGUINTES daquele mesmo scan — o próximo scan continuava
+    // funcionando normalmente, mas os incidentes restantes deste ciclo
+    // nunca chegavam a ser avaliados. Mesmo racional já usado 20 linhas
+    // abaixo para `escalateSupervisorFinding` (v2.6) — replicado aqui
+    // para a resposta operacional em si.
+    const result = await applyResponseIsolated(incident, recommendation, dryRun, params.actorUserId);
     results.push(result);
 
     // Agentes v2.6 (correio.md seções 13/14/33 item 25) — integração com
@@ -117,8 +127,76 @@ export async function runOperationalSupervision(params: RunOperationalSupervisio
     recovered: results.filter((result) => result.outcome === 'recovered' || result.outcome === 'would_recover').length,
     autonomyRestricted: results.filter((result) => result.outcome === 'autonomy_restricted' || result.outcome === 'would_restrict_autonomy').length,
     escalated: results.filter((result) => result.outcome === 'escalated' || result.outcome === 'would_escalate').length,
+    failed: results.filter((result) => result.outcome === 'failed').length,
     results,
   };
+}
+
+/**
+ * v3.2 (correio.md "5. Semântica de falha") — boundary de erro por
+ * incidente em volta de `applyResponse`. Se a resposta operacional
+ * lançar por QUALQUER motivo (infra momentaneamente indisponível, um bug
+ * futuro numa safe action, etc.): audita `agents.operations.incident.failed`
+ * (nome novo, dentro do mesmo domínio `agents.operations.*` já
+ * existente — nenhum evento equivalente já cobria "falha ao aplicar a
+ * resposta a ESTE incidente", só o registro do incidente detectado em si
+ * — `agents.operations.incident.detected`, sempre gravado ANTES de
+ * `applyResponse` tentar nada, então mesmo essa falha continua
+ * correlacionável a um `incident.detected` real); devolve um
+ * `OperationalIncidentResult` com `outcome: 'failed'` (nunca finge
+ * sucesso, nunca retorna `undefined`/lança para fora — o `for` do
+ * `runOperationalSupervision` PRECISA de um valor por incidente para
+ * continuar) e o loop no chamador segue para o próximo incidente
+ * normalmente. Efeitos que a própria `applyResponse` já tenha confirmado
+ * ANTES do ponto de exceção (ex.: o audit de `incident.detected`, ou uma
+ * escrita que uma safe action já tenha efetivado antes de falhar mais
+ * adiante nela mesma) permanecem — este boundary nunca faz rollback,
+ * como pedido ("preservar os efeitos válidos que já tenham sido
+ * confirmados... não envolver o scan numa transaction global").
+ *
+ * Mensagem persistida no audit é só `error.message` (nunca
+ * `error.stack`) — mesmo cuidado de segurança já seguido pelo resto do
+ * arquivo para `agents.escalation.creation_failed` acima.
+ */
+async function applyResponseIsolated(
+  incident: OperationalIncident,
+  recommendation: OperationalRecommendation,
+  dryRun: boolean,
+  actorUserId: number | null,
+): Promise<OperationalIncidentResult> {
+  try {
+    return await applyResponse(incident, recommendation, dryRun, actorUserId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Falha desconhecida ao aplicar a resposta operacional.';
+
+    await audit({
+      userId: actorUserId,
+      actorType: actorUserId ? 'user' : 'system',
+      actorId: actorUserId ? String(actorUserId) : null,
+      action: 'agents.operations.incident.failed',
+      entityType: incident.entityType,
+      entityId: incident.entityId,
+      metadata: { incidentType: incident.type, severity: incident.severity, attemptedResponse: recommendation.response, dryRun, message },
+    });
+
+    return {
+      incidentId: incident.id,
+      incidentType: incident.type,
+      entityType: incident.entityType,
+      entityId: incident.entityId,
+      response: recommendation.response,
+      outcome: 'failed',
+      reason: message,
+      timestamp: new Date().toISOString(),
+    };
+  }
+}
+
+let forcedIncidentFailureForTests: Set<string> | null = null;
+
+/** SOMENTE para testes — ver comentário no ponto de uso acima. */
+export function setForcedIncidentFailuresForTests(incidentIds: string[] | null): void {
+  forcedIncidentFailureForTests = incidentIds ? new Set(incidentIds) : null;
 }
 
 async function applyResponse(
@@ -142,6 +220,24 @@ async function applyResponse(
     entityId: incident.entityId,
     metadata: { incidentType: incident.type, severity: incident.severity, response: recommendation.response, dryRun },
   });
+
+  // Gancho SOMENTE de teste (mesmo padrão de
+  // `setLLMProviderOverrideForTests` em `agents/llm/factory.ts` e de
+  // `setForcedSubmitFailureForTests` em
+  // `agents/followups/action-proposals-service.ts`), nunca referenciado
+  // fora de `*.test.ts`: o resto deste arquivo é deliberadamente
+  // defensivo (nenhuma safe action lança para "não encontrado" — todas
+  // devolvem `null`/`skipped`), então não há como forçar uma exceção real
+  // e determinística sem infraestrutura genuinamente indisponível. Fica
+  // DEPOIS do audit de `incident.detected` acima, de propósito: uma
+  // falha real também só pode acontecer depois desse ponto (é o próximo
+  // `switch` que chama as safe actions falíveis) — o gancho precisa
+  // simular a MESMA ordem real de efeitos, nunca pular o que já teria
+  // acontecido antes da exceção de verdade. `null` (default) nunca altera
+  // o comportamento em produção.
+  if (forcedIncidentFailureForTests?.has(incident.id)) {
+    throw new Error(`Falha forçada para teste (v3.2): incidente ${incident.id}.`);
+  }
 
   switch (recommendation.response) {
     case 'observe':
