@@ -9,6 +9,8 @@ import {
   agentActionPlanItems,
   agentActionPlans,
   agentApprovals,
+  agentJobRuns,
+  agentJobs,
   agentOperationalActionProposals,
   agentOperationalEscalations,
   agentOperationalFollowUps,
@@ -29,6 +31,7 @@ import { createActionProposal, submitActionProposal } from '../followups/action-
 import { setLLMProviderOverrideForTests } from '../llm/factory.js';
 import type { LLMProvider, LLMResponse } from '../llm/types.js';
 import { planEvaluateAndPersistActionPlan } from '../orchestration/create-action-plan.js';
+import { runOperationalSupervision } from './supervisor-service.js';
 import { registerAllTools } from '../tools/index.js';
 
 import { getControlCenterOverview, getFollowUpTimeline, getOperationalQueues } from './control-center-service.js';
@@ -73,6 +76,7 @@ describe('Agentes v3.0 — Operational Control Center', () => {
 
   let ceoUserId: number;
   let salesAgentId: number;
+  let directorAgentId: number;
   let responsibilityId: number;
   let escalationId: number;
   let noPlanReadUserId: number;
@@ -96,6 +100,10 @@ describe('Agentes v3.0 — Operational Control Center', () => {
     const [sales] = await db.select().from(agents).where(eq(agents.slug, 'sales')).limit(1);
     assert.ok(sales);
     salesAgentId = sales.id;
+
+    const [director] = await db.select().from(agents).where(eq(agents.slug, 'director')).limit(1);
+    assert.ok(director);
+    directorAgentId = director.id;
 
     const [responsibility] = await db
       .insert(agentResponsibilities)
@@ -456,5 +464,103 @@ describe('Agentes v3.0 — Operational Control Center', () => {
     assert.equal(after1.actionPlansWaitingApproval, before.actionPlansWaitingApproval);
     assert.equal(after1.actionPlansPartial, before.actionPlansPartial);
     assert.equal(after1.actionPlansFailed, before.actionPlansFailed);
+  });
+
+  test('17 (v3.1, correio.md "TESTES MÍNIMOS" #15): Control Center reflete Escalation/FollowUp criados por uma supervisão real (runOperationalSupervision de verdade, não fixture manual)', async () => {
+    // Fixture local, própria deste teste: uma Responsibility real para o
+    // domínio 'agents' (department 'director' → domain 'agents', ver
+    // DEPARTMENT_TO_DOMAIN em agents/escalations/supervisor-integration.ts)
+    // com escalationPolicy != 'none' — sem isso, escalateSupervisorFinding
+    // (chamado de dentro de runOperationalSupervision) não teria para
+    // onde escalar e retornaria null (comportamento correto, mas não
+    // exercitaria o caminho que este teste quer provar).
+    const [supervisionResponsibility] = await db
+      .insert(agentResponsibilities)
+      .values({
+        agentId: directorAgentId,
+        name: `Supervisão real → Control Center ${runId}`,
+        domain: 'agents',
+        responsibilityType: 'monitor',
+        priority: 'critical',
+        escalationPolicy: 'agent',
+        escalationTargetAgentId: directorAgentId,
+        createdBy: ceoUserId,
+      })
+      .returning();
+
+    const [failingJob] = await db
+      .insert(agentJobs)
+      .values({
+        name: `Job p/ supervisão real ${runId}`,
+        objective: 'objetivo de teste',
+        agentId: directorAgentId,
+        createdBy: ceoUserId,
+        status: 'active',
+        triggerType: 'internal_event',
+        autonomyEnabled: true,
+      })
+      .returning();
+
+    const runIds: number[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      const [run] = await db.insert(agentJobRuns).values({ jobId: failingJob!.id, triggerType: 'internal_event', status: 'failed', startedAt: new Date() }).returning();
+      runIds.push(run!.id);
+    }
+
+    const before = await getControlCenterOverview();
+
+    // A CHAMADA REAL — a mesma função que tanto `POST /operations/supervise`
+    // (manual) quanto `runScheduledOperationalSupervision` (scheduler
+    // automático, v3.1) disparam via `runGuardedOperationalSupervision`.
+    // Nenhum atalho, nenhum fixture manual de Escalation/FollowUp aqui.
+    const report = await runOperationalSupervision({ dryRun: false, actorUserId: ceoUserId });
+    assert.ok(report.results.some((r) => r.entityType === 'agent_job' && r.entityId === String(failingJob!.id)), 'setup: o job com 5 falhas deveria ter gerado um incidente real');
+
+    const [escalation] = await db
+      .select()
+      .from(agentOperationalEscalations)
+      .where(and(eq(agentOperationalEscalations.responsibilityId, supervisionResponsibility!.id), eq(agentOperationalEscalations.status, 'open')));
+    assert.ok(escalation, 'setup: a supervisão real deveria ter criado uma Escalation de verdade');
+
+    const [followUp] = await db.select().from(agentOperationalFollowUps).where(eq(agentOperationalFollowUps.escalationId, escalation!.id));
+    assert.ok(followUp, 'setup: a Escalation real deveria ter gerado um FollowUp de verdade (v2.7)');
+
+    try {
+      const after1 = await getControlCenterOverview();
+      // >= (não ===): a suíte completa compartilha o mesmo banco de teste
+      // persistente e OUTROS arquivos de teste podem deixar Jobs com
+      // falha repetida residuais (v1.6 "job_repeated_failure" varre TODOS
+      // os jobs, não só o fixture deste teste) — antes deste teste criar
+      // a primeira Responsibility real para o domínio 'agents', nenhum
+      // desses incidentes tinha para onde escalar; ao criá-la, TODOS
+      // passam a escalar de uma vez, não só o fixture local. O que
+      // importa provar aqui não é a contagem exata, e sim que a
+      // Escalation/FollowUp REAIS deste fixture (identificados acima por
+      // `responsibilityId`/`escalationId`, não por delta) aparecem no
+      // Control Center — a asserção de identidade abaixo é a prova real.
+      assert.ok(after1.escalationsOpen >= before.escalationsOpen + 1, 'a Escalation criada pela supervisão AUTOMÁTICA real deveria refletir no overview — sem nenhuma mudança de código, só consultando as tabelas reais');
+      assert.ok(after1.followUpsOpen >= before.followUpsOpen + 1, 'o FollowUp criado pela mesma cadeia deveria refletir no overview');
+
+      const queues = await getOperationalQueues();
+      assert.ok(
+        queues.needs_attention_now.some((item) => item.followUpId === followUp!.id) || queues.awaiting_human.some((item) => item.followUpId === followUp!.id),
+        'o FollowUp criado pela supervisão real deveria aparecer numa das filas do Control Center (prioridade critical → needs_attention_now, ou aberto sem proposta → awaiting_human)',
+      );
+    } finally {
+      // Limpeza por `responsibilityId`, não só pela primeira escalation
+      // encontrada — o Supervisor pode ter classificado mais de um
+      // incidente para a mesma Responsibility (ex.: mais de um tipo de
+      // problema no mesmo job), gerando mais de uma Escalation/FollowUp
+      // reais; apagar só a primeira deixaria FK órfã impedindo o DELETE
+      // da Responsibility.
+      const allEscalations = await db.select().from(agentOperationalEscalations).where(eq(agentOperationalEscalations.responsibilityId, supervisionResponsibility!.id));
+      for (const row of allEscalations) {
+        await db.delete(agentOperationalFollowUps).where(eq(agentOperationalFollowUps.escalationId, row.id));
+        await db.delete(agentOperationalEscalations).where(eq(agentOperationalEscalations.id, row.id));
+      }
+      for (const id of runIds) await db.delete(agentJobRuns).where(eq(agentJobRuns.id, id));
+      await db.delete(agentJobs).where(eq(agentJobs.id, failingJob!.id));
+      await db.delete(agentResponsibilities).where(eq(agentResponsibilities.id, supervisionResponsibility!.id));
+    }
   });
 });

@@ -80,6 +80,14 @@ services:
       AGENT_LLM_MIN_CONFIDENCE: ${AGENT_LLM_MIN_CONFIDENCE:-0.80}
       AGENT_LLM_CONTEXT_MESSAGES: ${AGENT_LLM_CONTEXT_MESSAGES:-10}
 
+      # Agentes v2.5.1/v3.1 — Operational Supervision scheduler. Desligado
+      # por default (AGENT_OPERATIONAL_SUPERVISION_ENABLED=false) — só o
+      # timer nasce ligado com isto; cada tick só executa supervisão de
+      # verdade se o switch persistido (settings.agents_operational_supervision_enabled,
+      # PATCH /agents/operations/scheduler) TAMBÉM estiver true.
+      AGENT_OPERATIONAL_SUPERVISION_ENABLED: ${AGENT_OPERATIONAL_SUPERVISION_ENABLED:-false}
+      AGENT_OPERATIONAL_SUPERVISION_INTERVAL_SECONDS: ${AGENT_OPERATIONAL_SUPERVISION_INTERVAL_SECONDS:-300}
+
     ports:
       - "127.0.0.1:8300:8000"
 
