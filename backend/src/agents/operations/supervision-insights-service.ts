@@ -1,7 +1,7 @@
 import { and, count, desc, eq, gte, inArray, lte, sql, type SQL } from 'drizzle-orm';
 
 import { db } from '../../db/index.js';
-import { agentOperationalEscalations, agentOperationalIncidentReviews, agentOperationalSupervisionRuns, auditLogs } from '../../db/schema/index.js';
+import { agentOperationalEscalations, agentOperationalIncidentAssignments, agentOperationalIncidentReviews, agentOperationalSupervisionRuns, auditLogs } from '../../db/schema/index.js';
 import { getIncidentReview, getIncidentReviewsByAuditLogIds, INCIDENT_REVIEW_STATUSES_WITH_UNREVIEWED } from './incident-review-service.js';
 import type { IncidentReview, IncidentReviewStatusOrUnreviewed } from './incident-review-service.js';
 import { getIncidentAssignmentsByAuditLogIds } from './incident-assignment-service.js';
@@ -806,6 +806,145 @@ export async function listAttentionQueue(params: ListAttentionQueueParams): Prom
   const page = withAging.slice((params.page - 1) * params.limit, params.page * params.limit);
 
   return { rows: page, total };
+}
+
+/**
+ * Agentes v3.9 (correio.md "Operational Ownership Workload & Human
+ * Coordination Views") — leitura consolidada de ownership. `workload`
+ * significa exclusivamente "quantidade observada de incidentes
+ * atualmente atribuídos dentro da população operacional ativa" (correio.md
+ * seção 2) — NUNCA capacidade/produtividade/desempenho/recomendação;
+ * nenhuma classificação como "sobrecarregado" existe neste módulo.
+ *
+ * **Zero migration** (correio.md seção 1: "a expectativa arquitetural é
+ * zero migration"): tudo abaixo é derivado em tempo de leitura de
+ * `audit_logs` + `agent_operational_incident_reviews` (v3.6) +
+ * `agent_operational_incident_assignments` (v3.8) — nenhum contador
+ * persistido, nenhuma tabela nova.
+ *
+ * **População** (correio.md seção 3: "reutilizar a mesma definição
+ * operacional da fila Needs Attention da v3.7... não criar uma segunda
+ * regra"): EXATAMENTE `DEFAULT_EXCLUDED_REVIEW_STATUSES` (a mesma
+ * constante usada pelo default de `listAttentionQueue` acima) — um
+ * incidente `resolved`/`dismissed` nunca entra na população ativa, mas
+ * seu assignment continua persistido normalmente em
+ * `agent_operational_incident_assignments` (nunca destruído por review).
+ *
+ * **Por que agregação SQL em vez de reaproveitar `enrichIncidentRows`
+ * linha-a-linha** (correio.md seção 8: "proibido... agregação deve ser
+ * batched/set-based"): `enrichIncidentRows`/`listAttentionQueue` usam uma
+ * janela de 500 linhas (limitação pragmática já documentada, adequada
+ * para PAGINAÇÃO de uma fila que um humano rola manualmente) — usar essa
+ * mesma janela aqui subcontaria o workload real sempre que houvesse mais
+ * de 500 incidentes ativos no sistema (cenário real observado neste
+ * ambiente: dezenas de milhares de incidentes/dia). A "mesma definição
+ * operacional" reaproveitada aqui é a REGRA de população (severidade dos
+ * status excluídos), nunca a implementação paginada — duas agregações
+ * `GROUP BY` no Postgres (nenhum `enrichIncidentRows`, nenhum
+ * `listAttentionQueue`) resolvem o total real sem carregar uma linha por
+ * incidente no Node, e o número de queries nunca cresce com o volume de
+ * incidentes (testado explicitamente).
+ */
+export interface OperationalOwnershipWorkload {
+  totals: { active: number; assigned: number; unassigned: number };
+  assignees: {
+    userId: number;
+    incidentCount: number;
+    bySeverity: Record<OperationalSeverity, number>;
+    // Só `unreviewed`/`acknowledged` — a população ativa (acima) já
+    // exclui `resolved`/`dismissed` por definição, então nenhum incidente
+    // desta agregação jamais teria um desses dois status (correio.md:
+    // "adaptar os valores exatos... não inventar estados que não
+    // existam").
+    byReviewStatus: { unreviewed: number; acknowledged: number };
+  }[];
+}
+
+// Mesma expressão SQL (LEFT JOIN + coalesce) já usada por
+// `getSupervisionOverview` para sintetizar `reviewStatus` — reescrita
+// aqui porque cada uso precisa aparecer em cláusulas SQL diferentes
+// (SELECT/WHERE/GROUP BY), mesmo idioma de repetição já usado ali.
+const ACTIVE_REVIEW_STATUS_EXPR = sql<string>`coalesce(${agentOperationalIncidentReviews.status}, 'unreviewed')`;
+// Literalmente a MESMA constante usada pelo default de `listAttentionQueue`
+// acima (`DEFAULT_EXCLUDED_REVIEW_STATUSES`) — nunca uma segunda lista
+// hardcoded de status excluídos, garantindo que a população do workload
+// não possa divergir silenciosamente da população default da fila Needs
+// Attention (correio.md seção 3).
+const ACTIVE_REVIEW_STATUS_FILTER = sql`${ACTIVE_REVIEW_STATUS_EXPR} not in (${sql.join(
+  DEFAULT_EXCLUDED_REVIEW_STATUSES.map((status) => sql`${status}`),
+  sql`, `,
+)})`;
+
+export async function getOperationalOwnershipWorkload(): Promise<OperationalOwnershipWorkload> {
+  const incidentDetected = eq(auditLogs.action, 'agents.operations.incident.detected');
+
+  const [[totalsRow], assigneeRows] = await Promise.all([
+    // Query 1/2 — totais (active/assigned/unassigned). Um único `SELECT`
+    // agregado, `count(*) filter`, mesmo idioma de control-center-service.ts
+    // e de getJobsSummary (routes/agents/operations.ts) — nunca um loop
+    // no Node.
+    db
+      .select({
+        active: count(),
+        assigned: sql<number>`count(*) filter (where ${agentOperationalIncidentAssignments.assigneeUserId} is not null)`,
+        unassigned: sql<number>`count(*) filter (where ${agentOperationalIncidentAssignments.assigneeUserId} is null)`,
+      })
+      .from(auditLogs)
+      .leftJoin(agentOperationalIncidentReviews, eq(agentOperationalIncidentReviews.incidentAuditLogId, auditLogs.id))
+      .leftJoin(agentOperationalIncidentAssignments, eq(agentOperationalIncidentAssignments.incidentAuditLogId, auditLogs.id))
+      .where(and(incidentDetected, ACTIVE_REVIEW_STATUS_FILTER)),
+
+    // Query 2/2 — quebra por responsável × severidade × reviewStatus.
+    // `INNER JOIN` com assignments (só incidentes JÁ atribuídos entram
+    // aqui — "unassigned" já foi contado acima) agrupado em UMA query —
+    // o número de linhas devolvidas é (nº de responsáveis × severidades ×
+    // review statuses), nunca uma linha por incidente, nunca uma query
+    // por responsável.
+    db
+      .select({
+        assigneeUserId: agentOperationalIncidentAssignments.assigneeUserId,
+        severity: sql<string>`${auditLogs.metadata}->>'severity'`,
+        reviewStatus: ACTIVE_REVIEW_STATUS_EXPR,
+        total: count(),
+      })
+      .from(auditLogs)
+      .innerJoin(agentOperationalIncidentAssignments, eq(agentOperationalIncidentAssignments.incidentAuditLogId, auditLogs.id))
+      .leftJoin(agentOperationalIncidentReviews, eq(agentOperationalIncidentReviews.incidentAuditLogId, auditLogs.id))
+      .where(and(incidentDetected, ACTIVE_REVIEW_STATUS_FILTER))
+      .groupBy(agentOperationalIncidentAssignments.assigneeUserId, sql`${auditLogs.metadata}->>'severity'`, ACTIVE_REVIEW_STATUS_EXPR),
+  ]);
+
+  const emptyBySeverity = (): Record<OperationalSeverity, number> => Object.fromEntries(OPERATIONAL_SEVERITIES.map((severity) => [severity, 0])) as Record<OperationalSeverity, number>;
+
+  const assigneeMap = new Map<number, OperationalOwnershipWorkload['assignees'][number]>();
+  for (const row of assigneeRows) {
+    const userId = row.assigneeUserId; // NOT NULL garantido pelo INNER JOIN acima.
+    const total = Number(row.total);
+
+    let entry = assigneeMap.get(userId);
+    if (!entry) {
+      entry = { userId, incidentCount: 0, bySeverity: emptyBySeverity(), byReviewStatus: { unreviewed: 0, acknowledged: 0 } };
+      assigneeMap.set(userId, entry);
+    }
+
+    entry.incidentCount += total;
+    if ((OPERATIONAL_SEVERITIES as readonly string[]).includes(row.severity)) {
+      entry.bySeverity[row.severity as OperationalSeverity] += total;
+    }
+    if (row.reviewStatus === 'unreviewed' || row.reviewStatus === 'acknowledged') {
+      entry.byReviewStatus[row.reviewStatus] += total;
+    }
+  }
+
+  // Ordem determinística — mais incidentes ativos primeiro, `userId`
+  // ascendente como desempate estável (mesmo princípio de
+  // `compareAttentionPriority`, nunca uma ordem arbitrária do banco).
+  const assignees = Array.from(assigneeMap.values()).sort((a, b) => b.incidentCount - a.incidentCount || a.userId - b.userId);
+
+  return {
+    totals: { active: Number(totalsRow?.active ?? 0), assigned: Number(totalsRow?.assigned ?? 0), unassigned: Number(totalsRow?.unassigned ?? 0) },
+    assignees,
+  };
 }
 
 export interface RecurringIncident {

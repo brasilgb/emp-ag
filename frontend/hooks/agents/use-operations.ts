@@ -22,6 +22,7 @@ import {
   getJobRunDetail,
   getJobRunLineage,
   getOperationalControlCenter,
+  getOperationalOwnershipWorkload,
   getOperationsSummary,
   getSupervisionIncidentDetail,
   getSupervisionOverview,
@@ -160,6 +161,10 @@ export function useUpdateIncidentReview(auditLogId: number) {
       // review (correio.md: "manipular review através da v3.6 atualiza a
       // projeção da fila").
       queryClient.invalidateQueries({ queryKey: ["agents", "operations", "supervision-insights", "needs-attention"] });
+      // Agentes v3.9 — a população ativa do workload usa a MESMA regra de
+      // `reviewStatus` da fila (resolve/dismiss tiram o incidente da
+      // população ativa).
+      queryClient.invalidateQueries({ queryKey: queryKeys.agents.ownershipWorkload });
     },
   });
 }
@@ -186,6 +191,20 @@ function invalidateAfterAssignmentChange(queryClient: ReturnType<typeof useQuery
   queryClient.invalidateQueries({ queryKey: queryKeys.agents.supervisionIncidentDetail(auditLogId) });
   queryClient.invalidateQueries({ queryKey: ["agents", "operations", "supervision-insights", "incidents"] });
   queryClient.invalidateQueries({ queryKey: ["agents", "operations", "supervision-insights", "needs-attention"] });
+  // Agentes v3.9 — assign/reassign/unassign muda diretamente os
+  // contadores de workload.
+  queryClient.invalidateQueries({ queryKey: queryKeys.agents.ownershipWorkload });
+}
+
+// Agentes v3.9 — Operational Ownership Workload & Human Coordination
+// Views (correio.md). Consulta pontual (o operador abre a seção para
+// consultar, não um dashboard ao vivo) — mesmo racional de
+// `useSupervisionOverview`, sem `refetchInterval`.
+export function useOperationalOwnershipWorkload() {
+  return useQuery({
+    queryKey: queryKeys.agents.ownershipWorkload,
+    queryFn: () => getOperationalOwnershipWorkload(),
+  });
 }
 
 export function useAssignIncident(auditLogId: number) {

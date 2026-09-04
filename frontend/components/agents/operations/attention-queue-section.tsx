@@ -3,6 +3,7 @@
 import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -12,6 +13,7 @@ import { ErrorState } from "@/components/states/error-state";
 import { LoadingState } from "@/components/states/loading-state";
 import { useAttentionQueue } from "@/hooks/agents/use-operations";
 import { useUsersDirectory } from "@/hooks/use-users-directory";
+import { useAuth } from "@/lib/auth/use-auth";
 import { attentionReasonLabel, incidentReviewStatusLabel, operationalIncidentTypeLabel, supervisionIncidentOutcomeLabel } from "@/lib/agents/derived";
 import { formatDateTime } from "@/lib/agents/format";
 import {
@@ -43,8 +45,15 @@ const LIMIT = 20;
  * priorização (correio.md "Prioridade operacional": determinística,
  * explicável, reproduzível) — `attentionReasons` explica por que cada
  * item está acima do próximo.
+ *
+ * `assigneeFilter`/`onAssigneeFilterChange` são CONTROLADOS pelo
+ * componente pai (correio.md v3.9 seção 7: "ao selecionar/clicar um
+ * responsável [na seção de Ownership], aplicar o filtro assigneeUserId à
+ * fila Needs Attention existente" — precisa ser a MESMA fila, nunca uma
+ * segunda listagem). "all" | "unassigned" | `String(userId)`, mesmo
+ * vocabulário usado pelo Select interno de responsável abaixo.
  */
-export function AttentionQueueSection() {
+export function AttentionQueueSection({ assigneeFilter, onAssigneeFilterChange }: { assigneeFilter: string; onAssigneeFilterChange: (value: string) => void }) {
   const [page, setPage] = useState(1);
   const [severity, setSeverity] = useState<OperationalSeverity | "all">("all");
   const [incidentType, setIncidentType] = useState<OperationalIncidentType | "all">("all");
@@ -52,14 +61,11 @@ export function AttentionQueueSection() {
   const [reviewStatus, setReviewStatus] = useState<IncidentReviewStatusOrUnreviewed | "all">("all");
   const [recurringOnly, setRecurringOnly] = useState(false);
   const [agingBucket, setAgingBucket] = useState<AgingBucket | "all">("all");
-  // Agentes v3.8 (correio.md "Frontend — Needs Attention", seção 15) —
-  // "Assignee" e "Only unassigned". `assigneeFilter` combina os dois
-  // (um único Select, mesmo idioma dos demais filtros desta seção) — o
-  // valor especial "unassigned" vira `unassignedOnly: true`.
-  const [assigneeFilter, setAssigneeFilter] = useState<string>("all");
   const [detailId, setDetailId] = useState<number | null>(null);
 
   const usersQuery = useUsersDirectory();
+  const { user } = useAuth();
+  const currentUserId = user.id;
 
   const queue = useAttentionQueue({
     page,
@@ -213,7 +219,7 @@ export function AttentionQueueSection() {
             value={assigneeFilter}
             onValueChange={(value) => {
               setPage(1);
-              setAssigneeFilter(value ?? "all");
+              onAssigneeFilterChange(value ?? "all");
             }}
           >
             <SelectTrigger className="w-48">
@@ -231,6 +237,29 @@ export function AttentionQueueSection() {
           </Select>
         </div>
       </CardHeader>
+
+      {/* Agentes v3.9 (correio.md "6. Meus incidentes") — atalhos para o
+          MESMO filtro de responsável acima, nunca uma segunda fonte de
+          dados/endpoint. */}
+      <div className="flex flex-wrap gap-2 px-6 pb-2">
+        {[
+          { value: "all", label: "Todos" },
+          { value: String(currentUserId), label: "Meus incidentes" },
+          { value: "unassigned", label: "Não atribuídos" },
+        ].map((tab) => (
+          <Button
+            key={tab.label}
+            size="sm"
+            variant={assigneeFilter === tab.value ? "default" : "outline"}
+            onClick={() => {
+              setPage(1);
+              onAssigneeFilterChange(tab.value);
+            }}
+          >
+            {tab.label}
+          </Button>
+        ))}
+      </div>
 
       <CardContent className="p-0">
         {queue.isLoading ? (

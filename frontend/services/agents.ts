@@ -47,6 +47,7 @@ import type {
   OperationalHealth,
   OperationalIncident,
   OperationalIncidentType,
+  OperationalOwnershipWorkload,
   OperationalResponse,
   OperationalSeverity,
   OperationalSupervisionReport,
@@ -823,6 +824,13 @@ export interface ListAttentionQueueParams {
 
 export function listAttentionQueue(params: ListAttentionQueueParams = {}): Promise<Paginated<AttentionQueueItem>> {
   return apiFetch(`/api/agents/operations/supervision-insights/needs-attention${toQueryString({ ...params })}`);
+}
+
+// Agentes v3.9 — Operational Ownership Workload & Human Coordination
+// Views (correio.md). Sem parâmetros — leitura consolidada, estritamente
+// read-only (seção 5).
+export function getOperationalOwnershipWorkload(): Promise<{ data: OperationalOwnershipWorkload }> {
+  return apiFetch(`/api/agents/operations/supervision-insights/ownership-workload`);
 }
 
 // Agentes v3.6 — Operational Incident Acknowledgement & Review Workflow (correio.md).

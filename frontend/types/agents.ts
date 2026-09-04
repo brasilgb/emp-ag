@@ -1325,6 +1325,23 @@ export interface AttentionQueueItem extends SupervisionIncidentSummary {
   attentionReasons: AttentionReason[];
 }
 
+// Agentes v3.9 — Operational Ownership Workload & Human Coordination
+// Views (correio.md). "Workload" significa exclusivamente "quantidade
+// observada de incidentes atualmente atribuídos dentro da população
+// operacional ativa" — NUNCA capacidade/produtividade/desempenho.
+// `byReviewStatus` só tem `unreviewed`/`acknowledged`: a população ativa
+// (mesma definição da fila Needs Attention, v3.7) já exclui
+// `resolved`/`dismissed` por construção.
+export interface OperationalOwnershipWorkload {
+  totals: { active: number; assigned: number; unassigned: number };
+  assignees: {
+    userId: number;
+    incidentCount: number;
+    bySeverity: Record<OperationalSeverity, number>;
+    byReviewStatus: { unreviewed: number; acknowledged: number };
+  }[];
+}
+
 // Agentes v2.6 — Agent Responsibilities, Operational Ownership & Escalation (correio.md).
 export const RESPONSIBILITY_TYPES = ["monitor", "review", "coordinate", "follow_up"] as const;
 export type ResponsibilityType = (typeof RESPONSIBILITY_TYPES)[number];

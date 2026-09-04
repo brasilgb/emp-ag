@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
 
 import { AgentsSubNav } from "@/components/agents/agents-sub-nav";
-import { AttentionQueueSection } from "@/components/agents/operations/attention-queue-section";
 import { ControlCenterSection } from "@/components/agents/operations/control-center-section";
 import { OperationsDashboard } from "@/components/agents/operations/operations-dashboard";
 import { OperationsSupervisorDashboard } from "@/components/agents/operations/operations-supervisor-dashboard";
 import { OperationalSupervisionSchedulerCard } from "@/components/agents/operations/operational-supervision-scheduler-card";
+import { OwnershipAndAttentionSection } from "@/components/agents/operations/ownership-and-attention-section";
 import { SupervisionInsightsSection } from "@/components/agents/operations/supervision-insights-section";
 import { SupervisionRunHistorySection } from "@/components/agents/operations/supervision-run-history-section";
 
@@ -77,8 +77,12 @@ export default function AgentOperationsPage() {
           Attention Management") — fila humana de revisão, construída
           exclusivamente sobre v3.5/v3.6 (nenhuma tabela nova, nenhum
           conceito novo de incidente). Antes do histórico completo: é o
-          que o operador olha primeiro ao entrar nesta seção. */}
-      <AttentionQueueSection />
+          que o operador olha primeiro ao entrar nesta seção.
+          Agentes v3.9 (correio.md "Operational Ownership Workload &
+          Human Coordination Views") — "Ownership" (workload por
+          responsável) acoplado à MESMA fila, nunca uma segunda
+          listagem: clicar num responsável filtra a fila abaixo. */}
+      <OwnershipAndAttentionSection />
 
       <SupervisionInsightsSection />
     </div>

@@ -35,7 +35,7 @@ import { getOperationalSupervisionSchedulerStatus } from '../../agents/operation
 import { isOperationalSupervisionEnabled, setOperationalSupervisionEnabled } from '../../agents/operations/scheduler-settings.js';
 import { SupervisionAlreadyRunningError } from '../../agents/operations/supervisor-guard.js';
 import { getSupervisionRunById, listSupervisionRuns, runObservedOperationalSupervision } from '../../agents/operations/supervision-run-history.js';
-import { getSupervisionIncidentDetail, getSupervisionOverview, listAttentionQueue, listRecurringIncidents, listSupervisionIncidents } from '../../agents/operations/supervision-insights-service.js';
+import { getOperationalOwnershipWorkload, getSupervisionIncidentDetail, getSupervisionOverview, listAttentionQueue, listRecurringIncidents, listSupervisionIncidents } from '../../agents/operations/supervision-insights-service.js';
 import { getControlCenterOverview, getOperationalQueues } from '../../agents/operations/control-center-service.js';
 import { audit } from '../../services/audit.js';
 
@@ -566,5 +566,17 @@ export async function operationsRoutes(app: FastifyInstance) {
 
       return { data: rows, pagination: paginationMeta({ page: query.data.page, limit: query.data.limit, total }) };
     },
+  );
+
+  // Agentes v3.9 (correio.md "Operational Ownership Workload & Human
+  // Coordination Views") — leitura consolidada de ownership. Mesma
+  // permission de leitura de toda esta seção (`agents.operations.read`);
+  // nunca exige `agents.operations.manage` (correio.md seção 5: "o
+  // endpoint deve ser estritamente read-only") — sem query params, sem
+  // corpo, sem mutação/audit alguma (testado explicitamente).
+  app.get(
+    '/operations/supervision-insights/ownership-workload',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async () => ({ data: await getOperationalOwnershipWorkload() }),
   );
 }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 
 import bcrypt from 'bcryptjs';
-import { eq, inArray } from 'drizzle-orm';
+import { count, eq, inArray } from 'drizzle-orm';
 
 import { buildApp } from '../../app.js';
 import { db } from '../../db/index.js';
@@ -375,6 +375,40 @@ describe('Agentes v1.6 — Operations, Incidents, Audit, Autonomy switch', () =>
       const { data, pagination } = response.json();
       assert.ok(Array.isArray(data));
       assert.ok(pagination);
+    });
+  });
+
+  // Agentes v3.9 (correio.md "Operational Ownership Workload & Human
+  // Coordination Views", "11. Testes obrigatórios" — itens 15/16/17
+  // (autorização) e 18 (endpoint estritamente read-only, nunca produz
+  // mutação/audit)). Cobertura de contagens/invariantes já vive em
+  // `agents/operations/ownership-workload-service.test.ts` (nível de
+  // serviço) — aqui só a borda HTTP.
+  describe('GET /operations/supervision-insights/ownership-workload', () => {
+    test('16: sem permission → 403', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/ownership-workload', headers: authHeader(limitedToken) });
+      assert.equal(response.statusCode, 403);
+    });
+
+    test('15/17: agents.operations.read (sozinho, sem manage) → 200, forma esperada', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/ownership-workload', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 200, response.body);
+      const { data } = response.json();
+      assert.equal(typeof data.totals.active, 'number');
+      assert.equal(typeof data.totals.assigned, 'number');
+      assert.equal(typeof data.totals.unassigned, 'number');
+      assert.equal(data.totals.assigned + data.totals.unassigned, data.totals.active);
+      assert.ok(Array.isArray(data.assignees));
+    });
+
+    test('18: endpoint estritamente read-only — não produz nenhuma mutação/audit operacional', async () => {
+      const [{ total: auditCountBefore }] = await db.select({ total: count() }).from(auditLogs);
+
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/ownership-workload', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 200);
+
+      const [{ total: auditCountAfter }] = await db.select({ total: count() }).from(auditLogs);
+      assert.equal(Number(auditCountAfter), Number(auditCountBefore), 'GET no workload nunca deveria gravar um audit log novo');
     });
   });
 

@@ -145,5 +145,7 @@ export const queryKeys = {
     attentionQueue: (params?: unknown) => ["agents", "operations", "supervision-insights", "needs-attention", params ?? {}] as const,
     // Agentes v3.8 — Operational Incident Ownership & Assignment.
     incidentAssignment: (auditLogId: number) => ["agents", "operations", "supervision-insights", "incidents", auditLogId, "assignment"] as const,
+    // Agentes v3.9 — Operational Ownership Workload & Human Coordination Views.
+    ownershipWorkload: ["agents", "operations", "supervision-insights", "ownership-workload"] as const,
   },
 };
