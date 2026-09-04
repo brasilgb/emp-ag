@@ -6,8 +6,10 @@ import { queryKeys } from "@/lib/query/keys";
 import {
   type ListAuditLogsParams,
   type ListIncidentsParams,
+  type ListSupervisionIncidentsParams,
   type ListSupervisionRunsParams,
   type OperationsSummaryParams,
+  type SupervisionInsightsPeriodParams,
   deleteJobSetting,
   deleteSetting,
   getFollowUpTimeline,
@@ -16,11 +18,15 @@ import {
   getJobRunLineage,
   getOperationalControlCenter,
   getOperationsSummary,
+  getSupervisionIncidentDetail,
+  getSupervisionOverview,
   getSupervisionRun,
   listAuditLogs,
   listIncidents,
   listJobSettings,
+  listRecurringIncidents,
   listSettings,
+  listSupervisionIncidents,
   listSupervisionRuns,
   setGlobalAutonomy,
   setJobSetting,
@@ -68,6 +74,40 @@ export function useSupervisionRun(id: number | null) {
     queryKey: queryKeys.agents.supervisionRun(id ?? -1),
     queryFn: () => getSupervisionRun(id as number),
     enabled: id !== null,
+  });
+}
+
+// Agentes v3.5 — Operational Supervision Insights & Incident Review
+// (correio.md). Camada de leitura sobre v2.5/v2.6/v3.4 — mesmo racional
+// de `useSupervisionRuns` acima (consulta pontual, não um dashboard ao
+// vivo tipo useOperationsSummary; sem refetchInterval).
+export function useSupervisionOverview(params: SupervisionInsightsPeriodParams = {}) {
+  return useQuery({
+    queryKey: queryKeys.agents.supervisionOverview(params),
+    queryFn: () => getSupervisionOverview(params),
+  });
+}
+
+export function useSupervisionIncidents(params: ListSupervisionIncidentsParams = {}) {
+  return useQuery({
+    queryKey: queryKeys.agents.supervisionIncidents(params),
+    queryFn: () => listSupervisionIncidents(params),
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useSupervisionIncidentDetail(auditLogId: number | null) {
+  return useQuery({
+    queryKey: queryKeys.agents.supervisionIncidentDetail(auditLogId ?? -1),
+    queryFn: () => getSupervisionIncidentDetail(auditLogId as number),
+    enabled: auditLogId !== null,
+  });
+}
+
+export function useRecurringIncidents(params: SupervisionInsightsPeriodParams = {}) {
+  return useQuery({
+    queryKey: queryKeys.agents.recurringIncidents(params),
+    queryFn: () => listRecurringIncidents(params),
   });
 }
 

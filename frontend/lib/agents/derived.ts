@@ -52,6 +52,7 @@ import type {
   SettingSource,
   SignalDomain,
   SignalSeverity,
+  SupervisionIncidentOutcome,
   SupervisionRunStatus,
   SupervisionRunTriggerSource,
 } from "@/types/agents";
@@ -927,6 +928,24 @@ export const SUPERVISION_RUN_TRIGGER_SOURCE_LABELS: Record<SupervisionRunTrigger
 
 export function supervisionRunTriggerSourceLabel(triggerSource: SupervisionRunTriggerSource): string {
   return SUPERVISION_RUN_TRIGGER_SOURCE_LABELS[triggerSource] ?? triggerSource;
+}
+
+// Agentes v3.5 — Operational Supervision Insights & Incident Review.
+// `skipped` deliberadamente distinto de `observed` (correio.md "3.
+// Incident Review": "resultado") — um branch defensivo sem side effect
+// (entidade não recuperável/já resolvida) não é o mesmo que uma decisão
+// consciente de só observar.
+export const SUPERVISION_INCIDENT_OUTCOME_LABELS: Record<SupervisionIncidentOutcome, string> = {
+  observed: "Observado",
+  recovered: "Recuperado",
+  autonomy_restricted: "Autonomia restrita",
+  escalated: "Escalado",
+  failed: "Falhou",
+  skipped: "Ignorado (sem ação aplicável)",
+};
+
+export function supervisionIncidentOutcomeLabel(outcome: SupervisionIncidentOutcome): string {
+  return SUPERVISION_INCIDENT_OUTCOME_LABELS[outcome] ?? outcome;
 }
 
 export function formatAgeSeconds(ageSeconds: number): string {

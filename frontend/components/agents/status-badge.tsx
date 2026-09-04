@@ -38,6 +38,7 @@ import {
   recoveryResultLabel,
   reviewOutcomeLabel,
   signalSeverityLabel,
+  supervisionIncidentOutcomeLabel,
   supervisionRunStatusLabel,
   type DerivedApprovalState,
 } from "@/lib/agents/derived";
@@ -77,6 +78,7 @@ import type {
   RecoveryResult,
   ReviewOutcome,
   SignalSeverity,
+  SupervisionIncidentOutcome,
   SupervisionRunStatus,
 } from "@/types/agents";
 
@@ -691,6 +693,23 @@ export function SupervisionRunStatusBadge({ status }: { status: SupervisionRunSt
   return (
     <Badge variant="secondary" className={cn("border-transparent", SUPERVISION_RUN_STATUS_STYLES[status])}>
       {supervisionRunStatusLabel(status)}
+    </Badge>
+  );
+}
+
+const SUPERVISION_INCIDENT_OUTCOME_STYLES: Record<SupervisionIncidentOutcome, string> = {
+  observed: "bg-muted text-muted-foreground",
+  recovered: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  autonomy_restricted: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  escalated: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  failed: "bg-red-500/10 text-red-700 dark:text-red-400",
+  skipped: "bg-muted text-muted-foreground",
+};
+
+export function SupervisionIncidentOutcomeBadge({ outcome }: { outcome: SupervisionIncidentOutcome }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", SUPERVISION_INCIDENT_OUTCOME_STYLES[outcome])}>
+      {supervisionIncidentOutcomeLabel(outcome)}
     </Badge>
   );
 }

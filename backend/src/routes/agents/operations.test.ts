@@ -252,6 +252,76 @@ describe('Agentes v1.6 — Operations, Incidents, Audit, Autonomy switch', () =>
     });
   });
 
+  // Agentes v3.5 (correio.md "Operational Supervision Insights & Incident
+  // Review", "8. Testes obrigatórios" — isolamento/autorização, ausência
+  // de erro com histórico vazio). Cobertura de conteúdo/filtros/vínculo
+  // run→incident→response→escalation/recorrência já vive em
+  // `agents/operations/supervision-insights-service.test.ts` (nível de
+  // serviço, fixtures determinísticas mais fáceis de controlar) — aqui só
+  // a borda HTTP: autorização e forma real da resposta.
+  describe('GET /operations/supervision-insights/*', () => {
+    test('sem permission → 403 em todas as 4 rotas', async () => {
+      for (const url of [
+        '/agents/operations/supervision-insights/overview',
+        '/agents/operations/supervision-insights/incidents',
+        '/agents/operations/supervision-insights/incidents/1',
+        '/agents/operations/supervision-insights/recurring',
+      ]) {
+        const response = await app.inject({ method: 'GET', url, headers: authHeader(limitedToken) });
+        assert.equal(response.statusCode, 403, url);
+      }
+    });
+
+    test('overview: com permission → 200, forma esperada (mesmo com histórico vazio de filtros de data absurdos)', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/overview?dateFrom=2999-01-01', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 200, response.body);
+
+      const { data } = response.json();
+      assert.equal(typeof data.totalRuns, 'number');
+      assert.equal(typeof data.totalFindings, 'number');
+      assert.equal(typeof data.totalIncidentsDetected, 'number');
+      assert.equal(typeof data.escalationsCreated, 'number');
+      assert.equal(typeof data.recurringIncidentsCount, 'number');
+      for (const severity of ['info', 'warning', 'critical']) {
+        assert.equal(typeof data.incidentsBySeverity[severity], 'number');
+      }
+      for (const key of ['observed', 'recovered', 'autonomyRestricted', 'escalated', 'failed']) {
+        assert.equal(typeof data.responsesApplied[key], 'number');
+      }
+    });
+
+    test('incidents: com permission → 200, paginado, filtros aceitos, sem quebrar com histórico vazio', async () => {
+      const response = await app.inject({
+        method: 'GET',
+        url: '/agents/operations/supervision-insights/incidents?severity=critical&incidentType=repeated_job_failure&response=restrict_autonomy&hasEscalation=false&limit=5',
+        headers: authHeader(ceoToken),
+      });
+      assert.equal(response.statusCode, 200, response.body);
+      const { data, pagination } = response.json();
+      assert.ok(Array.isArray(data));
+      assert.ok(pagination);
+    });
+
+    test('incidents: filtro inválido → 400', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/incidents?severity=nao-existe', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 400);
+    });
+
+    test('incidents/:auditLogId: id inválido → 400; inexistente → 404', async () => {
+      const invalid = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/incidents/not-a-number', headers: authHeader(ceoToken) });
+      assert.equal(invalid.statusCode, 400);
+
+      const missing = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/incidents/999999999', headers: authHeader(ceoToken) });
+      assert.equal(missing.statusCode, 404);
+    });
+
+    test('recurring: com permission → 200, array (nunca erro, mesmo sem nenhuma recorrência ainda detectada)', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/recurring', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 200, response.body);
+      assert.ok(Array.isArray(response.json().data));
+    });
+  });
+
   describe('GET /incidents', () => {
     let jobForIncidents: Awaited<ReturnType<typeof createJob>>;
     let repeatedFailureWindow: number;

@@ -44,8 +44,15 @@ import type {
   OperationalFollowUp,
   OperationalHealth,
   OperationalIncident,
+  OperationalIncidentType,
+  OperationalResponse,
+  OperationalSeverity,
   OperationalSupervisionReport,
   OperationalSupervisionSchedulerStatus,
+  RecurringIncident,
+  SupervisionIncidentDetail,
+  SupervisionIncidentSummary,
+  SupervisionOverview,
   SupervisionRun,
   SupervisionRunStatus,
   SupervisionRunTriggerSource,
@@ -745,6 +752,40 @@ export function listSupervisionRuns(params: ListSupervisionRunsParams = {}): Pro
 
 export function getSupervisionRun(id: number): Promise<{ data: SupervisionRun }> {
   return apiFetch(`/api/agents/operations/supervision-runs/${id}`);
+}
+
+// Agentes v3.5 — Operational Supervision Insights & Incident Review (correio.md).
+export interface SupervisionInsightsPeriodParams {
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+export function getSupervisionOverview(params: SupervisionInsightsPeriodParams = {}): Promise<{ data: SupervisionOverview }> {
+  return apiFetch(`/api/agents/operations/supervision-insights/overview${toQueryString({ ...params })}`);
+}
+
+export interface ListSupervisionIncidentsParams extends SupervisionInsightsPeriodParams {
+  page?: number;
+  limit?: number;
+  severity?: OperationalSeverity;
+  incidentType?: OperationalIncidentType;
+  response?: OperationalResponse;
+  hasEscalation?: boolean;
+  entityType?: string;
+  entityId?: string;
+  runStatus?: SupervisionRunStatus;
+}
+
+export function listSupervisionIncidents(params: ListSupervisionIncidentsParams = {}): Promise<Paginated<SupervisionIncidentSummary>> {
+  return apiFetch(`/api/agents/operations/supervision-insights/incidents${toQueryString({ ...params })}`);
+}
+
+export function getSupervisionIncidentDetail(auditLogId: number): Promise<{ data: SupervisionIncidentDetail }> {
+  return apiFetch(`/api/agents/operations/supervision-insights/incidents/${auditLogId}`);
+}
+
+export function listRecurringIncidents(params: SupervisionInsightsPeriodParams = {}): Promise<{ data: RecurringIncident[] }> {
+  return apiFetch(`/api/agents/operations/supervision-insights/recurring${toQueryString({ ...params })}`);
 }
 
 // Agentes v2.6 — Agent Responsibilities, Operational Ownership & Escalation (correio.md).

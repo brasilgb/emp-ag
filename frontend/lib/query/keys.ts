@@ -134,5 +134,10 @@ export const queryKeys = {
     // Agentes v3.4 — Operational Supervision Observability & Run History.
     supervisionRuns: (params?: unknown) => ["agents", "operations", "supervision-runs", params ?? {}] as const,
     supervisionRun: (id: number) => ["agents", "operations", "supervision-runs", id] as const,
+    // Agentes v3.5 — Operational Supervision Insights & Incident Review.
+    supervisionOverview: (params?: unknown) => ["agents", "operations", "supervision-insights", "overview", params ?? {}] as const,
+    supervisionIncidents: (params?: unknown) => ["agents", "operations", "supervision-insights", "incidents", params ?? {}] as const,
+    supervisionIncidentDetail: (auditLogId: number) => ["agents", "operations", "supervision-insights", "incidents", auditLogId] as const,
+    recurringIncidents: (params?: unknown) => ["agents", "operations", "supervision-insights", "recurring", params ?? {}] as const,
   },
 };

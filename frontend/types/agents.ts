@@ -1191,6 +1191,70 @@ export interface SupervisionRun {
   createdAt: string;
 }
 
+// Agentes v3.5 — Operational Supervision Insights & Incident Review
+// (correio.md). Camada de LEITURA sobre dados já persistidos por
+// v2.5/v2.6/v3.4 — nenhuma entidade nova, só uma forma consolidada de
+// consultá-los (ver docblock de
+// backend/src/agents/operations/supervision-insights-service.ts).
+export interface SupervisionOverview {
+  totalRuns: number;
+  runsByStatus: Record<SupervisionRunStatus, number>;
+  totalFindings: number;
+  totalIncidentsDetected: number;
+  incidentsBySeverity: Record<OperationalSeverity, number>;
+  responsesApplied: {
+    observed: number;
+    recovered: number;
+    autonomyRestricted: number;
+    escalated: number;
+    failed: number;
+  };
+  escalationsCreated: number;
+  recurringIncidentsCount: number;
+}
+
+export type SupervisionIncidentOutcome = "observed" | "recovered" | "autonomy_restricted" | "escalated" | "failed" | "skipped";
+
+export interface SupervisionIncidentSummary {
+  auditLogId: number;
+  incidentType: OperationalIncidentType;
+  entityType: string;
+  entityId: string;
+  severity: OperationalSeverity;
+  response: OperationalResponse;
+  dryRun: boolean;
+  detectedAt: string;
+  runId: number | null;
+  runStatus: SupervisionRunStatus | null;
+  outcome: SupervisionIncidentOutcome;
+  hasEscalation: boolean;
+}
+
+export interface SupervisionIncidentDetail extends SupervisionIncidentSummary {
+  problem: string;
+  reason: string | null;
+  errorMessage: string | null;
+  escalation: {
+    id: number;
+    status: string;
+    severity: string;
+    reason: string;
+    targetAgentId: number | null;
+    targetUserId: number | null;
+    createdAt: string;
+  } | null;
+  auditRefs: { id: number; action: string; createdAt: string }[];
+}
+
+export interface RecurringIncident {
+  incidentType: OperationalIncidentType;
+  entityType: string;
+  entityId: string;
+  occurrences: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+}
+
 // Agentes v2.6 — Agent Responsibilities, Operational Ownership & Escalation (correio.md).
 export const RESPONSIBILITY_TYPES = ["monitor", "review", "coordinate", "follow_up"] as const;
 export type ResponsibilityType = (typeof RESPONSIBILITY_TYPES)[number];

@@ -1,45 +1,100 @@
-# Agentes — Saneamento técnico pós-v3.4
+Agentes v3.5 — Operational Supervision Insights & Incident Review
 
-Execute exclusivamente o saneamento das 2 falhas pré-existentes identificadas no fechamento da v3.4.
+Objetivo:
+Transformar o histórico operacional já existente em uma camada clara de análise e revisão de incidentes, permitindo entender recorrência, severidade, respostas aplicadas e resultados do Operational Supervisor.
 
-## Escopo
+Regras:
+- Não aumentar autonomia dos agentes.
+- Não criar novo supervisor.
+- Não criar novo Circuit Breaker.
+- Não alterar Planner, Policy Evaluator ou Executor salvo necessidade estritamente de leitura/integração já existente.
+- Reutilizar supervisor runs, findings, incidents, responses, escalations e auditoria existentes.
+- Manter segurança, isolamento e fail-closed.
+- Não duplicar dados que já tenham fonte oficial.
+- Toda mudança estrutural deve ser justificada antes de migration.
 
-1. `backend/src/routes/agents/job-runs.test.ts:112`
+Escopo funcional:
 
-   * Investigue a causa exata do nondeterminismo do mock do LLM Interpreter.
-   * O teste deve ser determinístico.
-   * Não relaxe assertions apenas para fazê-lo passar.
-   * Não introduza chamadas reais a LLM.
-   * Preserve o comportamento funcional atual, salvo se encontrar um bug real.
+1. Operational Supervision Overview
+Criar visão consolidada para análise dos runs de supervisão:
+- total de runs;
+- runs concluídos/falhos;
+- incidentes encontrados;
+- distribuição por severidade;
+- responses aplicadas;
+- recuperações automáticas;
+- restrições de autonomia;
+- escalonamentos para atenção manual;
+- incidentes recorrentes.
 
-2. `backend/src/routes/agents/settings.test.ts:386`
+2. Histórico pesquisável
+Permitir consulta do histórico com filtros por:
+- período;
+- status do run;
+- severidade;
+- tipo/categoria do finding ou incidente;
+- response aplicada;
+- presença de escalonamento;
+- agente/job quando houver relacionamento disponível.
 
-   * Investigue por que o override de `circuit.failureThreshold` não abre o circuito na primeira falha conforme esperado.
-   * Determine se a divergência está na implementação, propagação/configuração do override ou no próprio teste.
-   * Corrija a causa raiz.
-   * Não crie um segundo mecanismo de Circuit Breaker nem bypass específico para testes.
+3. Incident Review
+Criar detalhe operacional de um incidente/finding mostrando, quando existentes:
+- origem;
+- run de supervisão;
+- timestamp;
+- severidade;
+- evidências/contexto persistido;
+- decisão tomada;
+- response aplicada;
+- resultado;
+- escalation relacionada;
+- referências de auditoria;
+- agente/job/run relacionado.
 
-## Restrições
+4. Recorrência
+Identificar incidentes recorrentes usando os dados existentes.
+Não introduzir classificação por IA.
+A regra deve ser determinística e auditável.
+Caso o modelo atual não possua chave adequada para agrupamento, documentar a limitação antes de propor schema novo.
 
-* Não alterar funcionalidades da v3.4.
-* Não alterar `supervisor-guard.ts`.
-* Não iniciar nova versão funcional dos Agentes.
-* Não criar migrations, salvo se surgir evidência inequívoca de necessidade — neste caso, pare e reporte antes.
-* Não fazer rebuild/deploy dos containers permanentes.
-* Não fazer commit.
+5. Métricas
+Disponibilizar métricas agregadas via backend, evitando cálculo inconsistente no frontend.
+Preferir queries/read models sobre a fonte oficial existente.
+Não persistir agregados se puderem ser derivados com custo razoável.
 
-## Validação obrigatória
+6. Frontend
+Adicionar ou evoluir a área do Control Center/Agents com:
+- dashboard de supervisão;
+- filtros;
+- tabela de histórico;
+- detalhe de incidente;
+- indicadores operacionais simples e legíveis.
+Evitar gráficos decorativos sem valor operacional.
 
-Após as correções:
+7. Segurança
+- respeitar autenticação e autorização existentes;
+- não expor payloads sensíveis, secrets, tokens ou credenciais;
+- manter autorização server-side;
+- nenhum acesso direto do frontend ao banco;
+- revisar campos de evidência/contexto antes de exposição pela API.
 
-* rodar isoladamente os testes afetados múltiplas vezes para comprovar determinismo;
-* executar `npx tsc --noEmit`;
-* executar a suíte completa do backend com `--test-concurrency=1`;
-* confirmar a meta de baseline integral, atualmente esperada em `738/738`;
-* executar `git diff --check`;
-* apresentar `git status`;
-* explicar a causa raiz de cada falha e por que a correção não mascara regressões.
+8. Testes obrigatórios
+Cobrir:
+- filtros;
+- agregações;
+- isolamento/autorização;
+- vínculo run → incident/finding → response → escalation;
+- recorrência;
+- ausência de dados sensíveis;
+- comportamento com histórico vazio;
+- regressão do histórico v3.4.
 
-Se a suíte completa não chegar a 738/738, não trate como concluído: identifique e reporte precisamente qualquer falha restante.
-
-Entregue relatório final para revisão, sem commit.
+Gate de fechamento:
+- npx tsc --noEmit limpo;
+- suíte completa do backend verde;
+- testes novos determinísticos;
+- frontend lint/typecheck/build limpos conforme scripts existentes;
+- git diff --check limpo;
+- nenhuma alteração fora do escopo sem justificativa;
+- relatório final com arquivos, migrations, endpoints, testes e git status;
+- não fazer commit até aprovação.

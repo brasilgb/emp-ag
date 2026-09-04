@@ -5,6 +5,7 @@ import { ControlCenterSection } from "@/components/agents/operations/control-cen
 import { OperationsDashboard } from "@/components/agents/operations/operations-dashboard";
 import { OperationsSupervisorDashboard } from "@/components/agents/operations/operations-supervisor-dashboard";
 import { OperationalSupervisionSchedulerCard } from "@/components/agents/operations/operational-supervision-scheduler-card";
+import { SupervisionInsightsSection } from "@/components/agents/operations/supervision-insights-section";
 import { SupervisionRunHistorySection } from "@/components/agents/operations/supervision-run-history-section";
 
 export const metadata: Metadata = { title: "Operações de Agentes" };
@@ -57,6 +58,20 @@ export default function AgentOperationsPage() {
           ou manual), integrado a esta MESMA seção de Supervisão
           Operacional (nunca uma página nova). */}
       <SupervisionRunHistorySection />
+
+      {/* Agentes v3.5 (correio.md "Operational Supervision Insights &
+          Incident Review") — evolui a MESMA seção de Supervisão
+          Operacional (nunca uma página nova): visão consolidada,
+          histórico pesquisável de incidentes, detalhe por incidente e
+          recorrência — tudo sobre dados já persistidos por v2.5/v2.6/v3.4,
+          nenhuma tabela nova. */}
+      <div>
+        <h2 className="text-lg font-semibold tracking-tight">Insights de Supervisão</h2>
+        <p className="text-sm text-muted-foreground">
+          Recorrência, severidade, respostas aplicadas e resultados — análise e revisão dos incidentes já detectados.
+        </p>
+      </div>
+      <SupervisionInsightsSection />
     </div>
   );
 }

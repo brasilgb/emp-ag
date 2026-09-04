@@ -269,7 +269,15 @@ async function applyResponse(
           action: 'agents.operations.safe_recovery',
           entityType: incident.entityType,
           entityId: incident.entityId,
-          metadata: { recoveryResult: recoveryResult.result, reason: recoveryResult.reason },
+          // v3.5 (correio.md "Operational Supervision Insights & Incident
+          // Review") — `incidentType` aditivo, mesmo padrão já usado em
+          // `agents.operations.incident.detected`/`.incident.failed`
+          // acima. Sem isso, dois incidentes de tipos DIFERENTES na MESMA
+          // entidade (ex.: `job_repeated_failure` e `run_stuck` no mesmo
+          // Job) seriam indistinguíveis ao correlacionar este audit de
+          // volta ao incidente que o originou — nenhuma lógica de decisão
+          // muda, só o que já era gravado ganha um campo a mais.
+          metadata: { incidentType: incident.type, recoveryResult: recoveryResult.result, reason: recoveryResult.reason },
         });
       }
 
@@ -298,7 +306,9 @@ async function applyResponse(
           action: 'agents.operations.autonomy_restricted',
           entityType: 'agent_job',
           entityId: incident.entityId,
-          metadata: { reason: restrictResult.reason },
+          // v3.5 — `incidentType` aditivo (mesmo racional do comentário
+          // acima em `agents.operations.safe_recovery`).
+          metadata: { incidentType: incident.type, reason: restrictResult.reason },
         });
       }
 
@@ -319,7 +329,9 @@ async function applyResponse(
         action: 'agents.operations.manual_attention',
         entityType: incident.entityType,
         entityId: incident.entityId,
-        metadata: { decisionId: decision.id, reason: recommendation.reason },
+        // v3.5 — `incidentType` aditivo (mesmo racional do comentário
+        // acima em `agents.operations.safe_recovery`).
+        metadata: { incidentType: incident.type, decisionId: decision.id, reason: recommendation.reason },
       });
 
       return { ...base, outcome: 'escalated', reason: recommendation.reason };

@@ -16,9 +16,12 @@ import { AUTONOMY_BLOCK_REASONS } from '../../agents/autonomy/reasons.js';
 
 import { badRequest, currentUserId, notFound, paginationMeta } from './helpers.js';
 import {
+  listSupervisionIncidentsQuerySchema,
   listSupervisionRunsQuerySchema,
   operationsSummaryQuerySchema,
   patchSupervisionSchedulerSchema,
+  supervisionIncidentIdParamSchema,
+  supervisionInsightsOverviewQuerySchema,
   supervisionRunIdParamSchema,
   superviseQuerySchema,
 } from '../../agents/operations/schemas.js';
@@ -27,6 +30,7 @@ import { getOperationalSupervisionSchedulerStatus } from '../../agents/operation
 import { isOperationalSupervisionEnabled, setOperationalSupervisionEnabled } from '../../agents/operations/scheduler-settings.js';
 import { SupervisionAlreadyRunningError } from '../../agents/operations/supervisor-guard.js';
 import { getSupervisionRunById, listSupervisionRuns, runObservedOperationalSupervision } from '../../agents/operations/supervision-run-history.js';
+import { getSupervisionIncidentDetail, getSupervisionOverview, listRecurringIncidents, listSupervisionIncidents } from '../../agents/operations/supervision-insights-service.js';
 import { getControlCenterOverview, getOperationalQueues } from '../../agents/operations/control-center-service.js';
 import { audit } from '../../services/audit.js';
 
@@ -356,6 +360,66 @@ export async function operationsRoutes(app: FastifyInstance) {
       if (!run) return notFound(reply, 'Execução de supervisão não encontrada.');
 
       return { data: run };
+    },
+  );
+
+  // Agentes v3.5 (correio.md "Operational Supervision Insights & Incident
+  // Review") — leitura pura sobre dados já persistidos (v2.5/v2.6/v3.4),
+  // mesma permission `agents.operations.read` de toda esta rota (correio.md
+  // não pediu uma permission nova, e reaproveitar é o padrão já
+  // estabelecido para /supervision-runs acima).
+  app.get(
+    '/operations/supervision-insights/overview',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async (request, reply) => {
+      const query = supervisionInsightsOverviewQuerySchema.safeParse(request.query);
+      if (!query.success) return badRequest(reply, query.error);
+
+      return { data: await getSupervisionOverview(query.data) };
+    },
+  );
+
+  app.get(
+    '/operations/supervision-insights/incidents',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async (request, reply) => {
+      const query = listSupervisionIncidentsQuerySchema.safeParse(request.query);
+      if (!query.success) return badRequest(reply, query.error);
+
+      // `hasEscalation` deliberadamente tri-state (ver comentário em
+      // schemas.ts) — só vira boolean real aqui, na borda HTTP.
+      const { hasEscalation, ...rest } = query.data;
+      const { rows, total } = await listSupervisionIncidents({
+        ...rest,
+        hasEscalation: hasEscalation === undefined ? undefined : hasEscalation === 'true',
+      });
+
+      return { data: rows, pagination: paginationMeta({ page: query.data.page, limit: query.data.limit, total }) };
+    },
+  );
+
+  app.get(
+    '/operations/supervision-insights/incidents/:auditLogId',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async (request, reply) => {
+      const params = supervisionIncidentIdParamSchema.safeParse(request.params);
+      if (!params.success) return badRequest(reply, params.error);
+
+      const detail = await getSupervisionIncidentDetail(params.data.auditLogId);
+      if (!detail) return notFound(reply, 'Incidente de supervisão não encontrado.');
+
+      return { data: detail };
+    },
+  );
+
+  app.get(
+    '/operations/supervision-insights/recurring',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async (request, reply) => {
+      const query = supervisionInsightsOverviewQuerySchema.safeParse(request.query);
+      if (!query.success) return badRequest(reply, query.error);
+
+      return { data: await listRecurringIncidents(query.data) };
     },
   );
 }
