@@ -1,3 +1,4 @@
+import { database } from '../../services/database.js';
 import { runOperationalSupervision } from './supervisor-service.js';
 import type { RunOperationalSupervisionOptions } from './supervisor-service.js';
 import type { OperationalSupervisionReport } from './health-types.js';
@@ -13,18 +14,20 @@ import type { OperationalSupervisionReport } from './health-types.js';
  * diretamente (que continua exportada e testável isoladamente, sem
  * guard, para os testes unitários da v2.5).
  *
- * Guard local em memória (`let running`) — suficiente nesta versão
- * porque a aplicação roda numa única instância (seção 10, sem réplicas
- * configuradas em `docker-compose.yml`); documentado como limitação
- * real no relatório de entrega (nunca protege contra duas instâncias de
- * backend rodando simultaneamente — precisaria de lock distribuído,
- * Redis por exemplo, se isso mudar).
- *
- * Sem `await` entre a checagem (`if (running)`) e a escrita
- * (`running = true`) — o event loop de Node é single-threaded, então não
- * existe janela de corrida entre as duas linhas (nunca precisa de
- * `SELECT`/`UPDATE` condicional aqui, ao contrário dos guards que
- * protegem múltiplos PROCESSOS/conexões distintas, como os das v2.1-v2.5).
+ * v3.3 (correio.md "Distributed Operational Supervision Locking") —
+ * limitação explícita da v3.2: o guard local (`let running`) só protege
+ * chamadas concorrentes DENTRO do mesmo processo — nada impedia duas
+ * instâncias de backend (dois containers, um deploy horizontal) de
+ * rodar `runOperationalSupervision` simultaneamente, cada uma com sua
+ * própria variável `running` em memória, sem nenhuma coordenação entre
+ * si. Resolvido com um PostgreSQL advisory lock (`pg_try_advisory_lock`)
+ * — infraestrutura já obrigatória do projeto, sem exigir Redis/migration
+ * novos. O guard local É PRESERVADO como fast-path (evita o round-trip ao
+ * Postgres no caso comum de uma chamada concorrente no MESMO processo),
+ * nunca como fonte de verdade paralela: a decisão real de "quem executa"
+ * é sempre o advisory lock — o guard local só pode ficar `true` quando
+ * este processo genuinamente detém o lock, nunca antes, nunca
+ * independentemente dele.
  */
 export class SupervisionAlreadyRunningError extends Error {
   constructor() {
@@ -32,6 +35,16 @@ export class SupervisionAlreadyRunningError extends Error {
     this.name = 'SupervisionAlreadyRunningError';
   }
 }
+
+// Chave do advisory lock (correio.md seção 3) — um bigint CONSTANTE e
+// documentado, nunca aleatório/timestamp/gerado por execução: a chave É
+// a identidade do lock, então precisa ser a MESMA em toda instância do
+// backend, para sempre (trocá-la depois de implantada faria instâncias
+// antigas e novas deixarem de se coordenar entre si durante um deploy).
+// Escolhida arbitrariamente (sem significado especial) — só precisa ser
+// estável. `pg_try_advisory_lock(bigint)` usa o espaço de 64 bits
+// assinado do Postgres; este valor cabe com folga.
+export const OPERATIONAL_SUPERVISION_LOCK_KEY = 7412583900n;
 
 let running = false;
 
@@ -42,14 +55,54 @@ export function isOperationalSupervisionRunning(): boolean {
 /**
  * `runner` é injetável só para teste (mesmo padrão de `collectors?` em
  * `decisions/sync-service.ts:syncDirectorDecisionQueue`) — permite
- * provar que o guard libera corretamente mesmo quando a supervisão
- * lança exceção, sem precisar forçar uma falha real de banco/rede.
+ * provar que o guard libera corretamente mesmo quando a supervisão lança
+ * exceção, sem precisar forçar uma falha real de banco/rede.
+ *
+ * Lifecycle da conexão (correio.md seção 2, ponto crítico): advisory
+ * locks de SESSÃO pertencem à conexão, não ao pool abstrato —
+ * `database.connect()` reserva uma `PoolClient` DEDICADA só para esta
+ * chamada; `pg_try_advisory_lock`/`pg_advisory_unlock` abaixo usam
+ * SEMPRE essa mesma `client`, nunca `database.query(...)` (que pegaria
+ * uma conexão qualquer do pool a cada chamada — quebraria a garantia).
  */
 export async function runGuardedOperationalSupervision(
   params: RunOperationalSupervisionOptions,
   runner: (options: RunOperationalSupervisionOptions) => Promise<OperationalSupervisionReport> = runOperationalSupervision,
 ): Promise<OperationalSupervisionReport> {
+  // Fast-path local: evita o round-trip ao Postgres quando ESTE processo
+  // já sabe que está executando uma supervisão. Nunca a fonte de
+  // verdade — só uma otimização. Duas chamadas quase simultâneas podem
+  // ambas passar por aqui antes de qualquer uma setar `running = true`
+  // (não há `await` nenhum ainda) — é seguro: o advisory lock abaixo
+  // decide de verdade quem executa; a perdedora dessa corrida também
+  // recebe `SupervisionAlreadyRunningError`, só que via `acquired === false`
+  // em vez deste atalho.
   if (running) {
+    throw new SupervisionAlreadyRunningError();
+  }
+
+  const client = await database.connect();
+
+  let acquired: boolean;
+  try {
+    const result = await client.query('SELECT pg_try_advisory_lock($1) AS acquired', [OPERATIONAL_SUPERVISION_LOCK_KEY]);
+    acquired = result.rows[0]?.acquired === true;
+  } catch (error) {
+    // correio.md seção 9 — falha de INFRAESTRUTURA ao tentar o lock
+    // (Postgres indisponível, por exemplo) nunca pode ser confundida com
+    // "already_running": propaga como o erro estrutural que é.
+    client.release();
+    throw error;
+  }
+
+  if (!acquired) {
+    // Lock ocupado por outra sessão (outro processo/instância, ou outra
+    // chamada concorrente deste mesmo processo que venceu a corrida do
+    // fast-path acima) — estado operacional esperado, nunca um erro
+    // (correio.md seção 5): mesmo contrato já existente
+    // (`SupervisionAlreadyRunningError`), nunca um segundo contrato
+    // paralelo de "skipped".
+    client.release();
     throw new SupervisionAlreadyRunningError();
   }
 
@@ -57,6 +110,39 @@ export async function runGuardedOperationalSupervision(
   try {
     return await runner(params);
   } finally {
+    // correio.md seção 8 — liberação obrigatória em `finally`, cobrindo
+    // sucesso, falha individual (v3.2, já isolada dentro de `runner`),
+    // falha estrutural, e qualquer exceção inesperada: `running=false` e
+    // o `unlock` sempre rodam, nesta ordem, antes de devolver a conexão
+    // ao pool. Nunca depender só da propriedade do Postgres de liberar
+    // locks de sessão quando a conexão fecha — o pool REUSA conexões
+    // (não fecha entre usos), então essa propriedade nunca entraria em
+    // jogo no fluxo normal; ela é só uma rede de segurança adicional se
+    // o processo inteiro morrer no meio.
     running = false;
+    try {
+      await client.query('SELECT pg_advisory_unlock($1)', [OPERATIONAL_SUPERVISION_LOCK_KEY]);
+    } catch (unlockError) {
+      // correio.md seção 10 — uma falha ao LIBERAR não pode ser
+      // confundida com sucesso completo, mas também não deve mascarar a
+      // exceção estrutural original do `runner` (se o `try` acima já
+      // lançou, É ELA que precisa propagar, nunca esta). Nunca um catch
+      // silencioso (v3.2 seção 20, mesmo princípio): logada explicitamente
+      // — mesmo padrão já usado pelo `.catch()` externo do scheduler
+      // (`agents/operations/scheduler.ts`) para erros verdadeiramente
+      // inesperados, nunca `console.log`/silêncio total. Não há
+      // recuperação complexa a fazer aqui (correio.md: "não inventar
+      // mecanismo complexo de recuperação nesta versão") — o pior caso é
+      // a conexão voltar ao pool com o lock ainda preso; como o pool
+      // reusa conexões (nunca fecha entre usos), isso deixaria o lock
+      // preso até o processo encerrar (cenário só possível com o
+      // Postgres ficando indisponível exatamente no instante do unlock,
+      // depois de já ter aceitado o lock — extremamente raro). Um
+      // mecanismo de retry/recuperação fica fora do escopo desta versão.
+      // eslint-disable-next-line no-console
+      console.error('[operational-supervision-guard] falha ao liberar o advisory lock:', unlockError);
+    } finally {
+      client.release();
+    }
   }
 }
