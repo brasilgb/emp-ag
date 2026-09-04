@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { SUPERVISION_RUN_STATUSES } from './supervision-run-history.js';
+
 // Agentes v1.6 (correio.md seção 3/10) — validação server-side dos
 // filtros de período das rotas operacionais, mesmo padrão de
 // coerce+default usado em agents/jobs/schemas.ts.
@@ -34,3 +36,19 @@ export const superviseQuerySchema = z.object({
 // intervalo não é editável em runtime nesta versão) — `.strict()`
 // rejeita qualquer campo extra, nunca aceita `{"command": "..."}`.
 export const patchSupervisionSchedulerSchema = z.object({ enabled: z.boolean() }).strict();
+
+// Agentes v3.4 (correio.md "11. API") — filtros mínimos pedidos:
+// status/triggerSource/dateFrom/dateTo/page/pageSize (renomeado `limit`,
+// mesmo padrão de `listFollowUpsQuerySchema` e de toda paginação já
+// existente no projeto). Nenhuma busca textual (seção 11: "não
+// implementar busca textual sem necessidade").
+export const listSupervisionRunsQuerySchema = z.object({
+  page: z.coerce.number().int().positive().default(1),
+  limit: z.coerce.number().int().positive().max(100).default(20),
+  status: z.enum(SUPERVISION_RUN_STATUSES).optional(),
+  triggerSource: z.enum(['scheduler', 'manual']).optional(),
+  dateFrom: isoDate.optional(),
+  dateTo: isoDate.optional(),
+});
+
+export const supervisionRunIdParamSchema = z.object({ id: z.coerce.number().int().positive() });

@@ -38,6 +38,7 @@ import {
   recoveryResultLabel,
   reviewOutcomeLabel,
   signalSeverityLabel,
+  supervisionRunStatusLabel,
   type DerivedApprovalState,
 } from "@/lib/agents/derived";
 import type {
@@ -76,6 +77,7 @@ import type {
   RecoveryResult,
   ReviewOutcome,
   SignalSeverity,
+  SupervisionRunStatus,
 } from "@/types/agents";
 
 const EXECUTION_STATUS_STYLES: Record<ExecutionStatus, string> = {
@@ -668,6 +670,27 @@ export function ActionProposalStatusBadge({ status }: { status: ActionProposalSt
   return (
     <Badge variant="secondary" className={cn("border-transparent", ACTION_PROPOSAL_STATUS_STYLES[status])}>
       {actionProposalStatusLabel(status)}
+    </Badge>
+  );
+}
+
+// Agentes v3.4 — Operational Supervision Observability & Run History.
+// `completed_with_failures` deliberadamente numa cor distinta de
+// `succeeded` (âmbar, não verde) — nunca confundido visualmente com
+// sucesso puro. `skipped_already_running` em cinza neutro (não é uma
+// falha do sistema, é overlap esperado).
+const SUPERVISION_RUN_STATUS_STYLES: Record<SupervisionRunStatus, string> = {
+  running: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+  succeeded: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+  completed_with_failures: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+  failed: "bg-red-500/10 text-red-700 dark:text-red-400",
+  skipped_already_running: "bg-muted text-muted-foreground",
+};
+
+export function SupervisionRunStatusBadge({ status }: { status: SupervisionRunStatus }) {
+  return (
+    <Badge variant="secondary" className={cn("border-transparent", SUPERVISION_RUN_STATUS_STYLES[status])}>
+      {supervisionRunStatusLabel(status)}
     </Badge>
   );
 }

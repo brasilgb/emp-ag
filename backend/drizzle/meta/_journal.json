@@ -1,160 +1,167 @@
 {
-  "version": "7",
-  "dialect": "postgresql",
-  "entries": [
-    {
-      "idx": 0,
-      "version": "7",
-      "when": 1788034015176,
-      "tag": "0000_huge_victor_mancha",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1788038505444,
-      "tag": "0001_new_gorgon",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1788043940792,
-      "tag": "0002_short_shriek",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1788051208214,
-      "tag": "0003_lively_ironclad",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1788098225954,
-      "tag": "0004_tan_captain_flint",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1788100699195,
-      "tag": "0005_organic_war_machine",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
-      "when": 1788103941340,
-      "tag": "0006_nappy_mauler",
-      "breakpoints": true
-    },
-    {
-      "idx": 7,
-      "version": "7",
-      "when": 1788117372628,
-      "tag": "0007_glamorous_umar",
-      "breakpoints": true
-    },
-    {
-      "idx": 8,
-      "version": "7",
-      "when": 1788262424846,
-      "tag": "0008_cheerful_greymalkin",
-      "breakpoints": true
-    },
-    {
-      "idx": 9,
-      "version": "7",
-      "when": 1788262520096,
-      "tag": "0009_sloppy_tigra",
-      "breakpoints": true
-    },
-    {
-      "idx": 10,
-      "version": "7",
-      "when": 1788264589539,
-      "tag": "0010_cynical_molecule_man",
-      "breakpoints": true
-    },
-    {
-      "idx": 11,
-      "version": "7",
-      "when": 1788273738293,
-      "tag": "0011_reflective_starhawk",
-      "breakpoints": true
-    },
-    {
-      "idx": 12,
-      "version": "7",
-      "when": 1788282119768,
-      "tag": "0012_reflective_starjammers",
-      "breakpoints": true
-    },
-    {
-      "idx": 13,
-      "version": "7",
-      "when": 1788352056632,
-      "tag": "0013_agent_operational_settings",
-      "breakpoints": true
-    },
-    {
-      "idx": 14,
-      "version": "7",
-      "when": 1788360390164,
-      "tag": "0014_agent_director_decisions",
-      "breakpoints": true
-    },
-    {
-      "idx": 15,
-      "version": "7",
-      "when": 1788366889231,
-      "tag": "0015_agent_director_goals",
-      "breakpoints": true
-    },
-    {
-      "idx": 16,
-      "version": "7",
-      "when": 1788377310352,
-      "tag": "0016_agent_executive_reviews",
-      "breakpoints": true
-    },
-    {
-      "idx": 17,
-      "version": "7",
-      "when": 1788379826596,
-      "tag": "0017_agent_strategic_memories",
-      "breakpoints": true
-    },
-    {
-      "idx": 18,
-      "version": "7",
-      "when": 1788440109165,
-      "tag": "0018_agent_responsibilities_escalations",
-      "breakpoints": true
-    },
-    {
-      "idx": 19,
-      "version": "7",
-      "when": 1788445764506,
-      "tag": "0019_agent_operational_follow_ups",
-      "breakpoints": true
-    },
-    {
-      "idx": 20,
-      "version": "7",
-      "when": 1788448025758,
-      "tag": "0020_agent_operational_action_proposals",
-      "breakpoints": true
-    },
-    {
-      "idx": 21,
-      "version": "7",
-      "when": 1788452465846,
-      "tag": "0021_action_proposals_planned_requires_plan_check",
-      "breakpoints": true
-    }
-  ]
+	"version": "7",
+	"dialect": "postgresql",
+	"entries": [
+		{
+			"idx": 0,
+			"version": "7",
+			"when": 1788034015176,
+			"tag": "0000_huge_victor_mancha",
+			"breakpoints": true
+		},
+		{
+			"idx": 1,
+			"version": "7",
+			"when": 1788038505444,
+			"tag": "0001_new_gorgon",
+			"breakpoints": true
+		},
+		{
+			"idx": 2,
+			"version": "7",
+			"when": 1788043940792,
+			"tag": "0002_short_shriek",
+			"breakpoints": true
+		},
+		{
+			"idx": 3,
+			"version": "7",
+			"when": 1788051208214,
+			"tag": "0003_lively_ironclad",
+			"breakpoints": true
+		},
+		{
+			"idx": 4,
+			"version": "7",
+			"when": 1788098225954,
+			"tag": "0004_tan_captain_flint",
+			"breakpoints": true
+		},
+		{
+			"idx": 5,
+			"version": "7",
+			"when": 1788100699195,
+			"tag": "0005_organic_war_machine",
+			"breakpoints": true
+		},
+		{
+			"idx": 6,
+			"version": "7",
+			"when": 1788103941340,
+			"tag": "0006_nappy_mauler",
+			"breakpoints": true
+		},
+		{
+			"idx": 7,
+			"version": "7",
+			"when": 1788117372628,
+			"tag": "0007_glamorous_umar",
+			"breakpoints": true
+		},
+		{
+			"idx": 8,
+			"version": "7",
+			"when": 1788262424846,
+			"tag": "0008_cheerful_greymalkin",
+			"breakpoints": true
+		},
+		{
+			"idx": 9,
+			"version": "7",
+			"when": 1788262520096,
+			"tag": "0009_sloppy_tigra",
+			"breakpoints": true
+		},
+		{
+			"idx": 10,
+			"version": "7",
+			"when": 1788264589539,
+			"tag": "0010_cynical_molecule_man",
+			"breakpoints": true
+		},
+		{
+			"idx": 11,
+			"version": "7",
+			"when": 1788273738293,
+			"tag": "0011_reflective_starhawk",
+			"breakpoints": true
+		},
+		{
+			"idx": 12,
+			"version": "7",
+			"when": 1788282119768,
+			"tag": "0012_reflective_starjammers",
+			"breakpoints": true
+		},
+		{
+			"idx": 13,
+			"version": "7",
+			"when": 1788352056632,
+			"tag": "0013_agent_operational_settings",
+			"breakpoints": true
+		},
+		{
+			"idx": 14,
+			"version": "7",
+			"when": 1788360390164,
+			"tag": "0014_agent_director_decisions",
+			"breakpoints": true
+		},
+		{
+			"idx": 15,
+			"version": "7",
+			"when": 1788366889231,
+			"tag": "0015_agent_director_goals",
+			"breakpoints": true
+		},
+		{
+			"idx": 16,
+			"version": "7",
+			"when": 1788377310352,
+			"tag": "0016_agent_executive_reviews",
+			"breakpoints": true
+		},
+		{
+			"idx": 17,
+			"version": "7",
+			"when": 1788379826596,
+			"tag": "0017_agent_strategic_memories",
+			"breakpoints": true
+		},
+		{
+			"idx": 18,
+			"version": "7",
+			"when": 1788440109165,
+			"tag": "0018_agent_responsibilities_escalations",
+			"breakpoints": true
+		},
+		{
+			"idx": 19,
+			"version": "7",
+			"when": 1788445764506,
+			"tag": "0019_agent_operational_follow_ups",
+			"breakpoints": true
+		},
+		{
+			"idx": 20,
+			"version": "7",
+			"when": 1788448025758,
+			"tag": "0020_agent_operational_action_proposals",
+			"breakpoints": true
+		},
+		{
+			"idx": 21,
+			"version": "7",
+			"when": 1788452465846,
+			"tag": "0021_action_proposals_planned_requires_plan_check",
+			"breakpoints": true
+		},
+		{
+			"idx": 22,
+			"version": "7",
+			"when": 1788522752509,
+			"tag": "0022_agent_operational_supervision_runs",
+			"breakpoints": true
+		}
+	]
 }

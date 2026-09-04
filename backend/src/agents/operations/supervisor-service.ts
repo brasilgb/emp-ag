@@ -63,6 +63,10 @@ export async function runOperationalSupervision(params: RunOperationalSupervisio
   const recommendationByIncidentId = new Map(recommendations.map((recommendation) => [recommendation.incidentId, recommendation]));
 
   const results: OperationalIncidentResult[] = [];
+  // v3.4 — contagem PURA em volta da chamada já existente a
+  // `escalateSupervisorFinding` logo abaixo; nenhuma decisão nova.
+  let escalationsAttempted = 0;
+  let escalationsFailed = 0;
 
   for (const incident of incidents) {
     const recommendation = recommendationByIncidentId.get(incident.id);
@@ -89,9 +93,11 @@ export async function runOperationalSupervision(params: RunOperationalSupervisio
     // NUNCA em dry-run (zero side effects, seção 16 da v2.5 mantida). Uma
     // falha aqui NUNCA derruba o scan — auditada e o loop continua.
     if (!dryRun) {
+      escalationsAttempted += 1;
       try {
         await escalateSupervisorFinding(incident);
       } catch (error) {
+        escalationsFailed += 1;
         await audit({
           userId: params.actorUserId,
           actorType: params.actorUserId ? 'user' : 'system',
@@ -128,6 +134,9 @@ export async function runOperationalSupervision(params: RunOperationalSupervisio
     autonomyRestricted: results.filter((result) => result.outcome === 'autonomy_restricted' || result.outcome === 'would_restrict_autonomy').length,
     escalated: results.filter((result) => result.outcome === 'escalated' || result.outcome === 'would_escalate').length,
     failed: results.filter((result) => result.outcome === 'failed').length,
+    escalationsAttempted,
+    escalationsSucceeded: escalationsAttempted - escalationsFailed,
+    escalationsFailed,
     results,
   };
 }

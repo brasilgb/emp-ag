@@ -1,6 +1,7 @@
 import { audit } from '../../services/audit.js';
 import { isOperationalSupervisionEnabled } from './scheduler-settings.js';
-import { runGuardedOperationalSupervision, SupervisionAlreadyRunningError } from './supervisor-guard.js';
+import { SupervisionAlreadyRunningError } from './supervisor-guard.js';
+import { runObservedOperationalSupervision } from './supervision-run-history.js';
 import { runOperationalSupervision } from './supervisor-service.js';
 import type { RunOperationalSupervisionOptions } from './supervisor-service.js';
 import type { OperationalSupervisionReport } from './health-types.js';
@@ -42,7 +43,16 @@ export async function runScheduledOperationalSupervision(
   lastTickAt = new Date();
 
   try {
-    await runGuardedOperationalSupervision({ dryRun: false, actorUserId: null, triggeredBy: 'scheduler' }, runner);
+    // v3.4 (correio.md "13. Scheduler" — "apenas registrar a origem como
+    // scheduler no boundary adequado") — `runObservedOperationalSupervision`
+    // envolve EXATAMENTE a mesma cadeia de antes
+    // (`runGuardedOperationalSupervision` → advisory lock →
+    // `runOperationalSupervision`) por fora, só adicionando o histórico
+    // persistente; os erros que já propagavam daqui
+    // (`SupervisionAlreadyRunningError`, falha estrutural) continuam
+    // propagando exatamente igual — o `catch` abaixo é inalterado desde
+    // a v2.5.1.
+    await runObservedOperationalSupervision({ dryRun: false, actorUserId: null, triggeredBy: 'scheduler' }, runner);
     // `agents.operations.scan.started`/`.scan.completed` já são
     // auditados DENTRO de `runOperationalSupervision` (seção 16: "não
     // duplicar todos os eventos já emitidos") — nenhum

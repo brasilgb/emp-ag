@@ -203,6 +203,55 @@ describe('Agentes v1.6 — Operations, Incidents, Audit, Autonomy switch', () =>
     });
   });
 
+  // Agentes v3.4 (correio.md "19. Testes mínimos obrigatórios" — API,
+  // itens 13-18). Cobertura de conteúdo/paginação/filtros/ordenação já
+  // vive em `agents/operations/supervision-run-history.test.ts` (nível
+  // de serviço, fixtures mais fáceis de controlar) — aqui só a borda
+  // HTTP: autorização e forma real da resposta, com um run real criado
+  // via `POST /operations/supervise` (dry-run, sem side effects).
+  describe('GET /operations/supervision-runs', () => {
+    test('17/18: sem permission → 403 (list e detail)', async () => {
+      const list = await app.inject({ method: 'GET', url: '/agents/operations/supervision-runs', headers: authHeader(limitedToken) });
+      assert.equal(list.statusCode, 403);
+
+      const detail = await app.inject({ method: 'GET', url: '/agents/operations/supervision-runs/1', headers: authHeader(limitedToken) });
+      assert.equal(detail.statusCode, 403);
+    });
+
+    test('13/14/15/16: com permission → lista ordenada, filtro de status/origem, paginação, e detalhe por id', async () => {
+      const supervise = await app.inject({ method: 'POST', url: '/agents/operations/supervise?dryRun=true', headers: authHeader(ceoToken) });
+      assert.equal(supervise.statusCode, 200, supervise.body);
+
+      const list = await app.inject({ method: 'GET', url: '/agents/operations/supervision-runs?limit=5', headers: authHeader(ceoToken) });
+      assert.equal(list.statusCode, 200, list.body);
+      const { data, pagination } = list.json();
+      assert.ok(Array.isArray(data));
+      assert.ok(data.length > 0, 'deveria haver ao menos o run manual disparado acima');
+      assert.ok(pagination);
+      for (let i = 1; i < data.length; i += 1) {
+        assert.ok(new Date(data[i - 1].startedAt).getTime() >= new Date(data[i].startedAt).getTime(), 'lista deveria vir ordenada por started_at DESC');
+      }
+
+      const filteredByOrigin = await app.inject({ method: 'GET', url: '/agents/operations/supervision-runs?triggerSource=manual&limit=20', headers: authHeader(ceoToken) });
+      assert.equal(filteredByOrigin.statusCode, 200);
+      assert.ok(filteredByOrigin.json().data.every((row: { triggerSource: string }) => row.triggerSource === 'manual'));
+
+      const runId = data[0].id;
+      const detail = await app.inject({ method: 'GET', url: `/agents/operations/supervision-runs/${runId}`, headers: authHeader(ceoToken) });
+      assert.equal(detail.statusCode, 200, detail.body);
+      assert.equal(detail.json().data.id, runId);
+      assert.ok(['running', 'succeeded', 'completed_with_failures', 'failed', 'skipped_already_running'].includes(detail.json().data.status));
+    });
+
+    test('id inválido → 400; run inexistente → 404', async () => {
+      const invalid = await app.inject({ method: 'GET', url: '/agents/operations/supervision-runs/not-a-number', headers: authHeader(ceoToken) });
+      assert.equal(invalid.statusCode, 400);
+
+      const missing = await app.inject({ method: 'GET', url: '/agents/operations/supervision-runs/999999999', headers: authHeader(ceoToken) });
+      assert.equal(missing.statusCode, 404);
+    });
+  });
+
   describe('GET /incidents', () => {
     let jobForIncidents: Awaited<ReturnType<typeof createJob>>;
     let repeatedFailureWindow: number;

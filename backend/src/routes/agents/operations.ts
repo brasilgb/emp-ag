@@ -14,12 +14,19 @@ import { authenticate } from '../../middleware/authenticate.js';
 import { requirePermission } from '../../middleware/require-permission.js';
 import { AUTONOMY_BLOCK_REASONS } from '../../agents/autonomy/reasons.js';
 
-import { badRequest, currentUserId } from './helpers.js';
-import { operationsSummaryQuerySchema, patchSupervisionSchedulerSchema, superviseQuerySchema } from '../../agents/operations/schemas.js';
+import { badRequest, currentUserId, notFound, paginationMeta } from './helpers.js';
+import {
+  listSupervisionRunsQuerySchema,
+  operationsSummaryQuerySchema,
+  patchSupervisionSchedulerSchema,
+  supervisionRunIdParamSchema,
+  superviseQuerySchema,
+} from '../../agents/operations/schemas.js';
 import { getOperationalHealth } from '../../agents/operations/health-service.js';
 import { getOperationalSupervisionSchedulerStatus } from '../../agents/operations/scheduler-status.js';
 import { isOperationalSupervisionEnabled, setOperationalSupervisionEnabled } from '../../agents/operations/scheduler-settings.js';
-import { runGuardedOperationalSupervision, SupervisionAlreadyRunningError } from '../../agents/operations/supervisor-guard.js';
+import { SupervisionAlreadyRunningError } from '../../agents/operations/supervisor-guard.js';
+import { getSupervisionRunById, listSupervisionRuns, runObservedOperationalSupervision } from '../../agents/operations/supervision-run-history.js';
 import { getControlCenterOverview, getOperationalQueues } from '../../agents/operations/control-center-service.js';
 import { audit } from '../../services/audit.js';
 
@@ -251,7 +258,12 @@ export async function operationsRoutes(app: FastifyInstance) {
         // guard central do scheduler automático (nunca dois guards
         // independentes) — uma supervisão manual enquanto outra (manual
         // ou automática) já está rodando devolve 409, nunca enfileira.
-        const report = await runGuardedOperationalSupervision({ dryRun: query.data.dryRun, actorUserId: currentUserId(request), triggeredBy: 'manual' });
+        // v3.4 — `runObservedOperationalSupervision` envolve essa MESMA
+        // cadeia por fora, só para registrar o histórico persistente; o
+        // 409 abaixo (`SupervisionAlreadyRunningError`) continua vindo
+        // exatamente do mesmo lugar de antes, contrato desta rota
+        // inalterado.
+        const report = await runObservedOperationalSupervision({ dryRun: query.data.dryRun, actorUserId: currentUserId(request), triggeredBy: 'manual' });
         return { data: report };
       } catch (error) {
         if (error instanceof SupervisionAlreadyRunningError) {
@@ -313,6 +325,37 @@ export async function operationsRoutes(app: FastifyInstance) {
     async () => {
       const [overview, queues] = await Promise.all([getControlCenterOverview(), getOperationalQueues()]);
       return { data: { overview, queues } };
+    },
+  );
+
+  // Agentes v3.4 (correio.md "11. API") — histórico de execuções do
+  // Operational Supervisor. Mesma permission de leitura de TODA esta
+  // rota (`agents.operations.read`) — correio.md pediu explicitamente
+  // para reutilizar essa permission "salvo impossibilidade arquitetural
+  // concreta", e não há nenhuma aqui.
+  app.get(
+    '/operations/supervision-runs',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async (request, reply) => {
+      const query = listSupervisionRunsQuerySchema.safeParse(request.query);
+      if (!query.success) return badRequest(reply, query.error);
+
+      const { rows, total } = await listSupervisionRuns(query.data);
+      return { data: rows, pagination: paginationMeta({ page: query.data.page, limit: query.data.limit, total }) };
+    },
+  );
+
+  app.get(
+    '/operations/supervision-runs/:id',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async (request, reply) => {
+      const params = supervisionRunIdParamSchema.safeParse(request.params);
+      if (!params.success) return badRequest(reply, params.error);
+
+      const run = await getSupervisionRunById(params.data.id);
+      if (!run) return notFound(reply, 'Execução de supervisão não encontrada.');
+
+      return { data: run };
     },
   );
 }

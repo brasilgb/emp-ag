@@ -52,6 +52,8 @@ import type {
   SettingSource,
   SignalDomain,
   SignalSeverity,
+  SupervisionRunStatus,
+  SupervisionRunTriggerSource,
 } from "@/types/agents";
 
 /**
@@ -898,6 +900,33 @@ export const ACTION_PROPOSAL_STATUS_LABELS: Record<ActionProposalStatus, string>
 
 export function actionProposalStatusLabel(status: ActionProposalStatus): string {
   return ACTION_PROPOSAL_STATUS_LABELS[status] ?? status;
+}
+
+// Agentes v3.4 — Operational Supervision Observability & Run History.
+// Labels distinguindo explicitamente `completed_with_failures` de um
+// `succeeded` puro, e `skipped_already_running` de uma falha real
+// (correio.md "14. Frontend": "rótulos de status claros, distinguindo
+// completed_with_failures de succeeded puro, e skipped_already_running de
+// uma falha real").
+export const SUPERVISION_RUN_STATUS_LABELS: Record<SupervisionRunStatus, string> = {
+  running: "Em execução",
+  succeeded: "Sucesso",
+  completed_with_failures: "Concluído com falhas",
+  failed: "Falhou",
+  skipped_already_running: "Pulado (já em execução)",
+};
+
+export function supervisionRunStatusLabel(status: SupervisionRunStatus): string {
+  return SUPERVISION_RUN_STATUS_LABELS[status] ?? status;
+}
+
+export const SUPERVISION_RUN_TRIGGER_SOURCE_LABELS: Record<SupervisionRunTriggerSource, string> = {
+  scheduler: "Automático",
+  manual: "Manual",
+};
+
+export function supervisionRunTriggerSourceLabel(triggerSource: SupervisionRunTriggerSource): string {
+  return SUPERVISION_RUN_TRIGGER_SOURCE_LABELS[triggerSource] ?? triggerSource;
 }
 
 export function formatAgeSeconds(ageSeconds: number): string {

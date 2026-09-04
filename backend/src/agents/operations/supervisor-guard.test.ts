@@ -24,6 +24,9 @@ function fakeReport(overrides: Partial<OperationalSupervisionReport> = {}): Oper
     autonomyRestricted: 0,
     escalated: 0,
     failed: 0,
+    escalationsAttempted: 0,
+    escalationsSucceeded: 0,
+    escalationsFailed: 0,
     results: [],
     ...overrides,
   };

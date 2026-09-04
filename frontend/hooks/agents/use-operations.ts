@@ -6,6 +6,7 @@ import { queryKeys } from "@/lib/query/keys";
 import {
   type ListAuditLogsParams,
   type ListIncidentsParams,
+  type ListSupervisionRunsParams,
   type OperationsSummaryParams,
   deleteJobSetting,
   deleteSetting,
@@ -15,10 +16,12 @@ import {
   getJobRunLineage,
   getOperationalControlCenter,
   getOperationsSummary,
+  getSupervisionRun,
   listAuditLogs,
   listIncidents,
   listJobSettings,
   listSettings,
+  listSupervisionRuns,
   setGlobalAutonomy,
   setJobSetting,
   setSetting,
@@ -45,6 +48,26 @@ export function useOperationalControlCenter() {
     queryKey: queryKeys.agents.operationalControlCenter,
     queryFn: () => getOperationalControlCenter(),
     refetchInterval: 15000,
+  });
+}
+
+// Agentes v3.4 — Operational Supervision Observability & Run History
+// (correio.md). Histórico persistente — não precisa de refetch automático
+// tipo dashboard (o usuário abre a aba de histórico para consultar, não
+// para monitorar ao vivo); `keepPreviousData` evita flicker ao paginar.
+export function useSupervisionRuns(params: ListSupervisionRunsParams = {}) {
+  return useQuery({
+    queryKey: queryKeys.agents.supervisionRuns(params),
+    queryFn: () => listSupervisionRuns(params),
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function useSupervisionRun(id: number | null) {
+  return useQuery({
+    queryKey: queryKeys.agents.supervisionRun(id ?? -1),
+    queryFn: () => getSupervisionRun(id as number),
+    enabled: id !== null,
   });
 }
 

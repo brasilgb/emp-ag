@@ -131,5 +131,8 @@ export const queryKeys = {
     actionProposal: (id: number) => ["agents", "action-proposals", id] as const,
     operationalControlCenter: ["agents", "operations", "control-center"] as const,
     followUpTimeline: (followUpId: number) => ["agents", "follow-ups", followUpId, "timeline"] as const,
+    // Agentes v3.4 — Operational Supervision Observability & Run History.
+    supervisionRuns: (params?: unknown) => ["agents", "operations", "supervision-runs", params ?? {}] as const,
+    supervisionRun: (id: number) => ["agents", "operations", "supervision-runs", id] as const,
   },
 };

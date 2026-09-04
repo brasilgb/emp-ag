@@ -46,6 +46,9 @@ import type {
   OperationalIncident,
   OperationalSupervisionReport,
   OperationalSupervisionSchedulerStatus,
+  SupervisionRun,
+  SupervisionRunStatus,
+  SupervisionRunTriggerSource,
   RecoveryItemResult,
   RecoveryReport,
   RecoveryStatus,
@@ -724,6 +727,24 @@ export function getOperationalSupervisionSchedulerStatus(): Promise<{ data: Oper
 
 export function setOperationalSupervisionSchedulerEnabled(enabled: boolean): Promise<{ data: OperationalSupervisionSchedulerStatus }> {
   return apiFetch(`/api/agents/operations/scheduler`, { method: "PATCH", body: JSON.stringify({ enabled }) });
+}
+
+// Agentes v3.4 — Operational Supervision Observability & Run History (correio.md).
+export interface ListSupervisionRunsParams {
+  page?: number;
+  limit?: number;
+  status?: SupervisionRunStatus;
+  triggerSource?: SupervisionRunTriggerSource;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+export function listSupervisionRuns(params: ListSupervisionRunsParams = {}): Promise<Paginated<SupervisionRun>> {
+  return apiFetch(`/api/agents/operations/supervision-runs${toQueryString({ ...params })}`);
+}
+
+export function getSupervisionRun(id: number): Promise<{ data: SupervisionRun }> {
+  return apiFetch(`/api/agents/operations/supervision-runs/${id}`);
 }
 
 // Agentes v2.6 — Agent Responsibilities, Operational Ownership & Escalation (correio.md).

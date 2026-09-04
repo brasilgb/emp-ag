@@ -5,6 +5,7 @@ import { ControlCenterSection } from "@/components/agents/operations/control-cen
 import { OperationsDashboard } from "@/components/agents/operations/operations-dashboard";
 import { OperationsSupervisorDashboard } from "@/components/agents/operations/operations-supervisor-dashboard";
 import { OperationalSupervisionSchedulerCard } from "@/components/agents/operations/operational-supervision-scheduler-card";
+import { SupervisionRunHistorySection } from "@/components/agents/operations/supervision-run-history-section";
 
 export const metadata: Metadata = { title: "Operações de Agentes" };
 
@@ -50,6 +51,12 @@ export default function AgentOperationsPage() {
       <OperationalSupervisionSchedulerCard />
 
       <OperationsSupervisorDashboard />
+
+      {/* Agentes v3.4 (correio.md "Operational Supervision Observability &
+          Run History") — histórico persistente das execuções (scheduler
+          ou manual), integrado a esta MESMA seção de Supervisão
+          Operacional (nunca uma página nova). */}
+      <SupervisionRunHistorySection />
     </div>
   );
 }

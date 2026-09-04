@@ -136,5 +136,23 @@ export interface OperationalSupervisionReport {
   // antes continua existindo, só que agora explicitamente distinguível
   // de um scan com falhas parciais.
   failed: number;
+  // v3.4 (correio.md "Operational Supervision Observability & Run
+  // History", seção 3/9) — aditivo, mesmo padrão de `failed` acima: a
+  // única extensão real pedida a `supervisor-service.ts` nesta versão, e
+  // só de CONTAGEM em volta de uma chamada já existente
+  // (`escalateSupervisorFinding`, v2.6) — nenhuma lógica decisória nova.
+  // `escalationsAttempted` conta toda vez que o loop chega a chamar
+  // `escalateSupervisorFinding` (sempre 0 em dry-run, que pula essa
+  // chamada inteira — seção 15: "um scan não iniciado por lock ocupado
+  // não deve produzir um fake report", mesmo racional aqui: dry-run
+  // nunca teve efeito colateral, então nunca "tenta" escalar de verdade).
+  // `escalationsFailed` conta exceções capturadas pelo try/catch já
+  // existente ali. `escalationsSucceeded` é `attempted - failed` — inclui
+  // tanto uma Escalation real criada quanto um `null` legítimo (nenhuma
+  // Responsibility correspondente, ou `escalationPolicy: 'none'` —
+  // decisões válidas de `escalateSupervisorFinding`, nunca uma falha).
+  escalationsAttempted: number;
+  escalationsSucceeded: number;
+  escalationsFailed: number;
   results: OperationalIncidentResult[];
 }

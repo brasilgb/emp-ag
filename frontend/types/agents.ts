@@ -1147,7 +1147,48 @@ export interface OperationalSupervisionReport {
   // v3.2 — quantos incidentes tiveram sua resposta operacional isolada
   // como falha individual (nunca aborta os demais do mesmo scan).
   failed: number;
+  // v3.4 — contadores puros de escalation (nenhuma mudança de decisão).
+  escalationsAttempted: number;
+  escalationsSucceeded: number;
+  escalationsFailed: number;
   results: OperationalIncidentResult[];
+}
+
+// Agentes v3.4 — Operational Supervision Observability & Run History
+// (correio.md). Histórico persistente de execuções do Operational
+// Supervisor (scheduler ou manual) — nunca altera a lógica de decisão,
+// só observa.
+export const SUPERVISION_RUN_TRIGGER_SOURCES = ["scheduler", "manual"] as const;
+export type SupervisionRunTriggerSource = (typeof SUPERVISION_RUN_TRIGGER_SOURCES)[number];
+
+export const SUPERVISION_RUN_STATUSES = [
+  "running",
+  "succeeded",
+  "completed_with_failures",
+  "failed",
+  "skipped_already_running",
+] as const;
+export type SupervisionRunStatus = (typeof SUPERVISION_RUN_STATUSES)[number];
+
+export interface SupervisionRun {
+  id: number;
+  triggerSource: SupervisionRunTriggerSource;
+  actorUserId: number | null;
+  status: SupervisionRunStatus;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+  findingsCount: number | null;
+  responsesAttempted: number | null;
+  responsesSucceeded: number | null;
+  responsesFailed: number | null;
+  escalationsAttempted: number | null;
+  escalationsSucceeded: number | null;
+  escalationsFailed: number | null;
+  failedCount: number | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
 }
 
 // Agentes v2.6 — Agent Responsibilities, Operational Ownership & Escalation (correio.md).
