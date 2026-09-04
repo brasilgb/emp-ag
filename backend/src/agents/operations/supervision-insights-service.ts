@@ -4,6 +4,8 @@ import { db } from '../../db/index.js';
 import { agentOperationalEscalations, agentOperationalIncidentReviews, agentOperationalSupervisionRuns, auditLogs } from '../../db/schema/index.js';
 import { getIncidentReview, getIncidentReviewsByAuditLogIds, INCIDENT_REVIEW_STATUSES_WITH_UNREVIEWED } from './incident-review-service.js';
 import type { IncidentReview, IncidentReviewStatusOrUnreviewed } from './incident-review-service.js';
+import { getIncidentAssignmentsByAuditLogIds } from './incident-assignment-service.js';
+import type { IncidentAssignment } from './incident-assignment-service.js';
 import { OPERATIONAL_INCIDENT_TYPES, OPERATIONAL_RESPONSES, OPERATIONAL_SEVERITIES } from './health-types.js';
 import type { OperationalIncidentType, OperationalResponse, OperationalSeverity } from './health-types.js';
 import { SUPERVISION_RUN_STATUSES } from './supervision-run-history.js';
@@ -280,6 +282,19 @@ export interface SupervisionIncidentSummary {
   // frontend nunca precisar repetir essa comparação.
   recurrenceCount: number;
   isRecurring: boolean;
+  // Agentes v3.8 (correio.md "Operational Incident Ownership &
+  // Assignment", seções 12/13) — ownership humano, dimensão SEPARADA de
+  // `reviewStatus` (assign ≠ acknowledge, seção 6). `null` = não
+  // atribuído (correio.md seção 13: "assignment: null" ou o objeto) —
+  // mesmo idioma de `unreviewed` internamente (ausência de linha em
+  // `agent_operational_incident_assignments`, ver
+  // incident-assignment-service.ts), só achatado aqui para nunca expor
+  // um objeto redundante `{ assigneeUserId: null, ... }`. Raw
+  // `assigneeUserId` (não o nome) — resolução de nome fica a cargo do
+  // frontend via `useUsersDirectory` (mesmo padrão já usado para
+  // `review.reviewedBy`, evita uma segunda estratégia de resolução de
+  // nomes e um segundo join batched só para isso).
+  assignment: { assigneeUserId: number; assignedBy: number; assignedAt: string } | null;
 }
 
 export interface ListSupervisionIncidentsParams {
@@ -348,7 +363,7 @@ async function enrichIncidentRows(
     return `${metadata?.incidentType ?? 'unknown'}:${row.entityType}:${row.entityId}`;
   });
 
-  const [candidateRuns, outcomeAudits, escalationRows, reviewsByAuditLogId, recurrenceRows] = await Promise.all([
+  const [candidateRuns, outcomeAudits, escalationRows, reviewsByAuditLogId, recurrenceRows, assignmentsByAuditLogId] = await Promise.all([
     db
       .select({ id: agentOperationalSupervisionRuns.id, status: agentOperationalSupervisionRuns.status, startedAt: agentOperationalSupervisionRuns.startedAt, finishedAt: agentOperationalSupervisionRuns.finishedAt })
       .from(agentOperationalSupervisionRuns)
@@ -395,6 +410,11 @@ async function enrichIncidentRows(
           .where(and(eq(auditLogs.action, 'agents.operations.incident.detected'), inArray(auditLogs.entityType, entityTypes), inArray(auditLogs.entityId, entityIds)))
           .groupBy(sql`${auditLogs.metadata}->>'incidentType'`, auditLogs.entityType, auditLogs.entityId)
       : Promise.resolve([]),
+
+    // Agentes v3.8 — ownership em LOTE (correio.md seção 19: "não pode
+    // transformar listAttentionQueue em consulta por linha"), mesmo
+    // padrão de `getIncidentReviewsByAuditLogIds` acima.
+    getIncidentAssignmentsByAuditLogIds(rows.map((row) => row.id)),
   ]);
 
   const recurrenceByIncidentId = new Map(recurrenceRows.map((row) => [`${row.incidentType}:${row.entityType}:${row.entityId}`, Number(row.occurrences)]));
@@ -437,8 +457,19 @@ async function enrichIncidentRows(
       reviewStatus: reviewsByAuditLogId.get(row.id)?.status ?? 'unreviewed',
       recurrenceCount: recurrenceByIncidentId.get(incidentId) ?? 1,
       isRecurring: (recurrenceByIncidentId.get(incidentId) ?? 1) > 1,
+      assignment: toAssignmentSummary(assignmentsByAuditLogId.get(row.id)),
     };
   });
+}
+
+// Agentes v3.8 — achata `IncidentAssignment` (que sintetiza "não
+// atribuído" como `assigneeUserId: null`) para o formato exposto em
+// `SupervisionIncidentSummary.assignment` (correio.md seção 13:
+// `assignment: null` ou o objeto completo — nunca um objeto com campos
+// nulos por dentro).
+function toAssignmentSummary(assignment: IncidentAssignment | undefined): SupervisionIncidentSummary['assignment'] {
+  if (!assignment || assignment.assigneeUserId === null || assignment.assignedBy === null || assignment.assignedAt === null) return null;
+  return { assigneeUserId: assignment.assigneeUserId, assignedBy: assignment.assignedBy, assignedAt: assignment.assignedAt };
 }
 
 export async function listSupervisionIncidents(params: ListSupervisionIncidentsParams): Promise<{ rows: SupervisionIncidentSummary[]; total: number }> {
@@ -650,6 +681,13 @@ export interface ListAttentionQueueParams {
   // menor quando o operador já sabe o que procura.
   entityType?: string;
   entityId?: string;
+  // Agentes v3.8 (correio.md "Integração com Needs Attention", seção 13)
+  // — "evitar criar outro endpoint apenas para 'My Incidents'; o mesmo
+  // endpoint da fila deve ser reutilizado". `unassignedOnly` tem
+  // precedência quando os dois vierem juntos (combinação sem sentido
+  // prático, mas nunca deveria dar erro).
+  assigneeUserId?: number;
+  unassignedOnly?: boolean;
   // Relógio injetável (correio.md "Testes obrigatórios": "preferir relógio
   // controlável/injetável... em vez de sleeps reais") — default `new Date()`
   // em produção, fixo nos testes.
@@ -759,6 +797,8 @@ export async function listAttentionQueue(params: ListAttentionQueueParams): Prom
   if (params.outcome) withAging = withAging.filter((item) => item.outcome === params.outcome);
   if (params.recurringOnly) withAging = withAging.filter((item) => item.isRecurring);
   if (params.agingBucket) withAging = withAging.filter((item) => item.agingBucket === params.agingBucket);
+  if (params.unassignedOnly) withAging = withAging.filter((item) => item.assignment === null);
+  else if (params.assigneeUserId !== undefined) withAging = withAging.filter((item) => item.assignment?.assigneeUserId === params.assigneeUserId);
 
   withAging.sort(compareAttentionPriority);
 

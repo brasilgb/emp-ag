@@ -12,10 +12,12 @@ import {
   type OperationsSummaryParams,
   type SupervisionInsightsPeriodParams,
   type UpdateIncidentReviewInput,
+  assignIncident,
   deleteJobSetting,
   deleteSetting,
   getFollowUpTimeline,
   getGlobalAutonomy,
+  getIncidentAssignment,
   getIncidentReview,
   getJobRunDetail,
   getJobRunLineage,
@@ -35,6 +37,7 @@ import {
   setGlobalAutonomy,
   setJobSetting,
   setSetting,
+  unassignIncident,
   updateIncidentReview,
 } from "@/services/agents";
 import type { SettingKey } from "@/types/agents";
@@ -158,6 +161,48 @@ export function useUpdateIncidentReview(auditLogId: number) {
       // projeção da fila").
       queryClient.invalidateQueries({ queryKey: ["agents", "operations", "supervision-insights", "needs-attention"] });
     },
+  });
+}
+
+// Agentes v3.8 — Operational Incident Ownership & Assignment (correio.md).
+// `useSupervisionIncidentDetail` já traz `data.assignment` (via
+// `SupervisionIncidentSummary`) — este hook fica para o caso raro de
+// precisar só do assignment, mesmo racional de `useIncidentReview` acima.
+export function useIncidentAssignment(auditLogId: number | null) {
+  return useQuery({
+    queryKey: queryKeys.agents.incidentAssignment(auditLogId ?? -1),
+    queryFn: () => getIncidentAssignment(auditLogId as number),
+    enabled: auditLogId !== null,
+  });
+}
+
+// Invalidação seguindo correio.md seção 18: "após assign/reassign/
+// unassign, invalidar ao menos: attention queue, incident detail,
+// incident history — somente nas chaves necessárias" (mesmas 3 chaves já
+// invalidadas por `useUpdateIncidentReview` acima, nunca
+// `window.location.reload()`).
+function invalidateAfterAssignmentChange(queryClient: ReturnType<typeof useQueryClient>, auditLogId: number) {
+  queryClient.invalidateQueries({ queryKey: queryKeys.agents.incidentAssignment(auditLogId) });
+  queryClient.invalidateQueries({ queryKey: queryKeys.agents.supervisionIncidentDetail(auditLogId) });
+  queryClient.invalidateQueries({ queryKey: ["agents", "operations", "supervision-insights", "incidents"] });
+  queryClient.invalidateQueries({ queryKey: ["agents", "operations", "supervision-insights", "needs-attention"] });
+}
+
+export function useAssignIncident(auditLogId: number) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (assigneeUserId: number) => assignIncident(auditLogId, assigneeUserId),
+    onSuccess: () => invalidateAfterAssignmentChange(queryClient, auditLogId),
+  });
+}
+
+export function useUnassignIncident(auditLogId: number) {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: () => unassignIncident(auditLogId),
+    onSuccess: () => invalidateAfterAssignmentChange(queryClient, auditLogId),
   });
 }
 

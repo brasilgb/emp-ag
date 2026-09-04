@@ -508,6 +508,122 @@ describe('Agentes v1.6 — Operations, Incidents, Audit, Autonomy switch', () =>
     });
   });
 
+  // Agentes v3.8 (correio.md "Operational Incident Ownership &
+  // Assignment", "21. Testes obrigatórios" — itens 9/10 (autorização
+  // leitura/escrita), 11 (usuário inexistente), 13 (incidente
+  // inexistente)). Cobertura de ciclo completo/idempotência/concorrência/
+  // N+1/auditoria já vive em
+  // `agents/operations/incident-assignment-service.test.ts` (nível de
+  // serviço) — aqui só a borda HTTP.
+  describe('GET/PATCH/DELETE /operations/supervision-insights/incidents/:auditLogId/assignment', () => {
+    let assignableAuditLogId: number;
+
+    before(async () => {
+      const supervise = await app.inject({ method: 'POST', url: '/agents/operations/supervise?dryRun=true', headers: authHeader(ceoToken) });
+      assert.equal(supervise.statusCode, 200, supervise.body);
+
+      const incidents = await app.inject({ method: 'GET', url: '/agents/operations/supervision-insights/incidents?limit=1', headers: authHeader(ceoToken) });
+      assert.equal(incidents.statusCode, 200);
+      const [incident] = incidents.json().data;
+      assert.ok(incident, 'setup: deveria existir ao menos um incidente detectável no ambiente de teste');
+      assignableAuditLogId = incident.auditLogId;
+    });
+
+    test('9/10: GET sem permission → 403; PATCH/DELETE sem permission (agents.operations.manage) → 403', async () => {
+      const get = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${assignableAuditLogId}/assignment`, headers: authHeader(limitedToken) });
+      assert.equal(get.statusCode, 403);
+
+      const patch = await app.inject({
+        method: 'PATCH',
+        url: `/agents/operations/supervision-insights/incidents/${assignableAuditLogId}/assignment`,
+        headers: authHeader(limitedToken),
+        payload: { assigneeUserId: limitedUserId },
+      });
+      assert.equal(patch.statusCode, 403);
+
+      const del = await app.inject({ method: 'DELETE', url: `/agents/operations/supervision-insights/incidents/${assignableAuditLogId}/assignment`, headers: authHeader(limitedToken) });
+      assert.equal(del.statusCode, 403);
+    });
+
+    test('leitura só (agents.operations.read) não implica escrita — só permission de manage pode fazer PATCH/DELETE', async () => {
+      const get = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${assignableAuditLogId}/assignment`, headers: authHeader(ceoToken) });
+      assert.equal(get.statusCode, 200, get.body);
+      assert.equal(get.json().data.auditLogId, assignableAuditLogId);
+      assert.equal(get.json().data.assigneeUserId, null, 'incidente recém-detectado deveria começar sem responsável');
+    });
+
+    test('campos extras no payload são rejeitados pelo .strict()', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/agents/operations/supervision-insights/incidents/${assignableAuditLogId}/assignment`,
+        headers: authHeader(ceoToken),
+        payload: { assigneeUserId: limitedUserId, assignedBy: 999, assignedAt: '2000-01-01T00:00:00.000Z' },
+      });
+      assert.equal(response.statusCode, 400);
+    });
+
+    test('11: usuário inexistente é rejeitado → 400', async () => {
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `/agents/operations/supervision-insights/incidents/${assignableAuditLogId}/assignment`,
+        headers: authHeader(ceoToken),
+        payload: { assigneeUserId: 999999999 },
+      });
+      assert.equal(response.statusCode, 400);
+    });
+
+    test('13: audit real que não é incident.detected → 404 (GET/PATCH/DELETE); auditLogId inexistente → 404', async () => {
+      const [nonIncidentAudit] = await db.select({ id: auditLogs.id }).from(auditLogs).where(eq(auditLogs.action, 'agents.operations.scan.started')).orderBy(auditLogs.id).limit(1);
+      assert.ok(nonIncidentAudit, 'setup: deveria existir ao menos um audit de scan.started');
+
+      const get = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${nonIncidentAudit!.id}/assignment`, headers: authHeader(ceoToken) });
+      assert.equal(get.statusCode, 404);
+
+      const patch = await app.inject({
+        method: 'PATCH',
+        url: `/agents/operations/supervision-insights/incidents/${nonIncidentAudit!.id}/assignment`,
+        headers: authHeader(ceoToken),
+        payload: { assigneeUserId: limitedUserId },
+      });
+      assert.equal(patch.statusCode, 404);
+
+      const del = await app.inject({ method: 'DELETE', url: `/agents/operations/supervision-insights/incidents/999999999/assignment`, headers: authHeader(ceoToken) });
+      assert.equal(del.statusCode, 404);
+    });
+
+    test('PATCH bem-sucedido reflete no GET, no detalhe da v3.5 e na fila Needs Attention; DELETE desatribui', async () => {
+      const patch = await app.inject({
+        method: 'PATCH',
+        url: `/agents/operations/supervision-insights/incidents/${assignableAuditLogId}/assignment`,
+        headers: authHeader(ceoToken),
+        payload: { assigneeUserId: limitedUserId },
+      });
+      assert.equal(patch.statusCode, 200, patch.body);
+      assert.equal(patch.json().data.assigneeUserId, limitedUserId);
+      assert.ok(patch.json().data.assignedBy, 'assignedBy deveria ser derivado do usuário autenticado, nunca vazio');
+
+      const get = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${assignableAuditLogId}/assignment`, headers: authHeader(ceoToken) });
+      assert.equal(get.json().data.assigneeUserId, limitedUserId);
+
+      const detail = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${assignableAuditLogId}`, headers: authHeader(ceoToken) });
+      assert.equal(detail.statusCode, 200);
+      assert.equal(detail.json().data.assignment.assigneeUserId, limitedUserId);
+      // Assignment nunca mistura com review (correio.md v3.8 seção 6).
+      assert.ok(['unreviewed', 'acknowledged', 'resolved', 'dismissed'].includes(detail.json().data.reviewStatus));
+
+      const queue = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/needs-attention?assigneeUserId=${limitedUserId}&limit=50`, headers: authHeader(ceoToken) });
+      assert.equal(queue.statusCode, 200);
+      assert.ok(queue.json().data.some((row: { auditLogId: number }) => row.auditLogId === assignableAuditLogId));
+
+      const del = await app.inject({ method: 'DELETE', url: `/agents/operations/supervision-insights/incidents/${assignableAuditLogId}/assignment`, headers: authHeader(ceoToken) });
+      assert.equal(del.statusCode, 200, del.body);
+      assert.equal(del.json().data.assigneeUserId, null);
+
+      const getAfterDelete = await app.inject({ method: 'GET', url: `/agents/operations/supervision-insights/incidents/${assignableAuditLogId}/assignment`, headers: authHeader(ceoToken) });
+      assert.equal(getAfterDelete.json().data.assigneeUserId, null);
+    });
+  });
+
   describe('GET /incidents', () => {
     let jobForIncidents: Awaited<ReturnType<typeof createJob>>;
     let repeatedFailureWindow: number;

@@ -132,4 +132,20 @@ export const attentionQueueQuerySchema = z.object({
   agingBucket: z.enum(AGING_BUCKETS).optional(),
   entityType: z.string().trim().min(1).max(100).optional(),
   entityId: z.string().trim().min(1).max(100).optional(),
+  // Agentes v3.8 (correio.md "Operational Incident Ownership &
+  // Assignment", seção 13) — "evitar criar outro endpoint apenas para
+  // 'My Incidents'; o mesmo endpoint da fila deve ser reutilizado".
+  assigneeUserId: z.coerce.number().int().positive().optional(),
+  unassignedOnly: z.enum(['true', 'false']).optional(),
 });
+
+// Agentes v3.8 (correio.md "Operational Incident Ownership & Assignment",
+// seção 11) — payload de escrita do assignment: só `assigneeUserId`.
+// `.strict()` rejeita qualquer campo extra — em particular, IMPOSSÍVEL o
+// cliente definir `assignedBy`/`assignedAt` (sempre derivados no
+// servidor, mesmo padrão de `updateIncidentReviewSchema` acima).
+export const updateIncidentAssignmentSchema = z
+  .object({
+    assigneeUserId: z.number().int().positive(),
+  })
+  .strict();

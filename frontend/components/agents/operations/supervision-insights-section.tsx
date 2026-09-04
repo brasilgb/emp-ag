@@ -14,7 +14,7 @@ import { PaginationBar } from "@/components/crm/pagination-bar";
 import { EmptyState } from "@/components/states/empty-state";
 import { ErrorState } from "@/components/states/error-state";
 import { LoadingState } from "@/components/states/loading-state";
-import { useRecurringIncidents, useSupervisionIncidentDetail, useSupervisionIncidents, useSupervisionOverview, useUpdateIncidentReview } from "@/hooks/agents/use-operations";
+import { useAssignIncident, useRecurringIncidents, useSupervisionIncidentDetail, useSupervisionIncidents, useSupervisionOverview, useUnassignIncident, useUpdateIncidentReview } from "@/hooks/agents/use-operations";
 import { useUsersDirectory } from "@/hooks/use-users-directory";
 import { incidentReviewStatusLabel, operationalIncidentTypeLabel } from "@/lib/agents/derived";
 import { formatDateTime } from "@/lib/agents/format";
@@ -346,6 +346,8 @@ export function SupervisionIncidentDetailDialog({ auditLogId, onOpenChange }: { 
 
             <IncidentReviewSection auditLogId={detailQuery.data.data.auditLogId} review={detailQuery.data.data.review} />
 
+            <IncidentAssignmentSection auditLogId={detailQuery.data.data.auditLogId} assignment={detailQuery.data.data.assignment} />
+
             {detailQuery.data.data.auditRefs.length > 0 ? (
               <div>
                 <p className="text-xs font-medium text-muted-foreground">Referências de auditoria</p>
@@ -430,6 +432,80 @@ function IncidentReviewSection({ auditLogId, review }: { auditLogId: number; rev
               </Button>
             ))}
           </div>
+        </div>
+      </PermissionGate>
+    </div>
+  );
+}
+
+/**
+ * Agentes v3.8 (correio.md "Operational Incident Ownership & Assignment",
+ * seção 16) — "Assignment" como seção PRÓPRIA do diálogo, ao lado (nunca
+ * misturada) de "Review humano" acima: assign ≠ acknowledge/resolve/
+ * dismiss (correio.md v3.8 seção 6). Mesma permission de escrita
+ * (`agents.operations.manage`) — leitura sempre visível, ações só para
+ * quem pode escrever (backend é a autoridade real; o `PermissionGate`
+ * aqui é só UX, nunca a única barreira).
+ */
+function IncidentAssignmentSection({ auditLogId, assignment }: { auditLogId: number; assignment: { assigneeUserId: number; assignedBy: number; assignedAt: string } | null }) {
+  const usersQuery = useUsersDirectory();
+  const assignMutation = useAssignIncident(auditLogId);
+  const unassignMutation = useUnassignIncident(auditLogId);
+  const [selectedUserId, setSelectedUserId] = useState<string | undefined>(undefined);
+
+  const assigneeName = assignment ? (usersQuery.data?.data.find((user) => user.id === assignment.assigneeUserId)?.name ?? `Usuário #${assignment.assigneeUserId}`) : null;
+
+  async function handleAssign() {
+    if (!selectedUserId) return;
+    try {
+      await assignMutation.mutateAsync(Number(selectedUserId));
+      setSelectedUserId(undefined);
+      toast.success(`Incidente atribuído a ${usersQuery.data?.data.find((user) => user.id === Number(selectedUserId))?.name ?? "usuário selecionado"}.`);
+    } catch (error) {
+      toast.error(toErrorMessage(error, "Erro ao atribuir o incidente."));
+    }
+  }
+
+  async function handleUnassign() {
+    try {
+      await unassignMutation.mutateAsync();
+      toast.success("Incidente desatribuído.");
+    } catch (error) {
+      toast.error(toErrorMessage(error, "Erro ao desatribuir o incidente."));
+    }
+  }
+
+  return (
+    <div className="rounded-md border p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-xs font-medium text-muted-foreground">Responsável</p>
+        {assignment ? <span className="text-xs font-medium">{assigneeName ?? "..."}</span> : <span className="text-xs text-muted-foreground">Não atribuído</span>}
+      </div>
+
+      {assignment ? <p className="mt-2 text-xs text-muted-foreground">Atribuído em {formatDateTime(assignment.assignedAt)}</p> : null}
+
+      <PermissionGate permission="agents.operations.manage">
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Select value={selectedUserId} onValueChange={(value) => setSelectedUserId(value ?? undefined)} disabled={usersQuery.isLoading}>
+            <SelectTrigger className="w-56">
+              <SelectValue placeholder="Selecionar responsável..." />
+            </SelectTrigger>
+            <SelectContent>
+              {usersQuery.data?.data.map((user) => (
+                <SelectItem key={user.id} value={String(user.id)}>
+                  {user.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button size="sm" disabled={!selectedUserId || assignMutation.isPending} onClick={handleAssign}>
+            {assignment ? "Reatribuir" : "Atribuir"}
+          </Button>
+          {assignment ? (
+            <Button size="sm" variant="outline" disabled={unassignMutation.isPending} onClick={handleUnassign}>
+              Remover responsável
+            </Button>
+          ) : null}
         </div>
       </PermissionGate>
     </div>

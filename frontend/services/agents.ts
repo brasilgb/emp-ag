@@ -51,6 +51,7 @@ import type {
   OperationalSeverity,
   OperationalSupervisionReport,
   OperationalSupervisionSchedulerStatus,
+  IncidentAssignment,
   IncidentReview,
   IncidentReviewStatus,
   IncidentReviewStatusOrUnreviewed,
@@ -813,6 +814,11 @@ export interface ListAttentionQueueParams {
   agingBucket?: AgingBucket;
   entityType?: string;
   entityId?: string;
+  // Agentes v3.8 — Operational Incident Ownership & Assignment
+  // (correio.md seção 13): reaproveita o MESMO endpoint da fila, nunca
+  // um endpoint dedicado a "My Incidents".
+  assigneeUserId?: number;
+  unassignedOnly?: boolean;
 }
 
 export function listAttentionQueue(params: ListAttentionQueueParams = {}): Promise<Paginated<AttentionQueueItem>> {
@@ -831,6 +837,21 @@ export interface UpdateIncidentReviewInput {
 
 export function updateIncidentReview(auditLogId: number, input: UpdateIncidentReviewInput): Promise<{ data: IncidentReview }> {
   return apiFetch(`/api/agents/operations/supervision-insights/incidents/${auditLogId}/review`, { method: "PATCH", body: JSON.stringify(input) });
+}
+
+// Agentes v3.8 — Operational Incident Ownership & Assignment (correio.md).
+// PATCH cobre assign E reassign (seção 9 — "reassignment pode ser
+// consequência natural de assignIncident"); DELETE cobre unassign.
+export function getIncidentAssignment(auditLogId: number): Promise<{ data: IncidentAssignment }> {
+  return apiFetch(`/api/agents/operations/supervision-insights/incidents/${auditLogId}/assignment`);
+}
+
+export function assignIncident(auditLogId: number, assigneeUserId: number): Promise<{ data: IncidentAssignment }> {
+  return apiFetch(`/api/agents/operations/supervision-insights/incidents/${auditLogId}/assignment`, { method: "PATCH", body: JSON.stringify({ assigneeUserId }) });
+}
+
+export function unassignIncident(auditLogId: number): Promise<{ data: IncidentAssignment }> {
+  return apiFetch(`/api/agents/operations/supervision-insights/incidents/${auditLogId}/assignment`, { method: "DELETE" });
 }
 
 // Agentes v2.6 — Agent Responsibilities, Operational Ownership & Escalation (correio.md).

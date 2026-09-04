@@ -4,9 +4,10 @@ import { after, before, describe, test } from 'node:test';
 import { eq, inArray } from 'drizzle-orm';
 
 import { db } from '../../db/index.js';
-import { agentOperationalIncidentReviews, auditLogs, users } from '../../db/schema/index.js';
+import { agentOperationalIncidentAssignments, agentOperationalIncidentReviews, auditLogs, users } from '../../db/schema/index.js';
 import { database } from '../../services/database.js';
 import { redis } from '../../services/redis.js';
+import { assignIncident, unassignIncident } from './incident-assignment-service.js';
 import { upsertIncidentReview } from './incident-review-service.js';
 import { listAttentionQueue } from './supervision-insights-service.js';
 
@@ -30,7 +31,10 @@ describe('Agentes v3.7 - attention-queue-service (listAttentionQueue)', () => {
   const entityType = `attn_test_${suffix}`;
 
   let ceoUserId: number;
+  let assigneeAId: number;
+  let assigneeBId: number;
   const auditLogIds: number[] = [];
+  const userIds: number[] = [];
 
   async function insertIncident(opts: { entityId: string; severity?: 'info' | 'warning' | 'critical'; incidentType?: string; response?: string; createdAt: Date }) {
     const [row] = await db
@@ -55,11 +59,21 @@ describe('Agentes v3.7 - attention-queue-service (listAttentionQueue)', () => {
     const [ceoUser] = await db.select().from(users).where(eq(users.email, ceoEmail.toLowerCase())).limit(1);
     assert.ok(ceoUser);
     ceoUserId = ceoUser.id;
+
+    // Agentes v3.8 — dois usuários dedicados para os testes de
+    // assignment/ownership desta fila.
+    const [assigneeA] = await db.insert(users).values({ name: `Attn Assignee A ${suffix}`, email: `attn-assignee-a-${suffix}@example.com`, passwordHash: 'x', roleId: ceoUser.roleId, isActive: true }).returning();
+    const [assigneeB] = await db.insert(users).values({ name: `Attn Assignee B ${suffix}`, email: `attn-assignee-b-${suffix}@example.com`, passwordHash: 'x', roleId: ceoUser.roleId, isActive: true }).returning();
+    assigneeAId = assigneeA!.id;
+    assigneeBId = assigneeB!.id;
+    userIds.push(assigneeAId, assigneeBId);
   });
 
   after(async () => {
+    await db.delete(agentOperationalIncidentAssignments).where(inArray(agentOperationalIncidentAssignments.incidentAuditLogId, auditLogIds));
     await db.delete(agentOperationalIncidentReviews).where(inArray(agentOperationalIncidentReviews.incidentAuditLogId, auditLogIds));
     await db.delete(auditLogs).where(inArray(auditLogs.id, auditLogIds));
+    await db.delete(users).where(inArray(users.id, userIds));
     await database.end();
     redis.disconnect();
   });
@@ -284,5 +298,91 @@ describe('Agentes v3.7 - attention-queue-service (listAttentionQueue)', () => {
     // decisão/resposta do Supervisor").
     assert.equal(afterRow!.outcome, 'observed');
     assert.equal(afterRow!.response, 'observe');
+  });
+
+  // Agentes v3.8 (correio.md "Operational Incident Ownership &
+  // Assignment", seção 13/14/21) — a fila expõe e filtra por assignment,
+  // mas NUNCA muda a prioridade/ordenação central por causa dele (seção
+  // 14: "assignment não deve mudar prioridade operacional por default").
+  test('4/13/20/21/22: assignment aparece na fila, filtro assigneeUserId funciona e combina com severity/reviewStatus', async () => {
+    const now = new Date();
+    const assigned = await insertIncident({ entityId: `e-assign-${suffix}`, severity: 'critical', incidentType: 'delivery_failure', createdAt: now });
+    const unassigned = await insertIncident({ entityId: `e-unassign-${suffix}`, severity: 'critical', incidentType: 'delivery_failure', createdAt: now });
+    await assignIncident(assigned.id, assigneeAId, ceoUserId);
+
+    const readAt = new Date(now.getTime() + 1000);
+
+    const full = await listAttentionQueue({ entityType, page: 1, limit: 100, now: readAt, incidentType: 'delivery_failure' });
+    const assignedRow = full.rows.find((r) => r.auditLogId === assigned.id);
+    const unassignedRow = full.rows.find((r) => r.auditLogId === unassigned.id);
+    assert.ok(assignedRow && unassignedRow);
+    assert.deepEqual(assignedRow!.assignment, { assigneeUserId: assigneeAId, assignedBy: ceoUserId, assignedAt: assignedRow!.assignment!.assignedAt });
+    assert.equal(unassignedRow!.assignment, null);
+
+    // Filtro combinado: assigneeUserId + severity.
+    const byAssignee = await listAttentionQueue({ entityType, page: 1, limit: 100, now: readAt, incidentType: 'delivery_failure', severity: 'critical', assigneeUserId: assigneeAId });
+    assert.ok(byAssignee.rows.some((r) => r.auditLogId === assigned.id));
+    assert.ok(!byAssignee.rows.some((r) => r.auditLogId === unassigned.id));
+
+    // Filtro unassignedOnly.
+    const onlyUnassigned = await listAttentionQueue({ entityType, page: 1, limit: 100, now: readAt, incidentType: 'delivery_failure', unassignedOnly: true });
+    assert.ok(onlyUnassigned.rows.some((r) => r.auditLogId === unassigned.id));
+    assert.ok(!onlyUnassigned.rows.some((r) => r.auditLogId === assigned.id));
+  });
+
+  test('14: assignment não altera a ordenação da fila (severidade continua sendo o critério primário)', async () => {
+    const now = new Date();
+    const unassignedCritical = await insertIncident({ entityId: `e14-crit-${suffix}`, severity: 'critical', incidentType: 'run_stuck', createdAt: now });
+    const assignedWarning = await insertIncident({ entityId: `e14-warn-${suffix}`, severity: 'warning', incidentType: 'run_stuck', createdAt: now });
+    await assignIncident(assignedWarning.id, assigneeAId, ceoUserId);
+
+    const { rows } = await listAttentionQueue({ entityType, page: 1, limit: 100, now: new Date(now.getTime() + 1000), incidentType: 'run_stuck' });
+    const critIdx = rows.findIndex((r) => r.auditLogId === unassignedCritical.id);
+    const warnIdx = rows.findIndex((r) => r.auditLogId === assignedWarning.id);
+    assert.ok(critIdx !== -1 && warnIdx !== -1);
+    assert.ok(critIdx < warnIdx, 'severidade continua decidindo a ordem — um incidente atribuído de severidade menor nunca deveria pular na frente de um crítico não atribuído');
+  });
+
+  test('15/16/17: acknowledge/resolve/dismiss não criam nem trocam assignment; assignment não altera reviewStatus', async () => {
+    const now = new Date();
+    const incident = await insertIncident({ entityId: `e-noauto-${suffix}`, createdAt: now });
+
+    await upsertIncidentReview(incident.id, ceoUserId, { status: 'acknowledged' });
+    let row = (await listAttentionQueue({ entityType, page: 1, limit: 100, now: new Date(now.getTime() + 1000) })).rows.find((r) => r.auditLogId === incident.id);
+    assert.equal(row!.assignment, null, 'acknowledge nunca deveria criar um assignment');
+
+    await assignIncident(incident.id, assigneeAId, ceoUserId);
+    row = (await listAttentionQueue({ entityType, page: 1, limit: 100, now: new Date(now.getTime() + 2000), reviewStatus: 'acknowledged' })).rows.find((r) => r.auditLogId === incident.id);
+    assert.equal(row!.reviewStatus, 'acknowledged', 'assign nunca deveria alterar o reviewStatus');
+    assert.deepEqual(row!.assignment, { assigneeUserId: assigneeAId, assignedBy: ceoUserId, assignedAt: row!.assignment!.assignedAt });
+
+    await upsertIncidentReview(incident.id, ceoUserId, { status: 'resolved' });
+    row = (await listAttentionQueue({ entityType, page: 1, limit: 100, now: new Date(now.getTime() + 3000), reviewStatus: 'resolved' })).rows.find((r) => r.auditLogId === incident.id);
+    assert.equal(row!.reviewStatus, 'resolved', 'resolve não deveria criar/trocar assignment (nem qualquer outra coisa além do próprio reviewStatus)');
+    assert.deepEqual(row!.assignment, { assigneeUserId: assigneeAId, assignedBy: ceoUserId, assignedAt: row!.assignment!.assignedAt }, 'resolve não deveria alterar o assignment já existente');
+  });
+
+  test('18/19: resolved sai da fila default sem destruir o assignment; unassign explícito funciona mesmo assim', async () => {
+    const now = new Date();
+    const incident = await insertIncident({ entityId: `e-resolved-keeps-${suffix}`, createdAt: now });
+    await assignIncident(incident.id, assigneeAId, ceoUserId);
+    await upsertIncidentReview(incident.id, ceoUserId, { status: 'resolved' });
+
+    const readAt = new Date(now.getTime() + 1000);
+    const defaultQueue = await listAttentionQueue({ entityType, page: 1, limit: 100, now: readAt });
+    assert.ok(!defaultQueue.rows.some((r) => r.auditLogId === incident.id), 'resolved deveria sair da fila default (regra da v3.7, intocada)');
+
+    const viaFilter = await listAttentionQueue({ entityType, page: 1, limit: 100, now: readAt, reviewStatus: 'resolved' });
+    const row = viaFilter.rows.find((r) => r.auditLogId === incident.id);
+    assert.ok(row, 'mesmo fora do default, o incidente resolved continua acessível via filtro explícito, com o assignment intacto');
+    assert.deepEqual(row!.assignment, { assigneeUserId: assigneeAId, assignedBy: ceoUserId, assignedAt: row!.assignment!.assignedAt });
+
+    // Unassign explícito continua funcionando normalmente num incidente
+    // já resolved (correio.md seção 6: nenhuma ação automática destrutiva
+    // sobre assignment por causa do reviewStatus, mas o operador ainda
+    // pode desatribuir manualmente se quiser).
+    await unassignIncident(incident.id, ceoUserId);
+    const afterUnassign = (await listAttentionQueue({ entityType, page: 1, limit: 100, now: readAt, reviewStatus: 'resolved' })).rows.find((r) => r.auditLogId === incident.id);
+    assert.equal(afterUnassign!.assignment, null);
   });
 });

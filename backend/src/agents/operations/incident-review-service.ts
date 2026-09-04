@@ -39,9 +39,13 @@ const INCIDENT_DETECTED_ACTION = 'agents.operations.incident.detected';
  * confirmado por "a linha existe", sempre por "é exatamente um
  * `agents.operations.incident.detected`". Reaproveitado tanto por leitura
  * quanto por escrita — mesma regra dos dois lados, nunca uma segunda
- * definição de "o que é um incidente válido".
+ * definição de "o que é um incidente válido". Exportada (v3.8) para
+ * reuso por `incident-assignment-service.ts` — a MESMA função dos dois
+ * lados, nunca uma segunda checagem de "o que é um incidente válido"
+ * (correio.md v3.8 seção 1: "por que a decisão tomada não cria uma
+ * segunda identidade de incidente").
  */
-async function isValidIncidentAuditLog(auditLogId: number): Promise<boolean> {
+export async function isValidIncidentAuditLog(auditLogId: number): Promise<boolean> {
   const [row] = await db.select({ id: auditLogs.id }).from(auditLogs).where(and(eq(auditLogs.id, auditLogId), eq(auditLogs.action, INCIDENT_DETECTED_ACTION))).limit(1);
   return row !== undefined;
 }

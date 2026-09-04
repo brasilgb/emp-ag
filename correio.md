@@ -1,292 +1,774 @@
-# Agentes v3.7 — Operational Incident Review Queue & Attention Management
+# Agentes v3.8 — Operational Incident Ownership & Assignment
 
 ## Objetivo
 
-Implementar uma fila operacional humana para revisão de incidentes, construída exclusivamente sobre as estruturas já existentes da v3.5 e v3.6.
+Implementar uma camada explícita de **ownership humano para incidentes operacionais**, permitindo que incidentes já detectados pelo Operational Supervisor e exibidos na fila `Needs Attention` sejam:
 
-A v3.7 NÃO deve aumentar a autonomia do sistema, NÃO deve alterar a lógica de decisão do Operational Supervisor e NÃO deve introduzir novos mecanismos automáticos de resposta.
+* atribuídos a um responsável;
+* reatribuídos;
+* liberados/desatribuídos;
+* consultados por responsável;
+* acompanhados no histórico de review;
+* exibidos claramente na fila operacional.
 
-## Descoberta obrigatória antes de qualquer migration
+A v3.8 deve fechar o fluxo:
 
-Antes de criar ou alterar schema, revisar:
+```text
+Detection
+  ↓
+Needs Attention
+  ↓
+Acknowledgement
+  ↓
+Assignment
+  ↓
+Human Review
+  ↓
+Resolution / Dismissal
+```
+
+A atribuição é exclusivamente uma ferramenta de **coordenação humana**.
+
+Ela NÃO concede autonomia adicional ao Supervisor, NÃO inicia resolução automática e NÃO altera a política de resposta operacional.
+
+---
+
+# 1. Descoberta obrigatória antes de qualquer implementação
+
+Antes de criar migration, tabela, endpoint ou serviço, revisar obrigatoriamente:
 
 * `audit_logs`;
-* `agent_operational_incident_reviews`;
+* `agent_operational_incident_reviews` da v3.6;
+* implementação da fila `Needs Attention` da v3.7;
 * `supervision-insights-service.ts`;
 * `supervisor-service.ts`;
-* Supervision Run History v3.4;
-* Incident Review v3.5;
-* Incident Review Workflow v3.6;
-* Escalations v2.6;
-* FollowUps v2.7;
-* frontend atual de `/agents/operations`.
+* usuários/identidades existentes no sistema;
+* RBAC/permissions existentes;
+* memberships, roles ou equivalente;
+* auditoria já utilizada pelas operações;
+* frontend atual de `/agents/operations`;
+* `SupervisionIncidentDetailDialog`;
+* hooks React Query envolvidos;
+* escalation/follow-up existentes.
 
-A primeira hipótese arquitetural é:
+Responder explicitamente no relatório:
 
-`audit_logs + agent_operational_incident_reviews + dados já derivados pela v3.5`
+1. se existe estrutura persistente que possa representar ownership de incidente sem ambiguidade;
+2. se `agent_operational_incident_reviews` pode ou não receber essa responsabilidade sem misturar conceitos;
+3. se assignment precisa de nova persistência;
+4. por que a decisão tomada não cria uma segunda identidade de incidente.
 
-devem ser suficientes para implementar a fila.
+**Não criar migration antes dessa análise.**
 
-Somente criar migration se for demonstrado, antes da implementação, que existe estado novo, mutável e não derivável que realmente precise ser persistido.
+---
 
-Não criar tabela para cachear prioridade, aging, recorrência, quantidade de incidentes, bucket temporal ou qualquer informação derivável.
+# 2. Identidade canônica do incidente
 
-## Escopo funcional
+A identidade canônica continua obrigatoriamente sendo:
 
-Criar uma visão operacional de **Needs Attention**.
+```text
+audit_logs
+action = agents.operations.incident.detected
+auditLogId = identidade do incidente
+```
 
-A fila deve contemplar, no mínimo:
+A v3.8 NÃO pode criar:
 
-* incidentes `unreviewed`;
-* incidentes `acknowledged` ainda não encerrados;
-* incidentes recorrentes;
-* incidentes antigos sem revisão;
-* incidentes de maior severidade.
+* `incident_id` paralelo;
+* tabela duplicando incidentes;
+* cache materializado da fila;
+* entidade operacional concorrente com `audit_logs`.
 
-Estados `resolved` e `dismissed` não devem aparecer por padrão em Needs Attention, mas podem continuar acessíveis através dos filtros/histórico quando aplicável.
+Qualquer estrutura de assignment deve referenciar exclusivamente o incidente canônico já existente.
 
-## Prioridade operacional
+---
 
-A ordenação deve ser:
+# 3. Persistência esperada
 
-* determinística;
-* explicável;
-* reproduzível;
-* baseada exclusivamente em regras de domínio.
+Se a descoberta confirmar que não existe estrutura adequada, criar uma estrutura mínima dedicada a ownership.
 
-Não usar LLM, IA, embeddings ou classificação probabilística.
+Preferência arquitetural:
 
-A prioridade pode considerar, conforme os dados já existentes:
+```text
+agent_operational_incident_assignments
+```
 
-* severidade;
-* `reviewStatus`;
-* recorrência;
-* idade do incidente;
-* outcome operacional;
-* finding/type.
+Ela deve representar apenas o **estado corrente de assignment**.
 
-Evitar criar um "score mágico" difícil de explicar. Se um score interno for realmente útil, sua fórmula deve ser explícita e testável.
+Campos esperados conceitualmente:
 
-Preferir regras lexicográficas/determinísticas quando possível, por exemplo:
+```text
+audit_log_id
+assignee_user_id
+assigned_by_user_id
+assigned_at
+updated_at
+```
 
-1. severidade;
-2. recorrência;
-3. review pendente;
-4. aging;
-5. timestamp/id como desempate estável.
+Opcionalmente, caso a arquitetura existente exija:
 
-A ordem final escolhida deve ser documentada.
+```text
+tenant_id / workspace_id / organization_id
+```
 
-## Aging
+somente se isso for necessário para integridade e isolamento conforme os padrões existentes do projeto.
 
-Calcular aging em tempo de leitura.
+Não adicionar campos especulativos como:
 
-Não persistir contador, cronômetro nem timestamp artificial para aging.
+```text
+priority
+due_date
+sla
+estimated_resolution
+status
+team_id
+department_id
+auto_assign
+```
 
-Usar os timestamps canônicos já existentes.
+a menos que já exista contrato inequívoco no sistema que justifique o reuso.
 
-Expor buckets operacionais, preferencialmente:
+Assignment e review são conceitos distintos.
 
-* `< 1h`;
-* `1h–4h`;
-* `4h–24h`;
-* `> 24h`.
+Não transformar `agent_operational_incident_reviews` em um registro genérico de workflow se isso misturar responsabilidades.
 
-Se houver `acknowledged`, pode ser útil expor separadamente:
+---
 
-* idade total do incidente;
-* tempo desde o último review/acknowledgement.
+# 4. Histórico e auditoria
 
-Não inventar SLA ainda. A v3.7 deve mostrar aging; não criar automaticamente obrigação contratual/SLA.
+O estado corrente pode ser mutável, mas toda alteração deve produzir evento append-only em `audit_logs`.
 
-## Filtros
+Registrar pelo menos:
 
-Suportar combinação dos filtros úteis já presentes ou deriváveis:
+```text
+agents.operations.incident.assigned
+agents.operations.incident.reassigned
+agents.operations.incident.unassigned
+```
 
-* review status;
-* severidade;
-* finding/type;
-* outcome;
-* recorrência;
-* período;
-* aging/bucket, se adequado à arquitetura atual.
+Metadata suficiente para reconstruir:
 
-Os filtros devem funcionar conjuntamente.
+```text
+incidentAuditLogId
+previousAssigneeUserId
+assigneeUserId
+performedByUserId
+```
 
-Evitar duplicar dois mecanismos diferentes de filtro entre histórico e fila se a mesma infraestrutura puder ser reutilizada.
+Não persistir cópias de nome/e-mail do usuário quando a identidade puder ser resolvida pela fonte oficial.
 
-## Backend
+---
 
-Reutilizar os serviços da v3.5/v3.6 sempre que possível.
+# 5. Regras de assignment
 
-Não criar outro conceito de incidente.
+Implementar regras determinísticas.
 
-A identidade canônica continua sendo exclusivamente:
+### Assign
 
-`audit_logs` com action `agents.operations.incident.detected`.
+Incidente sem responsável:
 
-A fila é uma projeção desses incidentes e respectivos reviews.
+```text
+unassigned → assigned
+```
 
-Evitar N+1.
+### Reassign
 
-Uma página com N incidentes deve ser enriquecida com reviews/recorrência/outcomes através de consultas em lote ou queries agregadas adequadas, nunca uma query por incidente.
+Incidente já atribuído:
 
-Se for criado endpoint dedicado, manter namespace coerente com:
+```text
+assigned(A) → assigned(B)
+```
 
-`/agents/operations/supervision-insights/...`
+Registrar auditoria específica de reatribuição.
 
-Avaliar primeiro se é melhor:
+### Unassign
 
-* estender o endpoint existente de incidentes;
-* ou criar endpoint específico para Needs Attention.
+```text
+assigned → unassigned
+```
 
-Escolher a opção que preserve responsabilidade clara e evite duplicação de regra.
+### Mesmo responsável
 
-## Autorização
+Atribuir novamente o mesmo usuário deve ser:
 
-Não criar permission nova sem justificativa real.
+* idempotente, ou
+* rejeitado de forma explícita e determinística.
 
-Leitura deve reutilizar:
+Escolher uma única semântica, documentar e testar.
 
-`agents.operations.read`
+Preferência: **idempotência**.
 
-As ações de acknowledgment/resolution/dismissal continuam exclusivamente pela API de review da v3.6 e exigem:
+---
 
-`agents.operations.manage`
+# 6. Resolução e dismissal
 
-A fila em si não deve introduzir nova ação mutável.
+Assignment NÃO deve alterar automaticamente o estado de review.
 
-## Frontend
+Portanto:
 
-Integrar em `/agents/operations`.
+```text
+assign ≠ acknowledge
+assign ≠ resolve
+assign ≠ dismiss
+```
 
-Criar uma seção clara de **Needs Attention**.
+Da mesma forma:
 
-Ela deve permitir ao operador entender rapidamente:
+```text
+acknowledge ≠ assign
+```
 
-* o que precisa de atenção;
-* por que aquele incidente aparece acima de outro;
-* há quanto tempo ocorreu;
-* se é recorrente;
-* qual é o estado do review;
-* qual foi o outcome operacional.
+Quando um incidente for `resolved` ou `dismissed`, não realizar nenhuma ação automática destrutiva sobre assignment sem justificativa arquitetural.
 
-Fornecer acesso direto ao Incident Review já existente.
+Preferência:
 
-As ações:
+* manter assignment persistido para contexto histórico;
+* a fila `Needs Attention` já removerá o incidente naturalmente por causa do `reviewStatus`.
 
-* acknowledge;
-* resolve;
-* dismiss
+Se necessário, permitir leitura do responsável também no histórico.
 
-devem continuar utilizando exclusivamente o workflow/API da v3.6.
+---
 
-Não criar segunda implementação de review no frontend.
+# 7. Quem pode ser responsável
 
-Evitar cards redundantes se a mesma informação já estiver presente no overview. Priorizar utilidade operacional.
+O backend deve validar que o usuário escolhido é elegível dentro do mesmo contexto operacional/tenant/workspace aplicável.
 
-## Fronteiras arquiteturais obrigatórias
+Não aceitar um `userId` arbitrário somente porque existe no banco.
+
+Reutilizar as estruturas existentes de:
+
+```text
+Identity
+Membership
+Role
+Permission
+Tenant/Workspace context
+```
+
+conforme arquitetura real encontrada.
+
+Evitar regras hardcoded por nome de papel quando puder ser usada a estrutura atual de autorização.
+
+---
+
+# 8. Permissions
+
+Não criar permission nova sem necessidade comprovada.
+
+Avaliar primeiro se:
+
+```text
+agents.operations.read
+agents.operations.manage
+```
+
+já cobrem corretamente a feature.
+
+Semântica preferida:
+
+```text
+read
+→ pode ver assignment
+
+manage
+→ pode assign/reassign/unassign
+```
+
+Se houver razão arquitetural real para permission dedicada, justificar antes de implementá-la.
+
+---
+
+# 9. Backend
+
+Criar serviço dedicado ou incorporar ao serviço existente apenas se a separação de responsabilidade ficar clara.
+
+Operações esperadas:
+
+```text
+getIncidentAssignment(auditLogId)
+
+assignIncident(auditLogId, assigneeUserId, actor)
+
+unassignIncident(auditLogId, actor)
+```
+
+Reassignment pode ser consequência natural de `assignIncident`.
+
+Toda mutação deve ser transacional quando houver:
+
+```text
+alteração de estado + audit log
+```
+
+Não permitir situação em que o estado seja alterado sem a auditoria correspondente.
+
+---
+
+# 10. Concorrência
+
+Tratar concorrência explicitamente.
+
+Exemplo:
+
+Dois supervisores humanos tentam atribuir o mesmo incidente quase simultaneamente.
+
+A implementação deve produzir estado final consistente.
+
+Pode usar:
+
+* `INSERT ... ON CONFLICT`;
+* `UPDATE` protegido;
+* transação;
+* lock apropriado;
+* mecanismo equivalente já usado no projeto.
+
+Não criar lock global do Operational Supervisor.
+
+O assignment deve ser isolado por incidente.
+
+Criar teste concorrente quando tecnicamente viável.
+
+---
+
+# 11. API
+
+Manter namespace coerente com v3.5–v3.7.
+
+Sugestão:
+
+```text
+PUT
+/agents/operations/supervision-insights/incidents/:auditLogId/assignment
+```
+
+Body:
+
+```json
+{
+  "assigneeUserId": "..."
+}
+```
+
+Para remoção:
+
+```text
+DELETE
+/agents/operations/supervision-insights/incidents/:auditLogId/assignment
+```
+
+ou outra semântica REST já usada pelo projeto.
+
+Não criar múltiplos endpoints redundantes como:
+
+```text
+/assign
+/reassign
+/take
+/claim
+```
+
+se uma única operação de atualização resolver corretamente.
+
+---
+
+# 12. Integração com Incident Review
+
+O detalhe do incidente deve passar a retornar também:
+
+```text
+assignment
+```
+
+com dados suficientes para UI:
+
+```text
+assigneeUserId
+assigneeName
+assignedAt
+assignedBy
+```
+
+conforme disponibilidade real das entidades existentes.
+
+Não duplicar o diálogo.
+
+Continuar reutilizando:
+
+```text
+SupervisionIncidentDetailDialog
+```
+
+da v3.5/v3.6/v3.7.
+
+---
+
+# 13. Integração com Needs Attention
+
+Cada item de `Needs Attention` deve expor o assignment corrente.
+
+Exemplo conceitual:
+
+```text
+assignment:
+  null
+```
+
+ou:
+
+```text
+assignment:
+  {
+    assigneeUserId,
+    assigneeName,
+    assignedAt
+  }
+```
+
+A fila deve permitir filtros opcionais:
+
+```text
+assigneeUserId
+unassignedOnly
+```
+
+Evitar criar outro endpoint apenas para "My Incidents".
+
+O mesmo endpoint da fila deve ser reutilizado.
+
+---
+
+# 14. Ordenação da fila
+
+NÃO alterar silenciosamente a regra de prioridade da v3.7:
+
+```text
+severity
+→ recurrence
+→ reviewStatus
+→ aging
+→ auditLogId
+```
+
+Assignment não deve mudar prioridade operacional por default.
+
+Não colocar automaticamente:
+
+```text
+unassigned > assigned
+```
+
+sem requisito explícito.
+
+Se a UI precisar destacar não atribuídos, usar badge/filtro, não alterar a semântica central da fila.
+
+---
+
+# 15. Frontend — Needs Attention
+
+Adicionar indicação visual clara de ownership.
+
+Exemplos:
+
+```text
+Assigned to: João
+Unassigned
+```
+
+Adicionar filtro:
+
+```text
+Assignee
+```
+
+e, se fizer sentido:
+
+```text
+Only unassigned
+```
+
+Não transformar a tela em Kanban.
+
+Não implementar drag-and-drop nesta versão.
+
+---
+
+# 16. Frontend — Incident Detail
+
+No mesmo diálogo existente, adicionar seção:
+
+```text
+Assignment
+```
+
+Permitindo para usuários com `agents.operations.manage`:
+
+* selecionar responsável;
+* trocar responsável;
+* remover responsável.
+
+Usuário apenas com `read`:
+
+* visualiza;
+* não altera.
+
+Não duplicar lógica de autorização somente no frontend.
+
+Backend continua sendo autoridade.
+
+---
+
+# 17. Seleção de usuários
+
+Reutilizar endpoint/listagem de usuários existente.
+
+Não criar cadastro paralelo.
+
+O seletor deve exibir somente usuários elegíveis ao contexto atual.
+
+Não carregar todos os usuários globais da plataforma se a aplicação for multitenant.
+
+Evitar N+1 para resolver nomes de responsáveis na fila.
+
+---
+
+# 18. React Query
+
+Adicionar query/mutation seguindo padrões existentes.
+
+Após:
+
+```text
+assign
+reassign
+unassign
+```
+
+invalidar ao menos:
+
+```text
+attention queue
+incident detail
+incident history
+```
+
+somente nas chaves necessárias.
+
+Não fazer `window.location.reload()`.
+
+---
+
+# 19. N+1
+
+A inclusão do assignee não pode transformar:
+
+```text
+listAttentionQueue
+```
+
+em consulta por linha.
+
+Assignments e identidades devem ser resolvidos em lote.
+
+Esperado:
+
+```text
+WHERE audit_log_id IN (...)
+```
+
+e resolução batched dos usuários.
+
+Manter custo de queries constante em relação à quantidade de incidentes dentro da página.
+
+Adicionar teste específico de N+1 se a implementação introduzir consultas adicionais.
+
+---
+
+# 20. Segurança
+
+Garantir:
+
+* incidente existe;
+* incidente pertence à identidade canônica correta;
+* usuário selecionado existe;
+* usuário é elegível no mesmo contexto;
+* actor possui permissão;
+* IDs inválidos resultam em erro previsível;
+* nenhuma enumeração cross-tenant;
+* nenhuma confiança em ownership enviado pelo frontend.
+
+---
+
+# 21. Testes obrigatórios
+
+Cobrir pelo menos:
+
+1. incidente começa sem responsável;
+2. assign funciona;
+3. assignment aparece no detalhe;
+4. assignment aparece na fila;
+5. reassign funciona;
+6. histórico/audit registra responsável anterior e novo;
+7. unassign funciona;
+8. unassign é auditado;
+9. usuário com somente `read` não pode atribuir;
+10. usuário com `manage` pode atribuir;
+11. usuário inexistente é rejeitado;
+12. usuário fora do contexto é rejeitado;
+13. incidente inexistente é rejeitado;
+14. assignment não muda reviewStatus;
+15. acknowledge não cria assignment;
+16. resolve não cria/troca assignment;
+17. dismiss não cria/troca assignment;
+18. resolved deixa a fila default sem destruir assignment;
+19. histórico ainda consegue mostrar assignment;
+20. filtro `assigneeUserId` funciona;
+21. filtro `unassignedOnly` funciona;
+22. filtros combinam com severity/recurrence/aging/reviewStatus;
+23. paginação continua determinística;
+24. nenhuma regressão em v3.5;
+25. nenhuma regressão em v3.6;
+26. nenhuma regressão em v3.7;
+27. ausência de N+1;
+28. concorrência não produz estado inconsistente;
+29. audit + mudança de estado são atômicos.
+
+---
+
+# 22. Supervisor
 
 Não alterar:
 
-* `supervisor-guard.ts`;
-* lógica de `applyResponse`;
-* decisão do Supervisor;
-* detecção de incidentes;
-* mecanismo de Escalation;
-* mecanismo de FollowUp;
-* Circuit Breakers;
-* autonomia;
-* planner/policy/executor;
-* scheduler, salvo leitura necessária e sem mudança comportamental.
+```text
+supervisor-guard.ts
+```
 
-Não criar:
+salvo se surgir motivo crítico e previamente documentado.
 
-* novo Supervisor;
-* segunda identidade de incidente;
-* nova fila persistida;
-* Redis queue para este workflow;
-* lock distribuído;
-* worker novo apenas para calcular atenção;
-* classificação por LLM.
+A expectativa da v3.8 é:
 
-A v3.7 organiza trabalho humano. Ela não torna o sistema mais autônomo.
+```text
+supervisor-guard.ts intocado
+```
 
-## Concorrência
+Também não alterar:
 
-A v3.7 deve ser majoritariamente leitura.
+* Response Policy;
+* Planner;
+* Policy Evaluator;
+* Executor;
+* Circuit Breaker;
+* scheduler;
+* recovery;
+* incident detection;
+* escalation automática;
+* follow-up automático.
 
-Toda mutação continua delegada ao review workflow atômico da v3.6.
+---
 
-Não adicionar estado concorrente desnecessário.
+# 23. Autonomia
 
-## Testes obrigatórios
+É proibido nesta versão:
 
-Adicionar testes cobrindo pelo menos:
+```text
+auto-assignment
+round-robin
+AI choosing assignee
+LLM classification
+load balancing
+auto escalation by owner
+automatic reassignment
+automatic deadlines
+SLA enforcement
+```
 
-1. incidente `unreviewed` aparece em Needs Attention;
-2. incidente `acknowledged` aparece quando ainda aplicável;
-3. `resolved` e `dismissed` ficam fora da fila padrão;
-4. severidade influencia corretamente a ordenação;
-5. recorrência influencia corretamente a ordenação;
-6. aging `<1h`;
-7. aging exatamente no limite de 1h;
-8. aging exatamente no limite de 4h;
-9. aging exatamente no limite de 24h;
-10. aging `>24h`;
-11. desempate determinístico;
-12. filtros combinados;
-13. filtro por review status;
-14. filtro por recorrência;
-15. filtro por outcome;
-16. paginação preserva ordenação determinística;
-17. ausência de N+1;
-18. usuário apenas com `agents.operations.read` consegue consultar a fila;
-19. usuário sem permission de leitura recebe 403;
-20. manipular review através da v3.6 atualiza a projeção da fila;
-21. alterar review NÃO altera o outcome operacional;
-22. nenhuma alteração indireta na decisão/resposta do Supervisor;
-23. incidentes históricos sem review são sintetizados corretamente como `unreviewed`.
+Tudo isso fica fora da v3.8.
 
-Preferir relógio controlável/injetável nos testes de aging em vez de sleeps reais.
+O usuário humano decide explicitamente quem assume o incidente.
 
-## Validação final
+---
 
-Executar no fechamento:
+# 24. Migration
 
-* migration somente se realmente criada e previamente justificada;
-* `npx tsc --noEmit`;
-* testes específicos da v3.7;
-* suíte completa do backend com a mesma política de isolamento já consolidada;
-* lint/build do frontend conforme baseline atual;
-* verificar regressões da v3.5 e v3.6;
-* verificar que `supervisor-guard.ts` permaneceu intocado;
-* verificar que nenhuma lógica autônoma foi adicionada;
-* verificar que nenhum N+1 foi introduzido.
+Caso seja necessária migration:
 
-## Relatório de entrega
+* criar nova migration incremental;
+* não editar migrations antigas;
+* usar FKs e índices consistentes;
+* respeitar isolamento do domínio existente;
+* explicar cada constraint relevante;
+* testar migration em banco real.
 
-Ao finalizar, responder com relatório contendo:
+Caso NÃO seja necessária:
 
-1. análise de persistência e decisão sobre migration;
-2. regra exata da fila Needs Attention;
-3. regra exata de ordenação/prioridade;
-4. definição de aging e limites dos buckets;
-5. endpoints alterados/criados;
-6. autorização utilizada;
-7. integração com v3.5/v3.6;
-8. estratégia usada para evitar N+1;
-9. arquivos criados/alterados;
-10. testes adicionados;
-11. resultado completo da validação;
-12. confirmação explícita de que:
+* justificar detalhadamente por que a persistência existente representa assignment de forma inequívoca.
 
-* `supervisor-guard.ts` não foi alterado;
-* não houve aumento de autonomia;
-* não foi criado novo Circuit Breaker;
-* não foi criada segunda identidade de incidente;
-* nenhuma ação automática nova foi adicionada.
+---
+
+# 25. Validação final obrigatória
+
+Executar:
+
+```text
+backend typecheck
+backend testes específicos
+backend suíte completa
+frontend typecheck
+frontend lint
+frontend testes
+frontend build
+```
+
+Comparar quantitativamente:
+
+```text
+baseline anterior
++
+testes v3.8
+=
+novo total esperado
+```
+
+Se houver divergência, investigar e explicar.
+
+---
+
+# 26. Relatório final
+
+Entregar relatório contendo:
+
+1. análise prévia da persistência;
+2. decisão de migration;
+3. schema final, se houver;
+4. regra exata de assignment;
+5. regra de elegibilidade do assignee;
+6. autorização;
+7. atomicidade/auditoria;
+8. estratégia de concorrência;
+9. endpoints;
+10. integração com v3.5/v3.6/v3.7;
+11. estratégia anti-N+1;
+12. arquivos criados;
+13. arquivos alterados;
+14. testes adicionados;
+15. resultado completo da validação;
+16. confirmação explícita de que `supervisor-guard.ts` permaneceu intacto;
+17. confirmação de que não houve aumento de autonomia;
+18. confirmação de que não foi criado novo Circuit Breaker;
+19. confirmação de que não existe segunda identidade de incidente;
+20. confirmação de que assignment não executa ações operacionais automaticamente.
+
+---
+
+# 27. Restrições finais
 
 Não fazer commit.
 
-Entregar tudo no working tree para revisão.
+Não iniciar v3.9.
+
+Não fazer deploy.
+
+Não reconstruir infraestrutura fora do necessário para validação local.
+
+Não implementar funcionalidades "aproveitando a rodada".
+
+Executar exclusivamente a **v3.8 — Operational Incident Ownership & Assignment** e entregar o relatório para revisão antes do commit.

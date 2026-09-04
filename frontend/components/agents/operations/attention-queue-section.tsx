@@ -11,6 +11,7 @@ import { EmptyState } from "@/components/states/empty-state";
 import { ErrorState } from "@/components/states/error-state";
 import { LoadingState } from "@/components/states/loading-state";
 import { useAttentionQueue } from "@/hooks/agents/use-operations";
+import { useUsersDirectory } from "@/hooks/use-users-directory";
 import { attentionReasonLabel, incidentReviewStatusLabel, operationalIncidentTypeLabel, supervisionIncidentOutcomeLabel } from "@/lib/agents/derived";
 import { formatDateTime } from "@/lib/agents/format";
 import {
@@ -51,7 +52,14 @@ export function AttentionQueueSection() {
   const [reviewStatus, setReviewStatus] = useState<IncidentReviewStatusOrUnreviewed | "all">("all");
   const [recurringOnly, setRecurringOnly] = useState(false);
   const [agingBucket, setAgingBucket] = useState<AgingBucket | "all">("all");
+  // Agentes v3.8 (correio.md "Frontend — Needs Attention", seção 15) —
+  // "Assignee" e "Only unassigned". `assigneeFilter` combina os dois
+  // (um único Select, mesmo idioma dos demais filtros desta seção) — o
+  // valor especial "unassigned" vira `unassignedOnly: true`.
+  const [assigneeFilter, setAssigneeFilter] = useState<string>("all");
   const [detailId, setDetailId] = useState<number | null>(null);
+
+  const usersQuery = useUsersDirectory();
 
   const queue = useAttentionQueue({
     page,
@@ -65,7 +73,13 @@ export function AttentionQueueSection() {
     reviewStatus: reviewStatus === "all" ? undefined : reviewStatus,
     recurringOnly: recurringOnly || undefined,
     agingBucket: agingBucket === "all" ? undefined : agingBucket,
+    unassignedOnly: assigneeFilter === "unassigned" || undefined,
+    assigneeUserId: assigneeFilter !== "all" && assigneeFilter !== "unassigned" ? Number(assigneeFilter) : undefined,
   });
+
+  function assigneeName(userId: number): string {
+    return usersQuery.data?.data.find((user) => user.id === userId)?.name ?? `Usuário #${userId}`;
+  }
 
   return (
     <Card>
@@ -194,6 +208,27 @@ export function AttentionQueueSection() {
               <SelectItem value="true">Só recorrentes</SelectItem>
             </SelectContent>
           </Select>
+
+          <Select
+            value={assigneeFilter}
+            onValueChange={(value) => {
+              setPage(1);
+              setAssigneeFilter(value ?? "all");
+            }}
+          >
+            <SelectTrigger className="w-48">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todo responsável</SelectItem>
+              <SelectItem value="unassigned">Não atribuídos</SelectItem>
+              {usersQuery.data?.data.map((user) => (
+                <SelectItem key={user.id} value={String(user.id)}>
+                  {user.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </CardHeader>
 
@@ -214,6 +249,7 @@ export function AttentionQueueSection() {
                   <TableHead>Severidade</TableHead>
                   <TableHead>Idade</TableHead>
                   <TableHead>Recorrência</TableHead>
+                  <TableHead>Responsável</TableHead>
                   <TableHead>Review</TableHead>
                   <TableHead>Resultado</TableHead>
                   <TableHead>Por que aparece aqui</TableHead>
@@ -237,6 +273,7 @@ export function AttentionQueueSection() {
                       {item.sinceReviewBucket ? <div className="mt-1 text-[11px] text-muted-foreground">reconhecido há {item.sinceReviewBucket}</div> : null}
                     </TableCell>
                     <TableCell className="text-xs">{item.isRecurring ? `${item.recurrenceCount}x` : "--"}</TableCell>
+                    <TableCell className="text-xs">{item.assignment ? assigneeName(item.assignment.assigneeUserId) : <span className="text-muted-foreground">Não atribuído</span>}</TableCell>
                     <TableCell>
                       <IncidentReviewStatusBadge status={item.reviewStatus} />
                     </TableCell>

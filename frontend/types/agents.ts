@@ -1237,6 +1237,17 @@ export interface IncidentReview {
   updatedAt: string | null;
 }
 
+// Agentes v3.8 — Operational Incident Ownership & Assignment (correio.md).
+// `assigneeUserId: null` = não atribuído (sintetizado pela ausência de
+// linha, mesmo idioma de `IncidentReview` acima).
+export interface IncidentAssignment {
+  auditLogId: number;
+  assigneeUserId: number | null;
+  assignedBy: number | null;
+  assignedAt: string | null;
+  updatedAt: string | null;
+}
+
 export interface SupervisionIncidentSummary {
   auditLogId: number;
   incidentType: OperationalIncidentType;
@@ -1257,6 +1268,12 @@ export interface SupervisionIncidentSummary {
   // já usada por `RecurringIncident` abaixo).
   recurrenceCount: number;
   isRecurring: boolean;
+  // Agentes v3.8 — ownership humano, dimensão SEPARADA de `reviewStatus`
+  // (assign ≠ acknowledge, correio.md v3.8 seção 6). `null` = não
+  // atribuído. Raw `assigneeUserId` (não o nome) — resolvido no
+  // frontend via `useUsersDirectory`, mesmo padrão já usado para
+  // `review.reviewedBy`.
+  assignment: { assigneeUserId: number; assignedBy: number; assignedAt: string } | null;
 }
 
 export interface SupervisionIncidentDetail extends SupervisionIncidentSummary {

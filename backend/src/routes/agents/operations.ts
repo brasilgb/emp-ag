@@ -25,10 +25,12 @@ import {
   supervisionInsightsOverviewQuerySchema,
   supervisionRunIdParamSchema,
   superviseQuerySchema,
+  updateIncidentAssignmentSchema,
   updateIncidentReviewSchema,
 } from '../../agents/operations/schemas.js';
 import { getOperationalHealth } from '../../agents/operations/health-service.js';
 import { getIncidentReview, upsertIncidentReview } from '../../agents/operations/incident-review-service.js';
+import { assignIncident, getIncidentAssignment, unassignIncident } from '../../agents/operations/incident-assignment-service.js';
 import { getOperationalSupervisionSchedulerStatus } from '../../agents/operations/scheduler-status.js';
 import { isOperationalSupervisionEnabled, setOperationalSupervisionEnabled } from '../../agents/operations/scheduler-settings.js';
 import { SupervisionAlreadyRunningError } from '../../agents/operations/supervisor-guard.js';
@@ -459,6 +461,72 @@ export async function operationsRoutes(app: FastifyInstance) {
     },
   );
 
+  // Agentes v3.8 (correio.md "Operational Incident Ownership &
+  // Assignment") — leitura reaproveita `agents.operations.read`; escrita
+  // (assign/reassign/unassign) reaproveita `agents.operations.manage` —
+  // mesma semântica já usada pelo review acima (seção 8: "read → pode
+  // ver assignment; manage → pode assign/reassign/unassign"). Nenhuma
+  // permission nova. `PATCH` cobre assign E reassign (seção 9:
+  // "reassignment pode ser consequência natural de assignIncident") —
+  // nunca endpoints redundantes (`/assign`, `/reassign`, `/take`,
+  // `/claim`). `DELETE` cobre unassign — este projeto nunca usa `PUT`
+  // (confirmado: nenhum `app.put` existe no backend inteiro), então o
+  // par PATCH/DELETE é a semântica REST já estabelecida aqui, preferida
+  // à sugestão literal do correio.md (que já permitia "ou outra
+  // semântica REST já usada pelo projeto").
+  app.get(
+    '/operations/supervision-insights/incidents/:auditLogId/assignment',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async (request, reply) => {
+      const params = supervisionIncidentIdParamSchema.safeParse(request.params);
+      if (!params.success) return badRequest(reply, params.error);
+
+      const assignment = await getIncidentAssignment(params.data.auditLogId);
+      if (!assignment) return notFound(reply, 'Incidente de supervisão não encontrado.');
+
+      return { data: assignment };
+    },
+  );
+
+  app.patch(
+    '/operations/supervision-insights/incidents/:auditLogId/assignment',
+    { preHandler: [authenticate, requirePermission('agents.operations.manage')] },
+    async (request, reply) => {
+      const params = supervisionIncidentIdParamSchema.safeParse(request.params);
+      if (!params.success) return badRequest(reply, params.error);
+
+      const body = updateIncidentAssignmentSchema.safeParse(request.body);
+      if (!body.success) return badRequest(reply, body.error);
+
+      // `assignedBy`/`assignedAt` SEMPRE derivados do servidor (mesmo
+      // padrão do review, seção 5 da v3.6) — nunca aceitos do payload.
+      const result = await assignIncident(params.data.auditLogId, body.data.assigneeUserId, currentUserId(request));
+      if (!result.ok) {
+        if (result.code === 'invalid_incident') return notFound(reply, 'Incidente de supervisão não encontrado.');
+        // `invalid_assignee` — mesmo formato de resposta de `badRequest`
+        // (helpers.ts), mas sem um ZodError para passar (a validação de
+        // elegibilidade do assignee acontece no service, não no schema).
+        return reply.code(400).send({ error: 'invalid_request', message: 'Usuário informado não existe.' });
+      }
+
+      return { data: result.assignment };
+    },
+  );
+
+  app.delete(
+    '/operations/supervision-insights/incidents/:auditLogId/assignment',
+    { preHandler: [authenticate, requirePermission('agents.operations.manage')] },
+    async (request, reply) => {
+      const params = supervisionIncidentIdParamSchema.safeParse(request.params);
+      if (!params.success) return badRequest(reply, params.error);
+
+      const result = await unassignIncident(params.data.auditLogId, currentUserId(request));
+      if (!result.ok) return notFound(reply, 'Incidente de supervisão não encontrado.');
+
+      return { data: result.assignment };
+    },
+  );
+
   app.get(
     '/operations/supervision-insights/recurring',
     { preHandler: [authenticate, requirePermission('agents.operations.read')] },
@@ -489,10 +557,11 @@ export async function operationsRoutes(app: FastifyInstance) {
       const query = attentionQueueQuerySchema.safeParse(request.query);
       if (!query.success) return badRequest(reply, query.error);
 
-      const { recurringOnly, ...rest } = query.data;
+      const { recurringOnly, unassignedOnly, ...rest } = query.data;
       const { rows, total } = await listAttentionQueue({
         ...rest,
         recurringOnly: recurringOnly === undefined ? undefined : recurringOnly === 'true',
+        unassignedOnly: unassignedOnly === undefined ? undefined : unassignedOnly === 'true',
       });
 
       return { data: rows, pagination: paginationMeta({ page: query.data.page, limit: query.data.limit, total }) };
