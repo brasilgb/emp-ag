@@ -1047,3 +1047,42 @@ export function formatSlaRemainingLabel(remainingSeconds: number | null): string
   if (remainingSeconds >= 0) return `Restam ${formatAgeSeconds(remainingSeconds)}`;
   return `Vencido há ${formatAgeSeconds(Math.abs(remainingSeconds))}`;
 }
+
+// Agentes v4.2 — Operational SLA Analytics & Performance Visibility
+// (correio.md seção 17). `formatAgeSeconds` acima só mostra UMA unidade
+// (nunca "1h 32min") — insuficiente para os cards de Response Times, que
+// pedem exatamente essa combinação (seção 17, exemplos literais: "45s",
+// "8m", "1h 32m", "2d 4h"). Aqui reproduzido com "min" em vez de "m" —
+// mesma abreviação já usada por `formatSlaRemainingLabel`/`formatAgeSeconds`
+// nesta MESMA tela (nunca duas convenções de unidade de tempo na mesma
+// página); a forma (unidades combinadas) é a mesma do exemplo do
+// correio.md, só o rótulo da unidade segue o precedente local.
+export function formatOperationalDuration(seconds: number | null): string {
+  if (seconds === null) return "--";
+  if (seconds < 60) return `${seconds}s`;
+
+  const totalMinutes = Math.floor(seconds / 60);
+  if (totalMinutes < 60) return `${totalMinutes}min`;
+
+  const totalHours = Math.floor(totalMinutes / 60);
+  const remainingMinutes = totalMinutes % 60;
+  if (totalHours < 24) return remainingMinutes > 0 ? `${totalHours}h ${remainingMinutes}min` : `${totalHours}h`;
+
+  const totalDays = Math.floor(totalHours / 24);
+  const remainingHours = totalHours % 24;
+  return remainingHours > 0 ? `${totalDays}d ${remainingHours}h` : `${totalDays}d`;
+}
+
+/**
+ * `0.0842 → "8.4%"` (correio.md seção 17, exemplo literal) — uma casa
+ * decimal, nunca arredondamento silencioso para inteiro (perderia a
+ * diferença entre, por exemplo, 8.4% e 8.6% de breach rate). `null`
+ * (denominador zero, seção 5) é SEMPRE "sem dado", nunca "0%" — `0` é um
+ * valor real (breach rate genuinamente zero) e `null` é a ausência de
+ * base de cálculo; jamais confundir os dois (correio.md seção 18: nunca
+ * `0%`/`NaN%`/`Infinity%` quando o correto é "--").
+ */
+export function formatOperationalPercentage(value: number | null): string {
+  if (value === null) return "--";
+  return `${(value * 100).toFixed(1)}%`;
+}

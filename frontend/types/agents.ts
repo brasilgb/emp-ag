@@ -1414,6 +1414,67 @@ export interface OperationalOwnershipWorkload {
   }[];
 }
 
+// Agentes v4.2 — Operational SLA Analytics & Performance Visibility
+// (correio.md). Camada agregada de LEITURA sobre v3.5/v3.6/v3.8/v4.1 —
+// espelha exatamente o contrato calculado pelo backend
+// (sla-analytics-service.ts); nenhum cálculo de agregação acontece aqui
+// (correio.md seção 23, item 13: "frontend mostrar os indicadores sem
+// duplicar regra de negócio").
+export interface OperationalSlaDurationStats {
+  count: number;
+  averageSeconds: number | null;
+  medianSeconds: number | null;
+}
+
+export interface OperationalSlaSeverityBreakdown {
+  detected: number;
+  closed: number;
+  withinSla: number;
+  outsideSla: number;
+  breachRate: number | null;
+  acknowledgement: { averageSeconds: number | null; medianSeconds: number | null };
+  resolution: { averageSeconds: number | null; medianSeconds: number | null };
+}
+
+export interface OperationalSlaTrendPoint {
+  date: string;
+  detected: number;
+  closed: number;
+  withinSla: number;
+  outsideSla: number;
+}
+
+// `displayName` é sempre `null` no backend — resolvido aqui pelo MESMO
+// `useUsersDirectory` já usado para `assignment`/`reviewedBy` (nunca uma
+// segunda estratégia de resolução de nomes).
+export interface OperationalSlaAssigneeAnalytics {
+  userId: number;
+  displayName: string | null;
+  closed: number;
+  withinSla: number;
+  outsideSla: number;
+  breachRate: number | null;
+  averageResolutionSeconds: number | null;
+  medianResolutionSeconds: number | null;
+}
+
+export interface OperationalSlaAnalytics {
+  period: { from: string; to: string };
+  incidents: { detected: number; closed: number; open: number };
+  sla: { completedWithinSla: number; completedOutsideSla: number; breachRate: number | null };
+  acknowledgement: OperationalSlaDurationStats;
+  resolution: OperationalSlaDurationStats;
+  bySeverity: Record<OperationalSeverity, OperationalSlaSeverityBreakdown>;
+  // Fotografia CORRENTE dos incidentes ainda abertos — SEPARADA do
+  // breach rate histórico acima (`sla.breachRate`). Nunca misturar os
+  // dois na UI (correio.md seção 13).
+  openSla: { withinSla: number; warning: number; breached: number };
+  trend: OperationalSlaTrendPoint[];
+  // Nunca ordenado por desempenho (correio.md seção 11) — ordem estável
+  // por `userId`, nunca um ranking.
+  byAssignee: OperationalSlaAssigneeAnalytics[];
+}
+
 // Agentes v2.6 — Agent Responsibilities, Operational Ownership & Escalation (correio.md).
 export const RESPONSIBILITY_TYPES = ["monitor", "review", "coordinate", "follow_up"] as const;
 export type ResponsibilityType = (typeof RESPONSIBILITY_TYPES)[number];

@@ -9,6 +9,7 @@ import {
   type ListIncidentsParams,
   type ListSupervisionIncidentsParams,
   type ListSupervisionRunsParams,
+  type OperationalSlaAnalyticsParams,
   type OperationsSummaryParams,
   type SupervisionInsightsPeriodParams,
   type UpdateIncidentReviewInput,
@@ -23,6 +24,7 @@ import {
   getJobRunLineage,
   getOperationalControlCenter,
   getOperationalOwnershipWorkload,
+  getOperationalSlaAnalytics,
   getOperationsSummary,
   getSupervisionIncidentDetail,
   getSupervisionOverview,
@@ -204,6 +206,19 @@ export function useOperationalOwnershipWorkload() {
   return useQuery({
     queryKey: queryKeys.agents.ownershipWorkload,
     queryFn: () => getOperationalOwnershipWorkload(),
+  });
+}
+
+// Agentes v4.2 — Operational SLA Analytics & Performance Visibility
+// (correio.md). Igual `useSupervisionOverview`/`useOperationalOwnershipWorkload`
+// acima: consulta pontual sob demanda (o operador escolhe o período e
+// consulta), nunca um dashboard ao vivo com `refetchInterval`.
+// `keepPreviousData` evita flicker ao trocar de preset de período.
+export function useOperationalSlaAnalytics(params: OperationalSlaAnalyticsParams = {}) {
+  return useQuery({
+    queryKey: queryKeys.agents.slaAnalytics(params),
+    queryFn: () => getOperationalSlaAnalytics(params),
+    placeholderData: keepPreviousData,
   });
 }
 

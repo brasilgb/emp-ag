@@ -477,6 +477,99 @@ describe('Agentes v1.6 — Operations, Incidents, Audit, Autonomy switch', () =>
     });
   });
 
+  // Agentes v4.2 (correio.md "Operational SLA Analytics & Performance
+  // Visibility", "19. Testes backend — Endpoint"). Cobertura de
+  // cálculo/agregação/N+1/isolamento já vive em
+  // `agents/operations/sla-analytics.test.ts` (função pura) e
+  // `sla-analytics.integration.test.ts` (nível de serviço) — aqui só a
+  // borda HTTP: autorização, validação de query e a garantia de
+  // read-only.
+  describe('GET /operations/sla-analytics', () => {
+    test('sem permission → 403', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/sla-analytics', headers: authHeader(limitedToken) });
+      assert.equal(response.statusCode, 403);
+    });
+
+    test('agents.operations.read → 200, forma esperada (contrato da seção 4)', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/sla-analytics', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 200, response.body);
+      const { data } = response.json();
+
+      assert.equal(typeof data.period.from, 'string');
+      assert.equal(typeof data.period.to, 'string');
+      assert.equal(typeof data.incidents.detected, 'number');
+      assert.equal(typeof data.incidents.closed, 'number');
+      assert.equal(typeof data.incidents.open, 'number');
+      assert.equal(typeof data.sla.completedWithinSla, 'number');
+      assert.equal(typeof data.sla.completedOutsideSla, 'number');
+      assert.ok(data.sla.breachRate === null || typeof data.sla.breachRate === 'number');
+      assert.equal(typeof data.acknowledgement.count, 'number');
+      assert.equal(typeof data.resolution.count, 'number');
+      assert.equal(typeof data.openSla.withinSla, 'number');
+      assert.equal(typeof data.openSla.warning, 'number');
+      assert.equal(typeof data.openSla.breached, 'number');
+      assert.ok(Array.isArray(data.trend));
+      assert.ok(Array.isArray(data.byAssignee));
+      for (const severity of ['info', 'warning', 'critical']) {
+        assert.equal(typeof data.bySeverity[severity].detected, 'number');
+        assert.equal(typeof data.bySeverity[severity].closed, 'number');
+      }
+    });
+
+    test('sem from/to → default de 7 dias, ecoado em `period`', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/sla-analytics', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 200);
+      const { period } = response.json().data;
+      const from = new Date(period.from).getTime();
+      const to = new Date(period.to).getTime();
+      const sevenDaysMs = 7 * 24 * 60 * 60 * 1000;
+      assert.ok(Math.abs(to - from - sevenDaysMs) < 5000, 'período default deveria ser ~7 dias');
+    });
+
+    test('`from` inválido → 400', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/sla-analytics?from=nao-e-uma-data', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 400);
+    });
+
+    test('`to` inválido → 400', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/sla-analytics?to=nao-e-uma-data', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 400);
+    });
+
+    test('`from` > `to` → 400', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/sla-analytics?from=2030-01-01&to=2020-01-01', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 400);
+    });
+
+    test('`severity` inválido → 400', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/sla-analytics?severity=nao-existe', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 400);
+    });
+
+    test('campo extra na query → 400 (schema `.strict()`)', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/sla-analytics?bogus=1', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 400);
+    });
+
+    test('período sem nenhum incidente → 200 com contadores zerados, nunca erro', async () => {
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/sla-analytics?from=2001-01-01&to=2001-01-02', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 200, response.body);
+      const { data } = response.json();
+      assert.equal(data.incidents.detected, 0);
+      assert.equal(data.incidents.closed, 0);
+      assert.equal(data.sla.breachRate, null);
+      assert.deepEqual(data.byAssignee, []);
+    });
+
+    test('GET não grava audit log (100% read-only, correio.md seção 14/21)', async () => {
+      const [{ total: auditCountBefore }] = await db.select({ total: count() }).from(auditLogs);
+      const response = await app.inject({ method: 'GET', url: '/agents/operations/sla-analytics', headers: authHeader(ceoToken) });
+      assert.equal(response.statusCode, 200);
+      const [{ total: auditCountAfter }] = await db.select({ total: count() }).from(auditLogs);
+      assert.equal(Number(auditCountAfter), Number(auditCountBefore), 'GET em sla-analytics nunca deveria gravar um audit log novo');
+    });
+  });
+
   // Agentes v3.6 (correio.md "Operational Incident Acknowledgement &
   // Review Workflow", "11. Testes obrigatórios" — itens 10 (autorização
   // leitura/escrita), 7 (status inválido), 8 (404), 13 (filtro por review

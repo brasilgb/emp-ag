@@ -21,6 +21,7 @@ import {
   listSupervisionRunsQuerySchema,
   operationsSummaryQuerySchema,
   patchSupervisionSchedulerSchema,
+  slaAnalyticsQuerySchema,
   supervisionIncidentIdParamSchema,
   supervisionInsightsOverviewQuerySchema,
   supervisionRunIdParamSchema,
@@ -38,6 +39,7 @@ import { isOperationalSupervisionEnabled, setOperationalSupervisionEnabled } fro
 import { SupervisionAlreadyRunningError } from '../../agents/operations/supervisor-guard.js';
 import { getSupervisionRunById, listSupervisionRuns, runObservedOperationalSupervision } from '../../agents/operations/supervision-run-history.js';
 import { getOperationalOwnershipWorkload, getSupervisionIncidentDetail, getSupervisionOverview, listAttentionQueue, listRecurringIncidents, listSupervisionIncidents } from '../../agents/operations/supervision-insights-service.js';
+import { getOperationalSlaAnalytics } from '../../agents/operations/sla-analytics-service.js';
 import { getControlCenterOverview, getOperationalQueues } from '../../agents/operations/control-center-service.js';
 import { audit } from '../../services/audit.js';
 
@@ -611,6 +613,30 @@ export async function operationsRoutes(app: FastifyInstance) {
       if (!result.ok) return reply.code(400).send({ error: 'invalid_request', message: result.message });
 
       return { data: result.value };
+    },
+  );
+
+  // Agentes v4.2 (correio.md "Operational SLA Analytics & Performance
+  // Visibility") — camada agregada de leitura sobre v3.5/v3.6/v3.8/v4.1
+  // (ver docblock de discovery em sla-analytics-service.ts). Mesma
+  // permission de leitura de TODA esta seção (`agents.operations.read`) —
+  // "a permissão... é suficiente para leitura" (seção 21); 100% read-only,
+  // nenhum audit log é gravado por esta rota (seção 14/21).
+  app.get(
+    '/operations/sla-analytics',
+    { preHandler: [authenticate, requirePermission('agents.operations.read')] },
+    async (request, reply) => {
+      const query = slaAnalyticsQuerySchema.safeParse(request.query);
+      if (!query.success) return badRequest(reply, query.error);
+
+      // Default de 7 dias quando omitido — mesmo padrão de
+      // `GET /operations/summary` (v1.6) — a resposta sempre ecoa o
+      // período EXATO resolvido em `data.period`, nunca deixando o
+      // cliente sem saber qual janela foi usada.
+      const to = query.data.to ?? new Date();
+      const from = query.data.from ?? new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+      return { data: await getOperationalSlaAnalytics({ from, to, severity: query.data.severity }) };
     },
   );
 }

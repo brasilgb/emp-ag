@@ -6,6 +6,7 @@ import { OperationsDashboard } from "@/components/agents/operations/operations-d
 import { OperationsSupervisorDashboard } from "@/components/agents/operations/operations-supervisor-dashboard";
 import { OperationalSupervisionSchedulerCard } from "@/components/agents/operations/operational-supervision-scheduler-card";
 import { OwnershipAndAttentionSection } from "@/components/agents/operations/ownership-and-attention-section";
+import { SlaAnalyticsSection } from "@/components/agents/operations/sla-analytics-section";
 import { SupervisionInsightsSection } from "@/components/agents/operations/supervision-insights-section";
 import { SupervisionRunHistorySection } from "@/components/agents/operations/supervision-run-history-section";
 
@@ -85,6 +86,22 @@ export default function AgentOperationsPage() {
       <OwnershipAndAttentionSection />
 
       <SupervisionInsightsSection />
+
+      {/* Agentes v4.2 (correio.md "Operational SLA Analytics &
+          Performance Visibility") — evolui a MESMA seção de Supervisão
+          Operacional (nunca uma página/dashboard nova): indicadores
+          agregados de SLA/desempenho sobre os incidentes já
+          detectados/revisados/atribuídos acima — breach rate, tempo de
+          acknowledgement/resolução, breakdown por severidade/responsável
+          e tendência temporal. Estritamente analítica/observacional
+          (nenhuma automação, nenhum ranking de pessoas). */}
+      <div>
+        <h2 className="text-lg font-semibold tracking-tight">Analytics de SLA</h2>
+        <p className="text-sm text-muted-foreground">
+          Breach rate, tempo de resposta e tendência — indicadores agregados sobre os incidentes já detectados.
+        </p>
+      </div>
+      <SlaAnalyticsSection />
     </div>
   );
 }

@@ -33,9 +33,9 @@ Portas usadas no host (precisam estar livres):
 
 | Porta | Serviço |
 |---|---|
-| `3000` | Frontend (Next.js) |
-| `8000` | Backend (API) |
-| `5678` | n8n |
+| `3300` | Frontend (Next.js) |
+| `8300` | Backend (API) |
+| `5679` | n8n |
 
 PostgreSQL (`5432`) e Redis (`6379`) **não** são expostos no host — só
 acessíveis entre containers, na rede interna `agencia-network`.
@@ -166,9 +166,9 @@ via `docker compose run --rm migrate ...`, por estar no perfil `tools`.)
 
 | Serviço | URL |
 |---|---|
-| Frontend (app) | http://localhost:3000 |
-| Backend (API) | http://localhost:8000 |
-| n8n | http://localhost:5678 |
+| Frontend (app) | http://localhost:3300 |
+| Backend (API) | http://localhost:8300 |
+| n8n | http://localhost:5679 |
 
 Login inicial: use `CEO_EMAIL`/`CEO_PASSWORD` definidos no `.env`.
 
@@ -180,8 +180,8 @@ Cada serviço principal expõe um endpoint de saúde, já usado pelo
 `healthcheck` do próprio Docker Compose:
 
 ```bash
-curl -sf http://localhost:8000/health   # backend
-curl -sf http://localhost:3000/api/health  # frontend
+curl -sf http://localhost:8300/health   # backend
+curl -sf http://localhost:3300/api/health  # frontend
 ```
 
 Ambos devem responder `200` com um JSON simples. Status de todos os

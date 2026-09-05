@@ -50,6 +50,7 @@ import type {
   OperationalOwnershipWorkload,
   OperationalResponse,
   OperationalSeverity,
+  OperationalSlaAnalytics,
   OperationalSupervisionReport,
   OperationalSupervisionSchedulerStatus,
   IncidentAssignment,
@@ -831,6 +832,21 @@ export function listAttentionQueue(params: ListAttentionQueueParams = {}): Promi
 // read-only (seção 5).
 export function getOperationalOwnershipWorkload(): Promise<{ data: OperationalOwnershipWorkload }> {
   return apiFetch(`/api/agents/operations/supervision-insights/ownership-workload`);
+}
+
+// Agentes v4.2 — Operational SLA Analytics & Performance Visibility
+// (correio.md). `from`/`to` em ISO — mesmo formato usado pelo restante
+// deste arquivo para filtros de período (ver `SupervisionInsightsPeriodParams`
+// acima, embora este endpoint use `from`/`to`, não `dateFrom`/`dateTo` —
+// nome espelhado 1:1 do contrato do backend, seção 4/14 do correio.md).
+export interface OperationalSlaAnalyticsParams {
+  from?: string;
+  to?: string;
+  severity?: OperationalSeverity;
+}
+
+export function getOperationalSlaAnalytics(params: OperationalSlaAnalyticsParams = {}): Promise<{ data: OperationalSlaAnalytics }> {
+  return apiFetch(`/api/agents/operations/sla-analytics${toQueryString({ ...params })}`);
 }
 
 // Agentes v3.6 — Operational Incident Acknowledgement & Review Workflow (correio.md).

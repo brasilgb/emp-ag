@@ -164,3 +164,22 @@ export const updateSlaSettingsSchema = z
     info: slaMinutes.optional(),
   })
   .strict();
+
+// Agentes v4.2 (correio.md "Operational SLA Analytics & Performance
+// Visibility", seção 14) — mesmo padrão de `operationsSummaryQuerySchema`
+// acima: `from`/`to` opcionais (default de 7 dias resolvido na rota,
+// mesmo racional de `GET /operations/summary` desde a v1.6) mas sempre
+// validados/ecoados explicitamente na resposta (`period`). `severity`
+// opcional (seção 14: "se necessário, &severity=..."), vocabulário
+// fechado reaproveitado de health-types.ts — nenhuma segunda lista.
+export const slaAnalyticsQuerySchema = z
+  .object({
+    from: isoDate.optional(),
+    to: isoDate.optional(),
+    severity: z.enum(OPERATIONAL_SEVERITIES).optional(),
+  })
+  .strict()
+  .refine((data) => !data.from || !data.to || data.from <= data.to, {
+    message: '`from` deve ser anterior ou igual a `to`.',
+    path: ['from'],
+  });

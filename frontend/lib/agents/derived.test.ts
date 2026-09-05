@@ -48,6 +48,8 @@ import {
   signalEntityHref,
   formatSlaRemainingLabel,
   operationalIncidentSlaStatusLabel,
+  formatOperationalDuration,
+  formatOperationalPercentage,
 } from "./derived";
 
 const NOW = new Date("2026-08-30T12:00:00.000Z");
@@ -620,5 +622,72 @@ describe("operationalIncidentSlaStatusLabel", () => {
   test("valor desconhecido faz fallback para o próprio valor", () => {
     // @ts-expect-error — testando o fallback de valor não mapeado.
     assert.equal(operationalIncidentSlaStatusLabel("nunca_existiu"), "nunca_existiu");
+  });
+});
+
+// Agentes v4.2 — Operational SLA Analytics & Performance Visibility
+// (correio.md "20. Testes frontend").
+describe("formatOperationalDuration", () => {
+  test("null → '--'", () => {
+    assert.equal(formatOperationalDuration(null), "--");
+  });
+
+  test("zero → '0s' (valor real, nunca confundido com 'sem dado')", () => {
+    assert.equal(formatOperationalDuration(0), "0s");
+  });
+
+  test("segundos puros (< 1min)", () => {
+    assert.equal(formatOperationalDuration(45), "45s");
+    assert.equal(formatOperationalDuration(59), "59s");
+  });
+
+  test("minutos puros (< 1h)", () => {
+    assert.equal(formatOperationalDuration(8 * 60), "8min");
+    assert.equal(formatOperationalDuration(59 * 60 + 59), "59min");
+  });
+
+  test("horas com minutos (< 1d) — combina as duas unidades", () => {
+    assert.equal(formatOperationalDuration(60 * 60 + 32 * 60), "1h 32min");
+  });
+
+  test("horas exatas (sem minuto restante) — nunca mostra '1h 0min'", () => {
+    assert.equal(formatOperationalDuration(2 * 60 * 60), "2h");
+  });
+
+  test("dias com horas (>= 1d) — combina as duas unidades", () => {
+    assert.equal(formatOperationalDuration(2 * 86400 + 4 * 3600), "2d 4h");
+  });
+
+  test("dias exatos (sem hora restante) — nunca mostra '2d 0h'", () => {
+    assert.equal(formatOperationalDuration(5 * 86400), "5d");
+  });
+
+  test("valores grandes continuam legíveis (nenhum overflow/NaN)", () => {
+    const value = formatOperationalDuration(365 * 86400);
+    assert.ok(value.endsWith("d"));
+    assert.ok(!value.includes("NaN"));
+  });
+});
+
+describe("formatOperationalPercentage", () => {
+  test("null (denominador zero) → '--', nunca '0%'", () => {
+    assert.equal(formatOperationalPercentage(null), "--");
+  });
+
+  test("zero real (breach rate genuinamente zero) → '0.0%', nunca '--'", () => {
+    assert.equal(formatOperationalPercentage(0), "0.0%");
+  });
+
+  test("0.0842 → '8.4%' (uma casa decimal, exemplo literal do correio.md)", () => {
+    assert.equal(formatOperationalPercentage(0.0842), "8.4%");
+  });
+
+  test("valor grande — 100% de breach", () => {
+    assert.equal(formatOperationalPercentage(1), "100.0%");
+  });
+
+  test("nunca produz NaN%/Infinity%", () => {
+    assert.ok(!formatOperationalPercentage(0).includes("NaN"));
+    assert.ok(!formatOperationalPercentage(1).includes("Infinity"));
   });
 });

@@ -32,11 +32,14 @@ Veja `lib/api/client.ts`, `lib/auth/session.ts` e `lib/auth/dal.ts`.
 
 ```bash
 cp .env.example .env.local
-# ajuste NEXT_PUBLIC_API_URL para http://127.0.0.1:8000 se o backend
-# estiver rodando fora do Docker também
+# backend rodando no Docker (compose): NEXT_PUBLIC_API_URL=http://127.0.0.1:8300
+# backend rodando fora do Docker:      NEXT_PUBLIC_API_URL=http://127.0.0.1:8000
 npm install
-npm run dev
+npm run dev -- -p 3301
 ```
+
+A porta `3000` (default do Next) costuma estar ocupada por outro projeto e
+o container `agencia-frontend` já usa a `3300` — por isso o `-p 3301`.
 
 ## Rodando via Docker Compose
 
@@ -46,7 +49,7 @@ A partir da raiz do repositório:
 docker compose up -d --build frontend
 ```
 
-Acesse em <http://127.0.0.1:3000>.
+Acesse em <http://localhost:3300>.
 
 ## Scripts
 

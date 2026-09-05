@@ -1,4 +1,4 @@
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 
 import { db } from '../../db/index.js';
 import { agentOperationalIncidentReviews, auditLogs } from '../../db/schema/index.js';
@@ -33,6 +33,11 @@ export interface IncidentReview {
 }
 
 const INCIDENT_DETECTED_ACTION = 'agents.operations.incident.detected';
+
+// Reaproveitada por `getFirstAcknowledgedAtByAuditLogIds` abaixo — mesma
+// action já usada por `upsertIncidentReview` para auditar cada mudança de
+// review (nunca uma segunda constante solta em outro arquivo).
+const REVIEW_CHANGED_ACTION = 'agents.operations.incident_review.changed';
 
 /**
  * Identidade canônica do incidente (correio.md seção 3) — nunca
@@ -174,6 +179,50 @@ export async function getIncidentReviewsByAuditLogIds(auditLogIds: number[]): Pr
   for (const auditLogId of auditLogIds) {
     const row = rows.find((r) => r.incidentAuditLogId === auditLogId);
     map.set(auditLogId, toIncidentReview(auditLogId, row));
+  }
+  return map;
+}
+
+/**
+ * Agentes v4.2 (correio.md "Operational SLA Analytics & Performance
+ * Visibility", seção 6) — timestamp EXATO da primeira transição
+ * `unreviewed → acknowledged`, em LOTE, para um conjunto arbitrário de
+ * incidentes (nunca um por linha — usado por `sla-analytics-service.ts`
+ * para calcular acknowledgementSeconds sobre dezenas/centenas de
+ * incidentes de uma vez).
+ *
+ * `getSupervisionIncidentDetail` (v4.1) já resolve essa MESMA transição,
+ * mas reconstruindo a timeline COMPLETA de um único incidente — caro
+ * demais para repetir por incidente numa agregação (seção 15: "evitar 1
+ * query por incidente"). Aqui, uma única query agregada (`MIN(created_at)
+ * GROUP BY incidentAuditLogId`) sobre o MESMO audit de origem
+ * (`agents.operations.incident_review.changed`, v3.6) resolve o lote
+ * inteiro — nenhuma segunda fonte de verdade, apenas uma forma mais barata
+ * de ler a mesma informação quando o caller já sabe que só precisa do
+ * timestamp (não da timeline inteira).
+ */
+export async function getFirstAcknowledgedAtByAuditLogIds(auditLogIds: number[]): Promise<Map<number, Date>> {
+  if (auditLogIds.length === 0) return new Map();
+
+  const rows = await db
+    .select({
+      incidentAuditLogId: sql<string>`${auditLogs.metadata}->>'incidentAuditLogId'`,
+      firstAcknowledgedAt: sql<Date>`min(${auditLogs.createdAt})`,
+    })
+    .from(auditLogs)
+    .where(
+      and(
+        eq(auditLogs.action, REVIEW_CHANGED_ACTION),
+        sql`${auditLogs.metadata}->>'previousStatus' = 'unreviewed'`,
+        sql`${auditLogs.metadata}->>'newStatus' = 'acknowledged'`,
+        inArray(sql<string>`${auditLogs.metadata}->>'incidentAuditLogId'`, auditLogIds.map(String)),
+      ),
+    )
+    .groupBy(sql`${auditLogs.metadata}->>'incidentAuditLogId'`);
+
+  const map = new Map<number, Date>();
+  for (const row of rows) {
+    map.set(Number(row.incidentAuditLogId), new Date(row.firstAcknowledgedAt));
   }
   return map;
 }

@@ -147,5 +147,7 @@ export const queryKeys = {
     incidentAssignment: (auditLogId: number) => ["agents", "operations", "supervision-insights", "incidents", auditLogId, "assignment"] as const,
     // Agentes v3.9 — Operational Ownership Workload & Human Coordination Views.
     ownershipWorkload: ["agents", "operations", "supervision-insights", "ownership-workload"] as const,
+    // Agentes v4.2 — Operational SLA Analytics & Performance Visibility.
+    slaAnalytics: (params?: unknown) => ["agents", "operations", "sla-analytics", params ?? {}] as const,
   },
 };
